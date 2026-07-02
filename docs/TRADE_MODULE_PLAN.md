@@ -315,3 +315,68 @@ Indicator registry (all listed) + drawing toolbar (all listed), per-chart persis
 4. Confirmation of the **charting engine** recommendation (KLineCharts) or a preference for one of the alternatives.
 
 Once approved, I'll start at **Phase 0** and keep each phase isolated so the current app keeps working throughout.
+
+---
+
+## 13. Addendum — Redis feed integration (post-clarification)
+
+Following clarification: no paid TradingView library (**KLineCharts confirmed**), and market data is available via **Redis** — index ticks as keyed values and option chain via a pub/sub channel.
+
+### 13.1 Observed Redis data shapes
+
+**Index tick** (`GET 'Nifty 50'`, `GET SENSEX`):
+```json
+{ "index":"NIFTY", "displayName":"NIFTY", "symbol":"Nifty 50",
+  "ltp":24072.6, "bidPrice":0, "askPrice":0, "exchange_timestamp":1782972772000 }
+```
+- `exchange_timestamp` is epoch **ms**. Index spot carries no volume; bid/ask are 0.
+
+**Option chain** (`SUBSCRIBE OptionChainData`), one message per strike-leg:
+```json
+{ "index":"SENSEX", "expiry":"02JUL26", "optionType":"CE", "strikePrice":"78700",
+  "symbol":"SENSEX_02JUL26_CE_78700", "ltp":2.15, "volume":7083740,
+  "buyQty":2112380, "sellQty":228860, "bidPrice":2.1, "askPrice":2.15,
+  "exchange_timestamp":1782972809000 }
+```
+- The channel is a **firehose of all indices/expiries/strikes mixed together** (SENSEX, MIDCPNIFTY, BANKEX observed in one stream).
+- **Missing fields vs. requirements:** no `OI`, no `OI change`, no `IV`, no `greeks`. PCR/ATM-OI visualizations depend on OI. This is a decision point (see 13.4-C).
+
+### 13.2 Critical architectural consequence — a WebSocket gateway is required
+
+Browsers cannot connect to Redis. A **server-side WS gateway** is mandatory and becomes the backbone of the live data layer:
+
+```
+Redis (ticks + OptionChainData)  →  WS Gateway (server)  →  Browser WS
+                                     • JWT auth
+                                     • per-client subscription registry
+                                     • server-side FILTER (index + expiry)
+                                     • optional coalescing/throttle
+```
+
+The gateway must not broadcast the raw firehose. A client subscribes to a specific `index + expiry` (option chain) or a set of index/equity symbols (ticks); the gateway forwards only matching messages. The browser-side `WebSocketManager` + `tickBuffer` (sections 5, 8) sit behind this unchanged.
+
+### 13.3 Historical data & broker rate limits
+
+Broker historical calls **must be decoupled from user count** via a server-side candle store:
+- Past candles are immutable → cache indefinitely; only the latest/forming candle needs refresh (and it can be built from the tick stream).
+- Cached: broker hit ≈ once per `(symbol, timeframe)` warm-up (~hundreds one-time), independent of users.
+- Uncached: scales with users (100 users × 4 charts = 400 burst calls) → breaches typical broker limits.
+- Frontend adds React Query + in-memory cache per `(symbol, timeframe)`; timeframe/symbol re-selection refetches nothing.
+- Per-user session estimate: ~20–60 historical requests total (1/load, 1/timeframe, 1/symbol, 1/scroll-page, N for N-chart grids).
+
+### 13.4 Revised backend requirements (what's still needed)
+
+- **A. WS gateway (new, top priority):** Redis→browser bridge with JWT auth, per-client subscribe protocol, server-side filtering by `index+expiry` (option chain) and by symbol (ticks); ideally also carries order/position updates.
+- **B. Historical candles API:** confirm exact request/response, intervals, max bars, pagination for infinite scroll, and server-side caching (13.3).
+- **C. Option-chain enrichment:** source for **OI, ChgOI, IV, Greeks, PCR**. OI cannot be derived — must come from the feed/backend. IV/greeks can be computed (Black-Scholes) server- or client-side from ltp+spot+strike+expiry+rate.
+- **D. Option-chain seed snapshot (REST)** + **expiries list** per index, so the grid renders instantly then the stream patches it (avoids waiting to accumulate strikes from the firehose).
+- **E. Instrument master / symbol search** for equities + options (symbol↔token), beyond existing `/trade/indices`.
+- **F. Order execution (not in Redis):** place/modify/cancel, order book, positions, holdings, funds, pre-trade margin, multi-account fan-out; confirm whether order/position updates arrive via Redis/WS or require polling.
+- **G. Equity ticks:** confirm whether the `GET 'Nifty 50'` keyed-tick pattern also exists for individual stocks (watchlist LTP beyond indices).
+
+### 13.5 Frontend adapters this enables (no change to broker specifics)
+
+- `redisTick → NormalizedQuote` — map `{index, symbol, ltp, exchange_timestamp}`; treat ts as ms; ignore 0 bid/ask for indices.
+- `optionChainMsg → OptionChainRow` — group by `index+expiry`, pivot CE/PE onto a shared `strikePrice`, sort ascending, compute ATM from spot (from index tick), compute PCR when OI is available.
+- Forming-candle builder — aggregate index/option ticks into the active timeframe bucket on top of cached history.
+

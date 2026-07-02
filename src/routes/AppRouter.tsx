@@ -7,6 +7,7 @@ import { useAuth } from '@/hooks/useAuth'
 const LoginPage       = lazy(() => import('@/pages/LoginPage'))
 const RegisterPage    = lazy(() => import('@/pages/RegisterPage'))
 const DashboardPage   = lazy(() => import('@/pages/DashboardPage'))
+const TradePage       = lazy(() => import('@/trade'))
 const BrokerPage      = lazy(() => import('@/pages/BrokerPage'))
 const ReportsPage     = lazy(() => import('@/pages/ReportsPage'))
 const AnalyticsPage   = lazy(() => import('@/pages/AnalyticsPage'))
@@ -43,6 +44,7 @@ export function AppRouter() {
           {/* Protected — all share AppLayout (sidebar) */}
           <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
             <Route path="/dashboard"   element={<DashboardPage />} />
+            <Route path="/trade"       element={<TradePage />} />
             <Route path="/brokers"     element={<BrokerPage />} />
             <Route path="/strategies"  element={<StrategiesPage />} />
             <Route path="/analytics"   element={<AnalyticsPage />} />
