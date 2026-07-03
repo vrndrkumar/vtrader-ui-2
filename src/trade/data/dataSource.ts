@@ -1,23 +1,53 @@
 // ── Market data source (single swap point) ──────────────────────────────────
-// The whole UI talks to this interface only. Today: real candles + mock quotes.
-// When the Redis→WS gateway is ready, replace `subscribeQuote` with the real
-// WebSocketManager and nothing in the UI/chart layer changes.
+// getCandles       → real historical API.
+// subscribeQuote   → live index ticks via the realtime service (which writes
+//                    marketStore); if nothing arrives within a short window
+//                    (socket down / market closed & no snapshot), a mock feed
+//                    takes over so the UI keeps working. The chart consumes
+//                    marketStore updates only — it never writes them back.
 
 import type { Candle, Quote, Timeframe, TradeSymbol } from '../types/market'
 import { getCandles } from './candleApi'
 import { subscribeMockQuote } from './mockFeed'
+import { realtime } from './realtime/realtimeService'
+import { useMarketStore } from '../store/marketStore'
+
+const MOCK_FALLBACK_MS = 3_000
 
 export interface MarketDataSource {
-  /** Historical candles for a symbol/timeframe (real API). */
   getCandles(symbol: TradeSymbol, tf: Timeframe): Promise<Candle[]>
-  /** Live quotes for a symbol. Returns an unsubscribe fn. */
-  subscribeQuote(symbol: TradeSymbol, seedPrice: number, cb: (q: Quote) => void): () => void
-  /** True while the live feed is mocked (UI shows a "SIM" badge). */
-  readonly isLiveMocked: boolean
+  /** Delivers live quotes for the chart's forming candle. Returns unsubscribe. */
+  subscribeQuote(symbol: TradeSymbol, seedPrice: number, onTick: (q: Quote) => void): () => void
 }
 
 export const dataSource: MarketDataSource = {
   getCandles,
-  subscribeQuote: (symbol, seedPrice, cb) => subscribeMockQuote(symbol.code, seedPrice, cb),
-  isLiveMocked: true,
+  subscribeQuote(symbol, seedPrice, onTick) {
+    realtime.start()
+    const unsubChannel = realtime.subscribeIndexTick(symbol.code)
+
+    let lastTs = 0
+    let liveSeen = false
+    let mockUnsub: (() => void) | undefined
+
+    // Forward this symbol's marketStore quote (live or mock) to the chart.
+    // The instant a LIVE quote arrives, stop the mock so it can't mask real data.
+    const unsubStore = useMarketStore.subscribe((state) => {
+      const q = state.quotes[symbol.code]
+      if (!q || q.ts === lastTs) return
+      lastTs = q.ts
+      if (q.sim === false) {
+        liveSeen = true
+        if (mockUnsub) { mockUnsub(); mockUnsub = undefined }
+      }
+      onTick(q)
+    })
+
+    // Watchdog: start the mock feed only if no LIVE quote has arrived.
+    const watchdog = setTimeout(() => {
+      if (!liveSeen) mockUnsub = subscribeMockQuote(symbol.code, seedPrice, (q) => useMarketStore.getState().setQuote({ ...q, sim: true }))
+    }, MOCK_FALLBACK_MS)
+
+    return () => { clearTimeout(watchdog); unsubStore(); mockUnsub?.(); unsubChannel() }
+  },
 }

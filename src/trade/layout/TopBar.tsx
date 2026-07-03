@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { clsx } from 'clsx'
 import { useChartStore } from '../store/chartStore'
 import { useQuote } from '../store/marketStore'
+import { useConnectionState } from '../hooks/useConnectionState'
 import { SYMBOLS, getSymbol } from '../types/market'
 
 function fmt(n: number | undefined): string {
@@ -12,7 +13,11 @@ export function TopBar() {
   const symbolCode = useChartStore((s) => s.symbolCode)
   const setSymbol = useChartStore((s) => s.setSymbol)
   const quote = useQuote(symbolCode)
+  const conn = useConnectionState()
   const [open, setOpen] = useState(false)
+
+  const live = conn === 'open'
+  const connecting = conn === 'connecting' || conn === 'reconnecting'
 
   const sym = getSymbol(symbolCode)
   const up = (quote?.chg ?? 0) >= 0
@@ -54,8 +59,14 @@ export function TopBar() {
         )}
       </div>
 
-      <span className="text-[10px] font-semibold px-2 py-1 rounded-md bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-800">
-        SIM FEED
+      <span className={clsx(
+        'flex items-center gap-1.5 text-[10px] font-semibold px-2 py-1 rounded-md border',
+        live ? 'bg-green-50 text-green-600 border-green-200 dark:bg-green-900/20 dark:border-green-800'
+          : connecting ? 'bg-amber-50 text-amber-600 border-amber-200 dark:bg-amber-900/20 dark:border-amber-800'
+            : 'bg-slate-100 text-slate-500 border-slate-200 dark:bg-white/10 dark:border-slate-700',
+      )}>
+        <span className={clsx('h-1.5 w-1.5 rounded-full', live ? 'bg-green-500' : connecting ? 'bg-amber-500 animate-pulse' : 'bg-slate-400')} />
+        {live ? 'LIVE' : connecting ? 'CONNECTING' : 'SIM'}
       </span>
 
       <div className="ml-auto text-xs text-slate-400">Index spot · not tradable — trade from a strike chart</div>

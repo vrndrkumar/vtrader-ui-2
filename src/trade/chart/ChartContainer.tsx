@@ -102,7 +102,7 @@ export function ChartContainer() {
           ticksInBar++
         }
         engineRef.current?.updateLast(last)
-        setQuote(q)
+        // marketStore is owned by the realtime/mock feed — don't write it here.
       })
     })
 

@@ -1,11 +1,21 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { TopBar } from './layout/TopBar'
 import { LeftRail, type PanelKey, type TradeView } from './layout/LeftRail'
 import { SidePanel } from './layout/RightDock'
 import { ChartContainer } from './chart/ChartContainer'
 import { StrategyBuilder } from './features/strategy/StrategyBuilder'
+import { realtime } from './data/realtime/realtimeService'
+import { SYMBOLS } from './types/market'
 
 export default function TradePage() {
+  // Keep the realtime cache warm for all indices for the whole Trade session,
+  // so switching views/panels never shows stale-then-rebuild.
+  useEffect(() => {
+    realtime.start()
+    const unsubs = SYMBOLS.flatMap((s) => [realtime.subscribeOptionChain(s.code), realtime.subscribeIndexTick(s.code)])
+    return () => unsubs.forEach((u) => u())
+  }, [])
+
   const [view, setView] = useState<TradeView>('chart')
   const [panel, setPanel] = useState<PanelKey | null>('watchlist')
   const lastPanel = useRef<PanelKey>('watchlist')

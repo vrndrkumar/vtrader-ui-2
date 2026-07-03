@@ -38,6 +38,7 @@ export interface Quote {
   chgPct?: number
   volume?: number
   ts: number           // epoch ms
+  sim?: boolean        // true = mock feed, false = live WS (lets live override mock)
 }
 
 /**
