@@ -13,7 +13,7 @@ export interface Trade {
   unrealized_pnl: number
   status: 'OPEN' | 'CLOSED'
   first_placed_time: string
-  last_updated_time: string
+  last_updated_time: string | null
   order_count: number
   orders?: TradeOrder[]
 }

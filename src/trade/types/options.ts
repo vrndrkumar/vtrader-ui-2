@@ -6,15 +6,17 @@ export type Side = 'BUY' | 'SELL'
 export interface OcSide {
   ltp: number
   ltpChgPct: number
-  oi: number
-  oiChgPct: number
-  iv: number
+  // Optional: a live feed may not carry OI/IV yet (extensible without refactor).
+  oi?: number
+  oiChgPct?: number
+  iv?: number
 }
 
 export interface OcRow {
   strike: number
-  call: OcSide
-  put: OcSide
+  // Optional: incremental feed may have only one side for a strike so far.
+  call?: OcSide
+  put?: OcSide
 }
 
 export interface OptionChain {

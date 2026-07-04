@@ -2,6 +2,7 @@ import { createContext, useCallback, useEffect, useMemo, useState } from 'react'
 import { jwtDecode } from 'jwt-decode'
 import type { JwtPayload, UserProfile } from '@/types/auth'
 import { clearIndexMasterCache } from '@/services/indexMasterCache'
+import { useBrokerStore } from '@/store/brokerStore'
 
 interface AuthContextValue {
   user: UserProfile | null
@@ -62,6 +63,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = useCallback(() => {
     localStorage.removeItem(TOKEN_KEY)
     clearIndexMasterCache()
+    useBrokerStore.getState().reset()
     setToken(null)
     setUser(null)
   }, [])

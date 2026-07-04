@@ -1,12 +1,16 @@
 import type { Trade, TradeStats, DailyPnl, GroupedPnl } from '@/types/reports'
 
+export function isOpen(t: Trade): boolean {
+  return t.status !== 'CLOSED'
+}
+
 export function computeStats(trades: Trade[]): TradeStats {
-  const closed = trades.filter((t) => t.status === 'CLOSED')
+  const closed = trades.filter((t) => !isOpen(t))
   const winners = closed.filter((t) => t.realized_pnl > 0)
   const losers  = closed.filter((t) => t.realized_pnl < 0)
 
   const totalRealizedPnl   = closed.reduce((s, t) => s + t.realized_pnl, 0)
-  const totalUnrealizedPnl = trades.filter((t) => t.status === 'OPEN').reduce((s, t) => s + t.unrealized_pnl, 0)
+  const totalUnrealizedPnl = trades.filter(isOpen).reduce((s, t) => s + t.unrealized_pnl, 0)
 
   const grossProfit = winners.reduce((s, t) => s + t.realized_pnl, 0)
   const grossLoss   = Math.abs(losers.reduce((s, t) => s + t.realized_pnl, 0))
@@ -21,7 +25,7 @@ export function computeStats(trades: Trade[]): TradeStats {
     totalUnrealizedPnl,
     totalTrades: trades.length,
     closedTrades: closed.length,
-    openTrades: trades.filter((t) => t.status === 'OPEN').length,
+    openTrades: trades.filter(isOpen).length,
     winningTrades: winners.length,
     losingTrades: losers.length,
     winRate: closed.length === 0 ? 0 : (winners.length / closed.length) * 100,
@@ -35,7 +39,7 @@ export function computeStats(trades: Trade[]): TradeStats {
 }
 
 export function computeDailyPnl(trades: Trade[]): DailyPnl[] {
-  const closed = trades.filter((t) => t.status === 'CLOSED')
+  const closed = trades.filter((t) => !isOpen(t))
   const map: Record<string, number> = {}
 
   for (const t of closed) {
@@ -55,7 +59,7 @@ export function computeDailyPnl(trades: Trade[]): DailyPnl[] {
 }
 
 export function computeGroupPnl(trades: Trade[]): GroupedPnl[] {
-  const closed = trades.filter((t) => t.status === 'CLOSED')
+  const closed = trades.filter((t) => !isOpen(t))
   const map: Record<string, { pnl: number; trades: number }> = {}
 
   for (const t of closed) {
@@ -71,7 +75,7 @@ export function computeGroupPnl(trades: Trade[]): GroupedPnl[] {
 }
 
 export function computeSymbolPnl(trades: Trade[]): GroupedPnl[] {
-  const closed = trades.filter((t) => t.status === 'CLOSED')
+  const closed = trades.filter((t) => !isOpen(t))
   const map: Record<string, { pnl: number; trades: number }> = {}
 
   for (const t of closed) {

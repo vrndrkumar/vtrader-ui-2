@@ -20,6 +20,10 @@ export interface LoginResponse {
   token: string
   user?: UserProfile
   message?: string
+  preferences?: {
+    WEB?: { id: number; theme: string; language: string }[]
+    BROKER?: { id: number; default: boolean; brokerName: string; displayName: string; quantity: Record<string, number> }[]
+  }
 }
 
 export interface UserProfile {

@@ -1,18 +1,15 @@
-// ── Chart view state (active symbol + timeframe) ─────────────────────────────
+// ── Index context (drives the option chain + watchlist) ──────────────────────
+// The multi-chart panels have their own symbols in chartLayoutStore; this store
+// only tracks the active INDEX for the option-chain / watchlist context.
 
 import { create } from 'zustand'
-import type { Timeframe } from '../types/market'
 
 interface ChartState {
   symbolCode: string
-  timeframe: Timeframe
   setSymbol: (code: string) => void
-  setTimeframe: (tf: Timeframe) => void
 }
 
 export const useChartStore = create<ChartState>((set) => ({
   symbolCode: 'NIFTY',
-  timeframe: '15',
   setSymbol: (symbolCode) => set({ symbolCode }),
-  setTimeframe: (timeframe) => set({ timeframe }),
 }))

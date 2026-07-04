@@ -3,6 +3,7 @@ import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { toast } from 'react-hot-toast'
 import { loginApi } from '@/api/auth'
 import { useAuth } from '@/hooks/useAuth'
+import { useBrokerStore } from '@/store/brokerStore'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { ThemeToggle } from '@/components/ui/ThemeToggle'
@@ -26,6 +27,8 @@ export default function LoginPage() {
       const token = res.token ?? (res as unknown as string)
       if (!token) throw new Error('No token received')
       login(token)
+      // Broker preferences are the single source of truth — hydrate the global store.
+      if (res.preferences?.BROKER?.length) useBrokerStore.getState().hydrate(res.preferences.BROKER)
       toast.success('Welcome back!')
       navigate(from, { replace: true })
     } catch (err: unknown) {

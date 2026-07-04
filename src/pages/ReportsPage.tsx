@@ -144,18 +144,28 @@ function StatMini({ label, value, signed, positive }: {
 
 // ── Today's session strip ─────────────────────────────────────────────────────
 
-function TodayStrip({ trades }: { trades: Trade[] }) {
+function TodayStrip({ trades, onTodayClick }: { trades: Trade[]; onTodayClick: () => void }) {
   const today = new Date().toISOString().split('T')[0]
-  const todayTrades   = useMemo(() => trades.filter((t) => t.first_placed_time.startsWith(today) || t.first_placed_time.split(' ')[0] === today), [trades, today])
-  const openTrades    = todayTrades.filter((t) => t.status === 'OPEN')
-  const closedToday   = todayTrades.filter((t) => t.status === 'CLOSED')
-  const todayPnl      = closedToday.reduce((s, t) => s + t.realized_pnl, 0)
-  const unrealizedPnl = openTrades.reduce((s, t) => s + t.unrealized_pnl, 0)
+  // Filter by last_updated_time (reflects IST date correctly, avoids UTC midnight issues)
+  const todayTrades   = useMemo(() =>
+    trades.filter((t) => (t.last_updated_time ?? t.first_placed_time ?? '').slice(0, 10) === today),
+    [trades, today],
+  )
+  const openTrades    = todayTrades.filter((t) => t.status !== 'CLOSED')
+  const realizedPnl   = todayTrades.reduce((s, t) => s + (t.realized_pnl ?? 0), 0)
+  const unrealizedPnl = openTrades.reduce((s, t) => s + (t.unrealized_pnl ?? 0), 0)
 
   if (!todayTrades.length) return null
 
   return (
-    <div className="relative bg-white dark:bg-card-dark rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onTodayClick}
+      onKeyDown={(e) => e.key === 'Enter' && onTodayClick()}
+      className="relative bg-white dark:bg-card-dark rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden cursor-pointer hover:border-brand-400 dark:hover:border-brand-600 hover:shadow-md transition-all duration-150 group"
+      title="Click to filter today's trades"
+    >
       {/* Accent strip */}
       <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-brand-500 via-indigo-500 to-teal-500" />
 
@@ -163,7 +173,12 @@ function TodayStrip({ trades }: { trades: Trade[] }) {
         <div className="flex items-center gap-2 mb-4">
           <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
           <p className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-widest">Today's Session</p>
-          <span className="text-xs text-slate-400 dark:text-slate-500 ml-auto">{today}</span>
+          <span className="ml-auto flex items-center gap-1.5 text-xs text-slate-400 dark:text-slate-500 group-hover:text-brand-600 dark:group-hover:text-brand-400 transition-colors">
+            {today}
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 opacity-0 group-hover:opacity-100 transition-opacity" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polyline points="9 18 15 12 9 6" />
+            </svg>
+          </span>
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
@@ -172,8 +187,8 @@ function TodayStrip({ trades }: { trades: Trade[] }) {
             { label: 'Open Positions', value: openTrades.length.toString(), color: 'text-amber-600 dark:text-amber-400' },
             {
               label: 'Realized P&L',
-              value: formatPnl(todayPnl),
-              color: todayPnl >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-500 dark:text-red-400',
+              value: formatPnl(realizedPnl),
+              color: realizedPnl >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-500 dark:text-red-400',
             },
             {
               label: 'Unrealized P&L',
@@ -222,6 +237,7 @@ export default function ReportsPage() {
   const [tab, setTab]                     = useState<Tab>('overview')
   const [selectedTrade, setSelectedTrade] = useState<Trade | null>(null)
   const [lastRefresh, setLastRefresh]     = useState<Date>(new Date())
+  const today = new Date().toISOString().split('T')[0]
 
   const fetchTrades = useCallback(async (showSyncing = false) => {
     if (showSyncing) setSyncing(true)
@@ -253,20 +269,18 @@ export default function ReportsPage() {
   // ── Client-side filtering ─────────────────────────────────────────────────
 
   const filteredTrades = useMemo(() => allTrades.filter((t) => {
-    if (filters.status !== 'ALL' && t.status !== filters.status) return false
+    // Status filter: map UI values to actual API status values
+    if (filters.status !== 'ALL') {
+      if (filters.status === 'CLOSED' && t.status !== 'CLOSED') return false
+      if (filters.status === 'OPEN'   && t.status === 'CLOSED') return false
+    }
     if (filters.groupName === 'Manual' && t.group_name && !MANUAL_CODES.has(t.group_name)) return false
     if (filters.symbolSearch) {
       const q = filters.symbolSearch.toUpperCase()
       if (!t.symbol_name.toUpperCase().includes(q) && !t.group_name?.toUpperCase().includes(q)) return false
     }
-    if (filters.dateFrom) {
-      const d = new Date(t.first_placed_time)
-      if (d < new Date(filters.dateFrom)) return false
-    }
-    if (filters.dateTo) {
-      const to = new Date(filters.dateTo); to.setHours(23, 59, 59, 999)
-      if (new Date(t.first_placed_time) > to) return false
-    }
+    // Date filtering is handled server-side by the API (fromDate/toDate params).
+    // Client-side date filtering is intentionally skipped to avoid UTC/IST timezone mismatch.
     return true
   }), [allTrades, filters])
 
@@ -361,7 +375,12 @@ export default function ReportsPage() {
           <SummaryCards stats={stats} loading={loading} />
 
           {/* Today's strip */}
-          {!loading && <TodayStrip trades={allTrades} />}
+          {!loading && (
+            <TodayStrip
+              trades={allTrades}
+              onTodayClick={() => updateFilters({ dateFrom: today, dateTo: today })}
+            />
+          )}
 
           {/* ── Overview ── */}
           {tab === 'overview' && (

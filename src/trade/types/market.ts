@@ -63,3 +63,16 @@ export const SYMBOLS: TradeSymbol[] = [
 export function getSymbol(code: string): TradeSymbol {
   return SYMBOLS.find((s) => s.code === code) ?? SYMBOLS[0]
 }
+
+/** What a chart panel renders — an index OR an option strike. */
+export interface ChartSymbol {
+  key: string          // marketStore key + tick key (index code or option symbol)
+  candleSymbol: string // /data/candle symbol
+  display: string
+  kind: 'INDEX' | 'OPTION'
+}
+
+export function indexChartSymbol(code: string): ChartSymbol {
+  const s = getSymbol(code)
+  return { key: s.code, candleSymbol: s.candleSymbol, display: s.display, kind: 'INDEX' }
+}

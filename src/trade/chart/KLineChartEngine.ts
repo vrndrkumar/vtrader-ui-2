@@ -29,9 +29,10 @@ function styles(dark: boolean) {
         high: { color: text }, low: { color: text },
         last: { line: { style: 'dashed' }, text: { color: '#ffffff' } },
       },
-      tooltip: { text: { color: text }, rect: { color: 'transparent' } },
+      // Push the OHLC legend below our own symbol overlay (avoids overlap).
+      tooltip: { offsetLeft: 8, offsetTop: 26, offsetRight: 8, text: { color: text, size: 11 }, rect: { color: 'transparent' } },
     },
-    indicator: { tooltip: { text: { color: text } } },
+    indicator: { tooltip: { offsetLeft: 8, offsetTop: 26, text: { color: text, size: 11 } } },
     xAxis: { axisLine: { color: axis }, tickText: { color: text }, tickLine: { color: axis } },
     yAxis: { axisLine: { color: axis }, tickText: { color: text }, tickLine: { color: axis } },
     crosshair: {

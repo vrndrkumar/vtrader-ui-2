@@ -1,8 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { clsx } from 'clsx'
 import { useChartStore } from '../store/chartStore'
 import { useQuote } from '../store/marketStore'
 import { useConnectionState } from '../hooks/useConnectionState'
+import { isMarketOpen } from '../utils/marketStatus'
+import { BrokerSelector } from '@/components/broker/BrokerSelector'
 import { SYMBOLS, getSymbol } from '../types/market'
 
 function fmt(n: number | undefined): string {
@@ -15,9 +17,10 @@ export function TopBar() {
   const quote = useQuote(symbolCode)
   const conn = useConnectionState()
   const [open, setOpen] = useState(false)
+  const [marketOpen, setMarketOpen] = useState(isMarketOpen())
+  useEffect(() => { const t = setInterval(() => setMarketOpen(isMarketOpen()), 30_000); return () => clearInterval(t) }, [])
 
-  const live = conn === 'open'
-  const connecting = conn === 'connecting' || conn === 'reconnecting'
+  const status: 'LIVE' | 'CONNECTING' | 'CLOSED' = !marketOpen ? 'CLOSED' : conn === 'open' ? 'LIVE' : 'CONNECTING'
 
   const sym = getSymbol(symbolCode)
   const up = (quote?.chg ?? 0) >= 0
@@ -61,15 +64,17 @@ export function TopBar() {
 
       <span className={clsx(
         'flex items-center gap-1.5 text-[10px] font-semibold px-2 py-1 rounded-md border',
-        live ? 'bg-green-50 text-green-600 border-green-200 dark:bg-green-900/20 dark:border-green-800'
-          : connecting ? 'bg-amber-50 text-amber-600 border-amber-200 dark:bg-amber-900/20 dark:border-amber-800'
+        status === 'LIVE' ? 'bg-green-50 text-green-600 border-green-200 dark:bg-green-900/20 dark:border-green-800'
+          : status === 'CONNECTING' ? 'bg-amber-50 text-amber-600 border-amber-200 dark:bg-amber-900/20 dark:border-amber-800'
             : 'bg-slate-100 text-slate-500 border-slate-200 dark:bg-white/10 dark:border-slate-700',
       )}>
-        <span className={clsx('h-1.5 w-1.5 rounded-full', live ? 'bg-green-500' : connecting ? 'bg-amber-500 animate-pulse' : 'bg-slate-400')} />
-        {live ? 'LIVE' : connecting ? 'CONNECTING' : 'SIM'}
+        <span className={clsx('h-1.5 w-1.5 rounded-full', status === 'LIVE' ? 'bg-green-500' : status === 'CONNECTING' ? 'bg-amber-500 animate-pulse' : 'bg-slate-400')} />
+        {status === 'LIVE' ? 'Live' : status === 'CONNECTING' ? 'Connecting' : 'Closed'}
       </span>
 
-      <div className="ml-auto text-xs text-slate-400">Index spot · not tradable — trade from a strike chart</div>
+      <div className="ml-auto">
+        <BrokerSelector />
+      </div>
     </header>
   )
 }

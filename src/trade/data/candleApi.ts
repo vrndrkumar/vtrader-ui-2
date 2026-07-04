@@ -26,11 +26,16 @@ const FREQUENCY: Record<Timeframe, string> = {
 const DEMO_FROM = '2026-05-01'
 const DEMO_TO = '2026-05-31'
 
+export type CandleKind = 'INDEX' | 'OPTION'
+
 const fmt = (d: Date) => d.toISOString().slice(0, 10)
 
-function defaultRange(tf: Timeframe): { from: string; to: string } {
+function defaultRange(tf: Timeframe, kind: CandleKind): { from: string; to: string } {
   const to = new Date()
-  const days = tf === 'D' ? 365 : tf === '60' || tf === '30' ? 60 : 20
+  // Options only have data since the contract listed → cap at ~2 months.
+  const days = kind === 'OPTION'
+    ? 60
+    : tf === 'D' ? 365 : tf === '60' || tf === '30' ? 60 : 20
   return { from: fmt(new Date(to.getTime() - days * 864e5)), to: fmt(to) }
 }
 
@@ -114,34 +119,40 @@ function parse(raw: unknown): Candle[] {
 const cache = new Map<string, Candle[]>()
 const inFlight = new Map<string, Promise<Candle[]>>()
 
-function fetchRange(symbol: TradeSymbol, tf: Timeframe, from: string, to: string): Promise<Candle[]> {
+function fetchRange(candleSymbol: string, tf: Timeframe, from: string, to: string): Promise<Candle[]> {
   return schedule(() =>
     axiosPrivate
       .get('/data/candle', {
-        params: { userId: CANDLE_USER_ID, brokerName: CANDLE_BROKER, symbol: symbol.candleSymbol, from, to, frequency: FREQUENCY[tf] },
+        params: { userId: CANDLE_USER_ID, brokerName: CANDLE_BROKER, symbol: candleSymbol, from, to, frequency: FREQUENCY[tf] },
       })
       .then((res) => parse(res.data)),
   )
 }
 
-async function load(symbol: TradeSymbol, tf: Timeframe, key: string): Promise<Candle[]> {
-  const { from, to } = defaultRange(tf)
-  let candles = await fetchRange(symbol, tf, from, to).catch(() => [] as Candle[])
-  if (!candles.length) candles = await fetchRange(symbol, tf, DEMO_FROM, DEMO_TO).catch(() => [] as Candle[])
+async function load(candleSymbol: string, tf: Timeframe, kind: CandleKind, key: string): Promise<Candle[]> {
+  const { from, to } = defaultRange(tf, kind)
+  let candles = await fetchRange(candleSymbol, tf, from, to).catch(() => [] as Candle[])
+  // Demo fallback only for indices (options have recent-only data).
+  if (!candles.length && kind === 'INDEX') candles = await fetchRange(candleSymbol, tf, DEMO_FROM, DEMO_TO).catch(() => [] as Candle[])
   if (candles.length) cache.set(key, candles)
   return candles
 }
 
-export async function getCandles(symbol: TradeSymbol, tf: Timeframe): Promise<Candle[]> {
-  const key = `${symbol.code}:${tf}`
+/** Historical candles for ANY symbol (index or option strike). */
+export async function getCandlesBySymbol(candleSymbol: string, tf: Timeframe, kind: CandleKind = 'INDEX'): Promise<Candle[]> {
+  const key = `${candleSymbol}:${tf}`
   const cached = cache.get(key)
   if (cached?.length) return cached
   const existing = inFlight.get(key)
   if (existing) return existing
 
-  const p = load(symbol, tf, key).finally(() => inFlight.delete(key))
+  const p = load(candleSymbol, tf, kind, key).finally(() => inFlight.delete(key))
   inFlight.set(key, p)
   return p
+}
+
+export async function getCandles(symbol: TradeSymbol, tf: Timeframe): Promise<Candle[]> {
+  return getCandlesBySymbol(symbol.candleSymbol, tf, 'INDEX')
 }
 
 export function clearCandleCache() {

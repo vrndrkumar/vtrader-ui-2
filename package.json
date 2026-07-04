@@ -18,6 +18,7 @@
     "react-dom": "^18.3.1",
     "react-hook-form": "^7.52.1",
     "react-hot-toast": "^2.4.1",
+    "react-resizable-panels": "^4.12.1",
     "react-router-dom": "^6.25.1",
     "recharts": "^3.9.1",
     "tailwind-merge": "^2.4.0",

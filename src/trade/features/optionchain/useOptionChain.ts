@@ -1,29 +1,38 @@
 import { useEffect, useMemo, useSyncExternalStore } from 'react'
 import { useQuote } from '../../store/marketStore'
-import { buildOptionChain } from '../../data/optionChainMock'
 import { realtime } from '../../data/realtime/realtimeService'
-import { getExpiries, getExpiryVersion, getStrikeRow, hasLiveData, subscribeExpiry } from '../../data/realtime/optionChainCache'
-import type { OptionChain } from '../../types/options'
+import {
+  getExpiries, getExpiryVersion, getSortedStrikes, getStrikeRow, subscribeExpiry, subscribeIndex,
+  type OptionContract,
+} from '../../data/realtime/optionChainCache'
+import type { OcSide, OptionChain } from '../../types/options'
 
-const chgPct = (ltp: number, open: number) => (open ? +(((ltp - open) / open) * 100).toFixed(0) : 0)
+function sideFrom(c: OptionContract): OcSide {
+  return {
+    ltp: c.ltp,
+    ltpChgPct: c.openLtp ? +(((c.ltp - c.openLtp) / c.openLtp) * 100).toFixed(0) : 0,
+    oi: c.oi, oiChgPct: c.oiChg, iv: c.iv, // undefined until the feed carries them
+  }
+}
 
-/** Best-effort map of a UI expiry label to the live feed's expiry key. */
-function resolveFeedExpiry(index: string, label: string): string {
-  const live = getExpiries(index)
-  if (!live.length) return label
-  const norm = label.replace(/\s/g, '').toUpperCase().slice(0, 5)
-  return live.find((e) => e.toUpperCase().startsWith(norm)) ?? live[0]
+function buildLiveChain(index: string, expiry: string, spot: number, spotChg: number, spotChgPct: number, step: number): OptionChain {
+  const atm = spot > 0 ? Math.round(spot / step) * step : 0
+  const strikes = expiry ? getSortedStrikes(index, expiry) : []
+  const rows = strikes.map((strike) => {
+    const row = getStrikeRow(index, expiry, strike)
+    return { strike, call: row?.CE ? sideFrom(row.CE) : undefined, put: row?.PE ? sideFrom(row.PE) : undefined }
+  })
+  // Markers (Max Pain / OI support/resistance) require OI, which the feed does
+  // not yet carry — set to -1 so nothing false is highlighted.
+  return { symbolCode: index, expiry, spot, spotChg, spotChgPct, atm, maxPain: -1, oiSupport: -1, oiResistance: -1, rows }
 }
 
 /**
- * Live option chain for an index+expiry.
- *  - Subscribes to the realtime channels (ref-counted; safe across mounts).
- *  - Base ladder + OI/IV come from the mock generator (feed lacks OI/IV) so the
- *    grid stays complete; LTP / change% are overlaid from the live cache when
- *    present. Falls back entirely to mock when there's no live data.
- *  - Re-renders only when this expiry's rAF-batched version bumps.
+ * Live option chain for an index, built ONLY from the realtime cache (live feed
+ * or last persisted snapshot). No mock/synthetic data. Returns the chain plus
+ * the list of expiries the feed has actually delivered.
  */
-export function useOptionChain(symbolCode: string, expiryLabel: string): OptionChain {
+export function useLiveOptionChain(symbolCode: string, expiry: string): { chain: OptionChain; expiries: string[] } {
   useEffect(() => {
     realtime.start()
     const u1 = realtime.subscribeOptionChain(symbolCode)
@@ -33,30 +42,29 @@ export function useOptionChain(symbolCode: string, expiryLabel: string): OptionC
 
   const q = useQuote(symbolCode)
   const step = symbolCode === 'SENSEX' ? 100 : 50
-  const spot = q?.ltp ?? (symbolCode === 'SENSEX' ? 77000 : 24100)
-  const chg = q?.chg ?? 0
-  const atm = Math.round(spot / step) * step
-  const feedExpiry = resolveFeedExpiry(symbolCode, expiryLabel)
+  const spot = q?.ltp ?? 0
+  const spotChg = q?.chg ?? 0
+  const spotChgPct = q?.chgPct ?? 0
 
+  const expiriesKey = useSyncExternalStore(
+    (cb) => subscribeIndex(symbolCode, cb),
+    () => getExpiries(symbolCode).join('|'),
+    () => '',
+  )
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const base = useMemo(() => buildOptionChain(symbolCode, spot, chg, expiryLabel), [symbolCode, atm, expiryLabel])
+  const expiries = useMemo(() => getExpiries(symbolCode), [symbolCode, expiriesKey])
 
   const version = useSyncExternalStore(
-    (cb) => subscribeExpiry(symbolCode, feedExpiry, cb),
-    () => getExpiryVersion(symbolCode, feedExpiry),
+    (cb) => subscribeExpiry(symbolCode, expiry || '', cb),
+    () => getExpiryVersion(symbolCode, expiry || ''),
     () => 0,
   )
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  return useMemo(() => {
-    if (!hasLiveData(symbolCode, feedExpiry)) return base
-    const rows = base.rows.map((r) => {
-      const live = getStrikeRow(symbolCode, feedExpiry, r.strike)
-      if (!live) return r
-      const call = live.CE ? { ...r.call, ltp: live.CE.ltp, ltpChgPct: chgPct(live.CE.ltp, live.CE.openLtp) } : r.call
-      const put = live.PE ? { ...r.put, ltp: live.PE.ltp, ltpChgPct: chgPct(live.PE.ltp, live.PE.openLtp) } : r.put
-      return { ...r, call, put }
-    })
-    return { ...base, rows }
-  }, [base, version, feedExpiry, symbolCode])
+  const chain = useMemo(
+    () => buildLiveChain(symbolCode, expiry, spot, spotChg, spotChgPct, step),
+    [symbolCode, expiry, version, spot, spotChg, spotChgPct, step],
+  )
+
+  return { chain, expiries }
 }

@@ -1,13 +1,15 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
 import { clsx } from 'clsx'
 import { useChartStore } from '../store/chartStore'
 import { useQuote } from '../store/marketStore'
 import { SYMBOLS, getSymbol } from '../types/market'
-import { EXPIRIES, type OptType, type Side } from '../types/options'
+import { type OptType, type Side } from '../types/options'
 import { OptionChainTable } from '../features/optionchain/OptionChainTable'
-import { useOptionChain } from '../features/optionchain/useOptionChain'
+import { useLiveOptionChain } from '../features/optionchain/useOptionChain'
 import { useWatchlistStore } from '../store/watchlistStore'
+import { applySymbol } from '../store/chartLayoutStore'
+import { placeOrder } from '@/services/orders/placeOrder'
 import type { PanelKey } from './LeftRail'
 
 // ── Watchlist ────────────────────────────────────────────────────────────────
@@ -90,20 +92,29 @@ function Watchlist() {
 
 function OptionChainPanel() {
   const symbolCode = useChartStore((s) => s.symbolCode)
-  const [expiry, setExpiry] = useState(EXPIRIES[0])
-  const chain = useOptionChain(symbolCode, expiry)
+  const [expiry, setExpiry] = useState('')
+  const { chain, expiries } = useLiveOptionChain(symbolCode, expiry)
   const addWatch = useWatchlistStore((s) => s.add)
+
+  useEffect(() => { setExpiry('') }, [symbolCode])
+  useEffect(() => { if (!expiry && expiries.length) setExpiry(expiries[0]) }, [expiries, expiry])
+
   const onAction = (strike: number, optType: OptType, side: Side, ltp: number) =>
-    toast.success(`${side} ${symbolCode} ${strike} ${optType} @ ${ltp.toFixed(2)} (simulated)`)
+    placeOrder({ instrument: `${symbolCode} ${strike} ${optType}`, underlying: symbolCode, side, ltp, orderType: 'MARKET' })
   const onWatch = (strike: number, optType: OptType, ltp: number) => {
     addWatch({ id: `${symbolCode}_${expiry}_${optType}_${strike}`, symbol: `${symbolCode}_${expiry.replace(/\s/g, '')}_${optType}_${strike}`, display: `${symbolCode} ${strike} ${optType}`, ltp })
     toast.success('Added to watchlist')
   }
   return (
     <OptionChainTable
-      chain={chain} compact expiry={expiry} onExpiry={setExpiry}
+      chain={chain} expiries={expiries} compact expiry={expiry} onExpiry={setExpiry}
       onAction={onAction} onWatch={onWatch}
-      onChart={(strike, optType) => toast(`${symbolCode} ${strike} ${optType} chart — soon`)}
+      onChart={(strike, optType) => applySymbol({
+        key: `${symbolCode}_${expiry}_${optType}_${strike}`,
+        candleSymbol: `${symbolCode}_${expiry}_${optType}_${strike}`,
+        display: `${symbolCode} ${strike} ${optType}`,
+        kind: 'OPTION',
+      })}
     />
   )
 }

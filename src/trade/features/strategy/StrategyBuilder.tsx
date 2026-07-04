@@ -1,15 +1,16 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
 import { clsx } from 'clsx'
 import { useChartStore } from '../../store/chartStore'
 import { useStrategyStore } from '../../store/strategyStore'
 import { useWatchlistStore } from '../../store/watchlistStore'
 import { OptionChainTable } from '../optionchain/OptionChainTable'
-import { useOptionChain } from '../optionchain/useOptionChain'
+import { useLiveOptionChain } from '../optionchain/useOptionChain'
 import { computePayoff } from './payoff'
 import { PayoffChart } from './PayoffChart'
 import { buildPreset, PRESETS, type PresetName } from './presets'
-import { EXPIRIES, type OptType, type Side, type StrategyLeg } from '../../types/options'
+import { type OptType, type Side, type StrategyLeg } from '../../types/options'
+import type { ChartSymbol } from '../../types/market'
 
 function inr(n: number | null): string {
   if (n === null) return 'Unlimited'
@@ -20,10 +21,12 @@ function inr(n: number | null): string {
 
 type Tab = 'strategy' | 'positions' | 'orders'
 
-export function StrategyBuilder() {
+export function StrategyBuilder({ onOpenStrikeChart }: { onOpenStrikeChart?: (cs: ChartSymbol) => void }) {
   const symbolCode = useChartStore((s) => s.symbolCode)
-  const [expiry, setExpiry] = useState(EXPIRIES[0])
-  const chain = useOptionChain(symbolCode, expiry)
+  const [expiry, setExpiry] = useState('')
+  const { chain, expiries } = useLiveOptionChain(symbolCode, expiry)
+  useEffect(() => { setExpiry('') }, [symbolCode])
+  useEffect(() => { if (!expiry && expiries.length) setExpiry(expiries[0]) }, [expiries, expiry])
   const step = symbolCode === 'SENSEX' ? 100 : 50
 
   const { legs, product, sameQty, addFromChain, removeLeg, updateLeg, clear, setProduct, setSameQty, setLegs } = useStrategyStore()
@@ -65,7 +68,13 @@ export function StrategyBuilder() {
     <div className="flex h-full min-h-0">
       {/* Option chain (left) */}
       <div className="w-[360px] shrink-0 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-card-dark">
-        <OptionChainTable chain={chain} expiry={expiry} onExpiry={setExpiry} onAction={onAction} onWatch={onWatch} onChart={() => { /* strike chart — Phase 3 */ }} />
+        <OptionChainTable chain={chain} expiries={expiries} expiry={expiry} onExpiry={setExpiry} onAction={onAction} onWatch={onWatch}
+          onChart={(strike, optType) => onOpenStrikeChart?.({
+            key: `${symbolCode}_${expiry}_${optType}_${strike}`,
+            candleSymbol: `${symbolCode}_${expiry}_${optType}_${strike}`,
+            display: `${symbolCode} ${strike} ${optType}`,
+            kind: 'OPTION',
+          })} />
       </div>
 
       {/* Strategy panel (right) */}
@@ -128,7 +137,7 @@ export function StrategyBuilder() {
                         </td>
                         <td className="px-2 py-2">
                           <select value={l.expiry} onChange={(e) => updateLeg(l.id, { expiry: e.target.value })} className="bg-slate-100 dark:bg-white/5 rounded-md px-2 py-1 text-xs outline-none">
-                            {EXPIRIES.map((e) => <option key={e}>{e}</option>)}
+                            {(expiries.length ? expiries : [l.expiry]).map((e) => <option key={e}>{e}</option>)}
                           </select>
                         </td>
                         <td className="px-2 py-2">

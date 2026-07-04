@@ -5,22 +5,36 @@
 
 import { wsManager, type ConnState } from '../ws/WebSocketManager'
 import {
-  indexTickChannel, optionChainChannel, isIndexTickChannel, isOptionChainChannel,
-  type IndexTickPayload, type OptionChainPayload,
+  indexTickChannel, optionChainChannel, symbolTickChannel,
+  isIndexTickChannel, isOptionChainChannel, isSymbolTickChannel,
+  type IndexTickPayload, type OptionChainPayload, type SymbolTickPayload,
 } from '../ws/messages'
 import { applyOptionUpdate, exportSnapshot, importSnapshot } from './optionChainCache'
 import { loadSnapshot, saveSnapshot, todayStamp, type RtSnapshot } from './persistence'
+import { getDailyMarks } from './dailyMarks'
 import { useMarketStore } from '../../store/marketStore'
 
 const SAVE_INTERVAL_MS = 5_000
 
 const lastTickTs = new Map<string, number>()          // index -> last exchange_timestamp
-const openLtp = new Map<string, number>()             // index -> session-open ltp (for change%)
+const prevClose = new Map<string, number>()           // index -> previous session close (change% baseline)
 const lastTicks: Record<string, { ltp: number; ts: number }> = {}
 
 let started = false
 let dirty = false
 let saveTimer: ReturnType<typeof setInterval> | undefined
+
+/** Push an index quote with change measured against the previous session close. */
+function emitQuote(index: string, ltp: number, ts: number, bid?: number, ask?: number) {
+  const base = prevClose.get(index)
+  const chg = base != null ? ltp - base : 0
+  const chgPct = base ? (chg / base) * 100 : 0
+  useMarketStore.getState().setQuote({
+    key: index, index, ltp,
+    chg: +chg.toFixed(2), chgPct: +chgPct.toFixed(2),
+    bid, ask, ts, sim: false,
+  })
+}
 
 function handleIndexTick(p: IndexTickPayload) {
   const ts = Number(p.exchange_timestamp) || 0
@@ -28,23 +42,51 @@ function handleIndexTick(p: IndexTickPayload) {
   const prev = lastTickTs.get(p.index) ?? 0
   if (ts && ts <= prev) return // dedup / out-of-order
   lastTickTs.set(p.index, ts)
-
-  if (!openLtp.has(p.index)) openLtp.set(p.index, p.ltp)
-  const open = openLtp.get(p.index)!
-  const chg = p.ltp - open
   lastTicks[p.index] = { ltp: p.ltp, ts }
   dirty = true
+  emitQuote(p.index, p.ltp, ts || Date.now(), p.bidPrice, p.askPrice)
+}
 
-  useMarketStore.getState().setQuote({
-    key: p.index, index: p.index, ltp: p.ltp,
-    chg: +chg.toFixed(2), chgPct: +((chg / (open || 1)) * 100).toFixed(2),
-    bid: p.bidPrice, ask: p.askPrice, ts: ts || Date.now(), sim: false,
-  })
+/**
+ * Fetch previous/last session closes from real candles so:
+ *  - change% is measured vs the previous close, and
+ *  - when the market is closed with no live tick, the last real close is shown
+ *    (never a fabricated value).
+ */
+async function primeIndex(index: string) {
+  if (prevClose.has(index)) return
+  const marks = await getDailyMarks(index, 'INDEX')
+  if (!marks) return
+  prevClose.set(index, marks.prevClose)
+  const t = lastTicks[index]
+  emitQuote(index, t?.ltp ?? marks.lastClose, t?.ts ?? Date.now())
+}
+
+/** Same as primeIndex but for an option strike symbol (2-month candle range). */
+async function primeSymbol(symbol: string) {
+  if (prevClose.has(symbol)) return
+  const marks = await getDailyMarks(symbol, 'OPTION')
+  if (!marks) return
+  prevClose.set(symbol, marks.prevClose)
+  const t = lastTicks[symbol]
+  emitQuote(symbol, t?.ltp ?? marks.lastClose, t?.ts ?? Date.now())
+}
+
+function handleSymbolTick(p: SymbolTickPayload) {
+  const ts = Number(p.exchange_timestamp) || 0
+  if (!p.symbol || !Number.isFinite(p.ltp)) return
+  const prev = lastTickTs.get(p.symbol) ?? 0
+  if (ts && ts <= prev) return // dedup / out-of-order
+  lastTickTs.set(p.symbol, ts)
+  lastTicks[p.symbol] = { ltp: p.ltp, ts }
+  dirty = true
+  emitQuote(p.symbol, p.ltp, ts || Date.now(), p.bidPrice, p.askPrice)
 }
 
 function handleMessage(channel: string, payload: unknown) {
   if (isIndexTickChannel(channel)) handleIndexTick(payload as IndexTickPayload)
   else if (isOptionChainChannel(channel)) { applyOptionUpdate(payload as OptionChainPayload); dirty = true }
+  else if (isSymbolTickChannel(channel)) handleSymbolTick(payload as SymbolTickPayload)
 }
 
 function buildSnapshot(): RtSnapshot {
@@ -59,8 +101,7 @@ async function restore() {
   for (const [index, t] of Object.entries(snap.ticks ?? {})) {
     lastTicks[index] = t
     lastTickTs.set(index, t.ts)
-    openLtp.set(index, t.ltp)
-    useMarketStore.getState().setQuote({ key: index, index, ltp: t.ltp, chg: 0, chgPct: 0, ts: t.ts, sim: false })
+    emitQuote(index, t.ltp, t.ts) // change% corrected once primeIndex() loads prevClose
   }
 }
 
@@ -85,12 +126,20 @@ export const realtime = {
 
   /** Ref-counted server subscription for an index's tick stream. */
   subscribeIndexTick(index: string): () => void {
+    void primeIndex(index) // load previous-close baseline + last real price
     return wsManager.subscribeChannel(indexTickChannel(index))
   },
 
   /** Ref-counted server subscription for an index's option-chain stream. */
   subscribeOptionChain(index: string): () => void {
     return wsManager.subscribeChannel(optionChainChannel(index))
+  },
+
+  /** Ref-counted server subscription for a single symbol's tick stream
+   * (equities, option strikes, …). Reusable by any module. */
+  subscribeSymbolTick(symbol: string): () => void {
+    void primeSymbol(symbol)
+    return wsManager.subscribeChannel(symbolTickChannel(symbol))
   },
 
   onState(l: (s: ConnState) => void): () => void { return wsManager.onState(l) },
