@@ -32,7 +32,7 @@ function WatchRow({ code, display, active, onClick }: { code: string; display: s
       <div className="text-right">
         <p className="text-sm font-semibold tabular-nums text-slate-800 dark:text-slate-100">{q ? q.ltp.toFixed(2) : '—'}</p>
         <p className={clsx('text-[11px] font-medium tabular-nums', up ? 'text-green-600' : 'text-red-600')}>
-          {q ? `${up ? '+' : ''}${q.chg?.toFixed(2)} (${up ? '+' : ''}${q.chgPct?.toFixed(2)}%)` : '—'}
+          {q?.chg != null ? `${up ? '+' : ''}${q.chg.toFixed(2)} (${up ? '+' : ''}${q.chgPct?.toFixed(2)}%)` : q ? 'live' : '—'}
         </p>
       </div>
     </button>

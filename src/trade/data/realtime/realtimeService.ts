@@ -26,14 +26,11 @@ let saveTimer: ReturnType<typeof setInterval> | undefined
 
 /** Push an index quote with change measured against the previous session close. */
 function emitQuote(index: string, ltp: number, ts: number, bid?: number, ask?: number) {
+  // Change is undefined (→ shown as "--") until the previous close is known.
   const base = prevClose.get(index)
-  const chg = base != null ? ltp - base : 0
-  const chgPct = base ? (chg / base) * 100 : 0
-  useMarketStore.getState().setQuote({
-    key: index, index, ltp,
-    chg: +chg.toFixed(2), chgPct: +chgPct.toFixed(2),
-    bid, ask, ts, sim: false,
-  })
+  const chg = base != null ? +(ltp - base).toFixed(2) : undefined
+  const chgPct = base ? +(((ltp - base) / base) * 100).toFixed(2) : undefined
+  useMarketStore.getState().setQuote({ key: index, index, ltp, chg, chgPct, bid, ask, ts, sim: false })
 }
 
 function handleIndexTick(p: IndexTickPayload) {
