@@ -38,13 +38,19 @@ export function getStrategyIndices(config: StrategyConfig): string[] {
 /** Per-index lot counts for subscription */
 export type IndexLots = Partial<Record<string, number>>
 
-/** Payload to subscribe to a strategy */
+/** Payload to subscribe to a strategy — POST /strategy/subscribe */
 export interface SubscribeStrategyPayload {
-  strategyId: number
-  strategyCode: string
+  strategyName: string        // = StrategyConfig.strategyCode
   brokerName: string
-  lots: IndexLots
-  marginRequired: boolean
+  executionRule: ExecutionRule[]
+}
+
+/** Payload to edit a user strategy — POST /strategy/edit-strategy/:id */
+export interface EditStrategyPayload {
+  strategyName: string        // = UserStrategy.strategyName
+  brokerName: string
+  isEnabled?: boolean
+  executionRule: ExecutionRule[]
 }
 
 /** One entry in executionRule — per-symbol lot config */

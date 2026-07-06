@@ -1,5 +1,10 @@
 import { axiosPrivate } from './axios'
-import type { StrategyConfig, SubscribeStrategyPayload, UserStrategy } from '@/types/strategy'
+import type {
+  StrategyConfig,
+  SubscribeStrategyPayload,
+  EditStrategyPayload,
+  UserStrategy,
+} from '@/types/strategy'
 
 function toArray<T>(raw: unknown): T[] {
   if (Array.isArray(raw)) return raw as T[]
@@ -12,35 +17,46 @@ function toArray<T>(raw: unknown): T[] {
   return []
 }
 
-// GET /strategy/config-data
+// GET /strategy/config-data — all strategy templates
 export async function getStrategyConfigs(): Promise<StrategyConfig[]> {
   const { data } = await axiosPrivate.get('/strategy/config-data')
   return toArray<StrategyConfig>(data)
 }
 
-// GET /strategy/user-strategies
+// GET /strategy/user-strategies — all subscribed strategies for current user
 export async function getUserStrategies(): Promise<UserStrategy[]> {
   const { data } = await axiosPrivate.get('/strategy/user-strategies')
   return toArray<UserStrategy>(data)
 }
 
-// POST /strategy/subscribe  (body = subscribe payload)
-// TODO: confirm endpoint when API is available
+// GET /strategy/user-strategies/:strategyCode — single user strategy by code
+export async function getUserStrategyByCode(strategyCode: string): Promise<UserStrategy | null> {
+  try {
+    const { data } = await axiosPrivate.get(`/strategy/user-strategies/${encodeURIComponent(strategyCode)}`)
+    return data ?? null
+  } catch {
+    return null
+  }
+}
+
+// POST /strategy/subscribe
 export async function subscribeStrategy(payload: SubscribeStrategyPayload): Promise<UserStrategy> {
   const { data } = await axiosPrivate.post('/strategy/subscribe', payload)
   return data
 }
 
-// POST /strategy/edit-strategy  (body = full UserStrategy shape)
-// Used for: editing lots/broker, toggling deploy/undeploy (isEnabled)
-export async function editStrategy(payload: Partial<UserStrategy>): Promise<UserStrategy> {
-  const { data } = await axiosPrivate.post('/strategy/edit-strategy', payload)
+// POST /strategy/edit-strategy/:id — edit lots/broker/isEnabled on a subscribed strategy
+export async function editStrategy(id: number, payload: EditStrategyPayload): Promise<UserStrategy> {
+  const { data } = await axiosPrivate.post(`/strategy/edit-strategy/${id}`, payload)
   return data
 }
 
-// GET /strategy/unsubscribe?brokerName=X&strategyCode=Y
+// PUT /strategy/unsubscribe?brokerName=X&strategyCode=Y — fully remove a strategy
+// No body sent — matches curl --data '' (empty body, no Content-Type)
 export async function unsubscribeStrategy(brokerName: string, strategyCode: string): Promise<void> {
-  await axiosPrivate.get('/strategy/unsubscribe', {
+  await axiosPrivate({
+    method: 'put',
+    url: '/strategy/unsubscribe',
     params: { brokerName, strategyCode },
   })
 }

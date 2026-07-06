@@ -4,6 +4,8 @@ import { Modal } from '@/components/ui/Modal'
 import { Input } from '@/components/ui/Input'
 import { Button } from '@/components/ui/Button'
 import { LotInput } from '@/components/ui/LotInput'
+import { getIndexMaster } from '@/services/indexMasterCache'
+import { parseLot } from '@/types/indexMaster'
 import type { BrokerMaster, UserBroker, AddBrokerPayload, BrokerQuantity } from '@/types/broker'
 
 const FIXED_IMEI = 'abcde'
@@ -12,21 +14,16 @@ function vendorCode(broker: string, userId: string) {
   return broker.toUpperCase() === 'FINVASIA' ? `${userId}_U` : ''
 }
 
-// Hardcoded indices with lot sizes
-const INDICES = [
-  { symbol: 'NIFTY',     lot: 75  },
-  { symbol: 'BANKNIFTY', lot: 30  },
-  { symbol: 'FINNIFTY',  lot: 40  },
-  { symbol: 'SENSEX',    lot: 20  },
-  { symbol: 'BANKEX',    lot: 15  },
-  { symbol: 'STOCKS',    lot: 1   },
-]
-
-type QuantityMap = Record<string, number>
-
-function defaultQuantities(): QuantityMap {
-  return Object.fromEntries(INDICES.map(({ symbol, lot }) => [symbol, lot]))
+// Detect if the selected broker is a crypto/Delta broker
+function isCryptoBroker(brokerName: string) {
+  return (brokerName ?? '').toUpperCase().includes('DELTA')
 }
+
+// Only these symbols are shown for crypto brokers
+const CRYPTO_SYMBOLS = ['BTC', 'ETH']
+
+type IndexRow = { symbol: string; lot: number; exchange: string }
+type QuantityMap = Record<string, number>
 
 interface FormValues {
   brokerName: string
@@ -36,6 +33,7 @@ interface FormValues {
   apiKey: string
   secretKey: string
   twoFAKey: string
+  ipAddress: string
 }
 
 interface AddBrokerModalProps {
@@ -51,7 +49,13 @@ export function AddBrokerModal({
   open, onClose, onSubmit, brokerMasterList, editBroker, isFirstBroker,
 }: AddBrokerModalProps) {
   const isEdit = !!editBroker
-  const [quantities, setQuantities] = useState<QuantityMap>(defaultQuantities)
+
+  // All indices loaded from the API (cached after first call)
+  const [allIndices, setAllIndices] = useState<IndexRow[]>([])
+  const [indicesLoading, setIndicesLoading] = useState(true)
+
+  // Quantity values keyed by symbol
+  const [quantities, setQuantities] = useState<QuantityMap>({})
 
   const {
     register, handleSubmit, reset, control,
@@ -62,15 +66,38 @@ export function AddBrokerModal({
   const userId         = useWatch({ control, name: 'userId' })
   const vcHint         = vendorCode(selectedBroker ?? '', userId ?? '')
 
+  const isCrypto = isCryptoBroker(selectedBroker ?? '')
+
+  // Visible indices depend on broker type
+  const visibleIndices: IndexRow[] = isCrypto
+    ? allIndices.filter((i) => CRYPTO_SYMBOLS.includes(i.symbol))
+    : allIndices.filter((i) => !CRYPTO_SYMBOLS.includes(i.symbol))
+
+  // Load indices once on mount (uses module-level cache)
+  useEffect(() => {
+    getIndexMaster()
+      .then((list) => {
+        const rows: IndexRow[] = list
+          .map((m) => ({
+            symbol:   ((m.symbolCode ?? m.symbol_code) ?? '').toUpperCase(),
+            lot:      parseLot(m.lot),
+            exchange: (m.exchange ?? '').toUpperCase(),
+          }))
+          .filter((r) => r.symbol && r.lot > 0)
+        setAllIndices(rows)
+      })
+      .finally(() => setIndicesLoading(false))
+  }, [])
+
   // Reset form + quantities every time modal opens
   useEffect(() => {
     if (!open) return
 
     const existingQty = editBroker?.preferences?.quantity ?? {}
 
-    // Build quantity state: use saved value (snapped to lot) or 1 lot default
+    // Pre-fill quantities from allIndices (may be empty on first mount — back-fill below)
     const qty: QuantityMap = {}
-    INDICES.forEach(({ symbol, lot }) => {
+    allIndices.forEach(({ symbol, lot }) => {
       const saved = existingQty[symbol]
       qty[symbol] = saved
         ? Math.max(lot, Math.round(saved / lot) * lot)
@@ -83,20 +110,37 @@ export function AddBrokerModal({
       reset({
         brokerName: editBroker.brokerName,
         isActive:   editBroker.isActive,
-        userId:     info.userId    ?? '',
-        password:   info.password  ?? '',
-        apiKey:     info.apiKey    ?? '',
-        secretKey:  info.secretKey ?? '',
-        twoFAKey:   info.twoFAKey  ?? '',
+        userId:     info.userId     ?? '',
+        password:   info.password   ?? '',
+        apiKey:     info.apiKey     ?? '',
+        secretKey:  info.secretKey  ?? '',
+        twoFAKey:   info.twoFAKey   ?? '',
+        ipAddress:  info.IPAddress  ?? '',
       })
     } else {
       reset({
         brokerName: brokerMasterList[0]?.name ?? '',
         isActive:   true,
-        userId: '', password: '', apiKey: '', secretKey: '', twoFAKey: '',
+        userId: '', password: '', apiKey: '', secretKey: '', twoFAKey: '', ipAddress: '',
       })
     }
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // When allIndices loads asynchronously after the modal opened, back-fill missing keys
+  useEffect(() => {
+    if (!open || allIndices.length === 0) return
+    setQuantities((prev) => {
+      const next = { ...prev }
+      const existingQty = editBroker?.preferences?.quantity ?? {}
+      allIndices.forEach(({ symbol, lot }) => {
+        if (next[symbol] == null) {
+          const saved = existingQty[symbol]
+          next[symbol] = saved ? Math.max(lot, Math.round(saved / lot) * lot) : lot
+        }
+      })
+      return next
+    })
+  }, [allIndices, open]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const setQty = (symbol: string, value: number) =>
     setQuantities((prev) => ({ ...prev, [symbol]: value }))
@@ -104,7 +148,11 @@ export function AddBrokerModal({
   const handleClose = () => { if (!isSubmitting) onClose() }
 
   const onFormSubmit = async (values: FormValues) => {
-    const quantity: BrokerQuantity = { ...quantities }
+    // Only persist quantities for visible indices (relevant to this broker type)
+    const quantity: BrokerQuantity = {}
+    visibleIndices.forEach(({ symbol }) => {
+      quantity[symbol] = quantities[symbol] ?? 0
+    })
 
     const payload: AddBrokerPayload = {
       brokerName: values.brokerName,
@@ -117,6 +165,7 @@ export function AddBrokerModal({
         secretKey:  values.secretKey ?? '',
         twoFAKey:   values.twoFAKey,
         imei:       FIXED_IMEI,
+        ...(values.ipAddress ? { IPAddress: values.ipAddress } : {}),
       },
       preferences: {
         ...(editBroker?.preferences ?? {}),
@@ -187,6 +236,16 @@ export function AddBrokerModal({
               <Input label="2FA / TOTP Key" placeholder="TOTP secret key" error={errors.twoFAKey?.message}
                 {...register('twoFAKey', { required: 'Required' })} />
             </div>
+            {isEdit && editBroker?.brokerInfo?.IPAddress && (
+              <div className="col-span-2">
+                <Input
+                  label="IP Address"
+                  disabled
+                  readOnly
+                  {...register('ipAddress')}
+                />
+              </div>
+            )}
           </div>
 
           {vcHint && (
@@ -199,26 +258,43 @@ export function AddBrokerModal({
           )}
         </div>
 
-        {/* Default Quantities — hardcoded indices in one row */}
+        {/* Default Quantities — dynamic from Indices API */}
         <div>
-          <p className="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-4">
-            Default Quantities
-          </p>
+          <div className="flex items-center justify-between mb-4">
+            <p className="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
+              Default Quantities
+            </p>
+            {isCrypto && (
+              <span className="text-[10px] font-medium text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 px-2 py-0.5 rounded-full">
+                Crypto only (BTC / ETH)
+              </span>
+            )}
+          </div>
 
-          <div className="overflow-x-auto pb-1">
-            <div className="flex gap-3" style={{ minWidth: 'max-content' }}>
-              {INDICES.map(({ symbol, lot }) => (
-                <div key={symbol} style={{ width: 110 }}>
-                  <LotInput
-                    label={symbol}
-                    lotSize={lot}
-                    value={quantities[symbol] ?? lot}
-                    onChange={(v) => setQty(symbol, v)}
-                  />
-                </div>
+          {indicesLoading ? (
+            <div className="flex gap-3">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="h-16 w-28 rounded-xl bg-slate-100 dark:bg-slate-800 animate-pulse" />
               ))}
             </div>
-          </div>
+          ) : visibleIndices.length === 0 ? (
+            <p className="text-sm text-slate-400 dark:text-slate-500">No indices available</p>
+          ) : (
+            <div className="overflow-x-auto pb-1">
+              <div className="flex gap-3" style={{ minWidth: 'max-content' }}>
+                {visibleIndices.map(({ symbol, lot }) => (
+                  <div key={symbol} style={{ width: 110 }}>
+                    <LotInput
+                      label={symbol}
+                      lotSize={lot}
+                      value={quantities[symbol] ?? lot}
+                      onChange={(v) => setQty(symbol, v)}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Footer */}

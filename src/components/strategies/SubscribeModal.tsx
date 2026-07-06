@@ -5,7 +5,7 @@ import { getIndexMaster } from '@/services/indexMasterCache'
 import { parseLot } from '@/types/indexMaster'
 import type { IndexMaster } from '@/types/indexMaster'
 import type { UserBroker } from '@/types/broker'
-import type { StrategyConfig, UserStrategy, IndexLots } from '@/types/strategy'
+import type { StrategyConfig, UserStrategy, IndexLots, ExecutionRule } from '@/types/strategy'
 import { getStrategyIndices } from '@/types/strategy'
 import { clsx } from 'clsx'
 
@@ -72,17 +72,25 @@ function LotCountInput({
 
 // ── Main modal ────────────────────────────────────────────────────────────────
 export function SubscribeModal({ strategy, existing, onClose, onSuccess }: Props) {
-  const indices = getStrategyIndices(strategy)
   const isEdit = !!existing
+
+  // When editing, derive indices from the saved executionRule; otherwise from configData
+  const indices = isEdit && existing?.executionRule?.length
+    ? existing.executionRule.map((r) => r.symbol)
+    : getStrategyIndices(strategy)
 
   const [brokers, setBrokers]         = useState<UserBroker[]>([])
   const [indexMaster, setIndexMaster] = useState<IndexMaster[]>([])
   const [dataLoading, setDataLoading] = useState(true)
 
   // lot COUNT per index (not qty) — 0 means opt-out
+  // When editing: initialise from existing executionRule (number_lots per symbol)
   const [lots, setLots] = useState<IndexLots>(() => {
     const init: IndexLots = {}
-    indices.forEach((idx) => { init[idx] = existing?.lots?.[idx] ?? 1 })
+    indices.forEach((idx) => {
+      const rule = existing?.executionRule?.find((r) => r.symbol === idx)
+      init[idx] = rule?.number_lots ?? existing?.lots?.[idx] ?? 1
+    })
     return init
   })
 
@@ -93,9 +101,22 @@ export function SubscribeModal({ strategy, existing, onClose, onSuccess }: Props
   const [brokerOpen, setBrokerOpen] = useState(false)
   const brokerRef = useRef<HTMLDivElement>(null)
 
+  // marginBenefitRequired lives inside executionRule; read from first rule when editing
   const [marginRequired, setMarginRequired] = useState(
-    existing?.marginRequired ?? (strategy.configData?.marginRequired ?? false),
+    existing?.executionRule?.[0]?.marginBenefitRequired
+      ?? existing?.marginRequired
+      ?? (strategy.configData?.marginRequired ?? false),
   )
+
+  // partialBookingPercentage per index — editable, discrete steps 25/50/75/100
+  const [partialBooking, setPartialBooking] = useState<Record<string, number>>(() => {
+    const init: Record<string, number> = {}
+    indices.forEach((idx) => {
+      const rule = existing?.executionRule?.find((r) => r.symbol === idx)
+      init[idx] = rule?.partialBookingRule?.partialBookingPercentage ?? 100
+    })
+    return init
+  })
   const [termsAccepted, setTermsAccepted] = useState(false)
   const [loading, setLoading]             = useState(false)
   const [error, setError]                 = useState<string | null>(null)
@@ -155,17 +176,47 @@ export function SubscribeModal({ strategy, existing, onClose, onSuccess }: Props
     setError(null)
     try {
       await Promise.all(
-        selectedBrokers.map((brokerName) =>
-          isEdit && existing
-            ? editStrategy({ ...existing, brokerName, lots, marginRequired })
-            : subscribeStrategy({
-                strategyId: strategy.id,
-                strategyCode: strategy.strategyCode,
-                brokerName,
-                lots,
-                marginRequired,
-              }),
-        ),
+        selectedBrokers.map((brokerName) => {
+          if (isEdit && existing) {
+            // Build updated executionRule: merge new lot counts + marginBenefitRequired into existing rules
+            const updatedRules: ExecutionRule[] = indices.map((idx) => {
+              const existingRule = existing.executionRule?.find((r) => r.symbol === idx)
+              return {
+                symbol:               idx,
+                number_lots:          lots[idx] ?? existingRule?.number_lots ?? 1,
+                marginBenefitRequired: marginRequired,
+                active:               existingRule?.active               ?? true,
+                isRealTrading:        existingRule?.isRealTrading         ?? false,
+                traderType:           existingRule?.traderType            ?? 'SELLER',
+                lotChangeOnSL:        existingRule?.lotChangeOnSL         ?? { active: false, lotChangeQty: 1 },
+                partialBookingRule:   { partialBookingPercentage: partialBooking[idx] ?? 100 },
+              }
+            })
+            return editStrategy(existing.id, {
+              strategyName:  (existing.strategyName ?? strategy.strategyCode) as string,
+              brokerName,
+              isEnabled:     existing.isEnabled,
+              executionRule: updatedRules,
+            })
+          } else {
+            // Build fresh executionRule for new subscription
+            const executionRule: ExecutionRule[] = indices.map((idx) => ({
+              symbol:               idx,
+              number_lots:          lots[idx] ?? 1,
+              marginBenefitRequired: marginRequired,
+              active:               true,
+              isRealTrading:        false,
+              traderType:           'SELLER',
+              lotChangeOnSL:        { active: false, lotChangeQty: 1 },
+              partialBookingRule:   { partialBookingPercentage: partialBooking[idx] ?? 100 },
+            }))
+            return subscribeStrategy({
+              strategyName:  strategy.strategyCode,
+              brokerName,
+              executionRule,
+            })
+          }
+        }),
       )
       onSuccess()
     } catch (e: unknown) {
@@ -233,6 +284,49 @@ export function SubscribeModal({ strategy, existing, onClose, onSuccess }: Props
                 ))}
               </div>
             )}
+          </div>
+
+          {/* ── Partial Booking % per index ── */}
+          <div>
+            <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">
+              Partial Booking %
+            </p>
+            <div className="space-y-3">
+              {indices.map((idx) => {
+                const pct = partialBooking[idx] ?? 100
+                const trackPct = ((pct - 25) / 75) * 100
+                return (
+                  <div key={idx} className="bg-slate-50 dark:bg-white/[0.03] rounded-xl px-3 py-2.5 border border-slate-100 dark:border-slate-800">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">{idx}</span>
+                      <span className="text-[11px] font-bold text-slate-800 dark:text-slate-100 tabular-nums">{pct}%</span>
+                    </div>
+                    {/* Segmented selector 25 / 50 / 75 / 100 */}
+                    <div className="flex gap-1">
+                      {[25, 50, 75, 100].map((v) => (
+                        <button
+                          key={v}
+                          type="button"
+                          onClick={() => setPartialBooking((prev) => ({ ...prev, [idx]: v }))}
+                          className={clsx(
+                            'flex-1 py-1 rounded-lg text-[10px] font-semibold transition-colors',
+                            pct === v
+                              ? 'bg-blue-500 text-white'
+                              : 'bg-white dark:bg-white/5 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:border-blue-400 hover:text-blue-500',
+                          )}
+                        >
+                          {v}%
+                        </button>
+                      ))}
+                    </div>
+                    {/* Visual track */}
+                    <div className="mt-2 h-1 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
+                      <div className="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-500 transition-all duration-200" style={{ width: `${trackPct}%` }} />
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
           </div>
 
           {/* ── Broker Name (dropdown with multi-select checkboxes) ── */}

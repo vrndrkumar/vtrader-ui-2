@@ -1,6 +1,6 @@
-import { useCallback, useRef, useState } from 'react'
+import { useState } from 'react'
 import { clsx } from 'clsx'
-import type { StrategyConfig, UserStrategy, ExecutionRule } from '@/types/strategy'
+import type { StrategyConfig, UserStrategy, EditStrategyPayload } from '@/types/strategy'
 import { getStrategyIndices, STANDARD_INDICES, isUserStrategyDeployed } from '@/types/strategy'
 import { editStrategy, unsubscribeStrategy } from '@/api/strategy'
 
@@ -33,67 +33,33 @@ function statusBadge(subscribed: boolean, deployed: boolean) {
   return           { label: 'Subscribed',  cls: 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-800' }
 }
 
-// ── Partial booking slider ────────────────────────────────────────────────────
-function BookingSlider({ rules, userStrategy, onRefresh }: {
-  rules: ExecutionRule[]
-  userStrategy: UserStrategy
-  onRefresh: () => void
-}) {
-  const initial   = rules[0]?.partialBookingRule?.partialBookingPercentage ?? 100
-  const [pct, setPct]       = useState(initial)
-  const [saving, setSaving] = useState(false)
-  const timer               = useRef<ReturnType<typeof setTimeout>>()
+// ── Booking % display — read-only track in table cell (edit via modal) ────────
+const BOOKING_STEPS = [25, 50, 75, 100]
 
-  const handleChange = useCallback((val: number) => {
-    setPct(val)
-    clearTimeout(timer.current)
-    timer.current = setTimeout(async () => {
-      setSaving(true)
-      try {
-        const updatedRules = rules.map((r) => ({
-          ...r,
-          partialBookingRule: { ...r.partialBookingRule, partialBookingPercentage: val },
-        }))
-        await editStrategy({ ...userStrategy, executionRule: updatedRules })
-        onRefresh()
-      } catch {
-        setPct(initial)
-      } finally {
-        setSaving(false)
-      }
-    }, 600)
-  }, [rules, userStrategy, initial, onRefresh])
-
-  const trackPct = ((pct - 25) / 75) * 100
-
+function BookingCell({ pct }: { pct: number }) {
+  const trackFill = ((pct - 25) / 75) * 100
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-center justify-between">
-        <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">Partial Booking</span>
-        <span className={clsx('text-[11px] font-bold tabular-nums', saving ? 'text-slate-400' : 'text-slate-800 dark:text-slate-100')}>
-          {saving ? '…' : `${pct}%`}
-        </span>
-      </div>
-      <div className="relative h-5 flex items-center">
-        <div className="absolute inset-x-0 h-1.5 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
-          <div className="h-full rounded-full transition-all duration-150" style={{ width: `${trackPct}%`, background: 'linear-gradient(90deg,#3b82f6,#6366f1)' }} />
-        </div>
-        <input
-          type="range" min={25} max={100} step={25} value={pct}
-          onChange={(e) => handleChange(Number(e.target.value))}
-          className="absolute inset-x-0 w-full opacity-0 cursor-pointer h-5"
+    <div className="flex flex-col items-center gap-1 px-1">
+      {/* Step dots track */}
+      <div className="relative w-full h-1.5 rounded-full bg-slate-200 dark:bg-slate-700">
+        <div
+          className="absolute inset-y-0 left-0 rounded-full transition-all duration-200"
+          style={{ width: `${trackFill}%`, background: 'linear-gradient(90deg,#3b82f6,#6366f1)' }}
         />
-        <div className="absolute inset-x-0 flex justify-between pointer-events-none">
-          {[25, 50, 75, 100].map((v) => (
-            <div key={v} className={clsx('w-2 h-2 rounded-full border-2', pct >= v ? 'bg-blue-500 border-blue-500' : 'bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-600')} />
-          ))}
-        </div>
-      </div>
-      <div className="flex justify-between">
-        {[25, 50, 75, 100].map((v) => (
-          <span key={v} className={clsx('text-[9px] tabular-nums', pct === v ? 'font-bold text-blue-600 dark:text-blue-400' : 'text-slate-400 dark:text-slate-600')}>{v}%</span>
+        {BOOKING_STEPS.map((v, i) => (
+          <span
+            key={v}
+            className={clsx(
+              'absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-2 h-2 rounded-full border-2',
+              pct >= v ? 'bg-blue-500 border-blue-500' : 'bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-600',
+            )}
+            style={{ left: `${(i / 3) * 100}%` }}
+          />
         ))}
       </div>
+      <span className="text-[10px] font-bold tabular-nums text-blue-600 dark:text-blue-400">
+        {pct}%
+      </span>
     </div>
   )
 }
@@ -114,7 +80,13 @@ export function StrategyCard({ strategy, userStrategy, tabContext, onSubscribe, 
     if (!userStrategy || acting) return
     setActing(true)
     try {
-      await editStrategy({ ...userStrategy, isEnabled: false })
+      const payload: EditStrategyPayload = {
+        strategyName:  (userStrategy.strategyName ?? '') as string,
+        brokerName:    (userStrategy.brokerName   ?? '') as string,
+        isEnabled:     false,
+        executionRule: userStrategy.executionRule ?? [],
+      }
+      await editStrategy(userStrategy.id, payload)
       setConfirmUnsub(false)
       onRefresh()
     } catch { /* TODO: toast */ }
@@ -189,40 +161,65 @@ export function StrategyCard({ strategy, userStrategy, tabContext, onSubscribe, 
 
         {/* ── Subscribed: execution table ── */}
         {isSubscribed && rules.length > 0 ? (
-          <>
-            <div className="rounded-xl overflow-hidden border border-slate-100 dark:border-slate-800">
-              <div className="grid grid-cols-[1fr_36px_64px_52px] bg-slate-50 dark:bg-white/[0.03] px-3 py-1.5 border-b border-slate-100 dark:border-slate-800">
-                {['Symbol', 'Lots', 'Type', 'Mode'].map((h) => (
-                  <span key={h} className="text-[9px] font-semibold uppercase tracking-widest text-slate-400">{h}</span>
+          <div className="rounded-xl overflow-hidden border border-slate-100 dark:border-slate-800">
+            <table className="w-full border-collapse table-fixed">
+              <colgroup>
+                <col style={{ width: hasPartialBooking && !isTemplateTab ? '26%' : '32%' }} />
+                <col style={{ width: '11%' }} />
+                <col style={{ width: '20%' }} />
+                <col style={{ width: '17%' }} />
+                {hasPartialBooking && !isTemplateTab && <col style={{ width: '26%' }} />}
+              </colgroup>
+              <thead>
+                <tr className="bg-slate-50 dark:bg-white/[0.03] border-b border-slate-100 dark:border-slate-800">
+                  <th className="text-[9px] font-semibold uppercase tracking-widest text-slate-400 pl-3 pr-1 py-1.5 text-left">Symbol</th>
+                  <th className="text-[9px] font-semibold uppercase tracking-widest text-slate-400 px-1 py-1.5 text-center">Lots</th>
+                  <th className="text-[9px] font-semibold uppercase tracking-widest text-slate-400 px-1 py-1.5 text-center">Type</th>
+                  <th className="text-[9px] font-semibold uppercase tracking-widest text-slate-400 px-1 py-1.5 text-center">Mode</th>
+                  {hasPartialBooking && !isTemplateTab && (
+                    <th className="text-[9px] font-semibold uppercase tracking-widest text-slate-400 px-1 py-1.5 text-center">Partial Book %</th>
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {rules.map((rule, i) => (
+                  <tr key={i} className={i < rules.length - 1 ? 'border-b border-slate-50 dark:border-slate-800/60' : ''}>
+                    <td className="pl-3 pr-1 py-2 text-left">
+                      <span className="inline-block text-[11px] font-bold px-2 py-0.5 rounded-md text-white" style={{ background: `linear-gradient(90deg, ${c1}, ${c2})` }}>
+                        {rule.symbol}
+                      </span>
+                    </td>
+                    <td className="px-1 py-2 text-center text-xs font-bold text-slate-700 dark:text-slate-200 tabular-nums">
+                      {rule.number_lots}
+                    </td>
+                    <td className="px-1 py-2 text-center">
+                      <span className={clsx('inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded-md',
+                        rule.traderType === 'BUYER'  ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400' :
+                        rule.traderType === 'SELLER' ? 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400' :
+                        'bg-slate-100 dark:bg-slate-700 text-slate-400')}>
+                        {rule.traderType ?? '—'}
+                      </span>
+                    </td>
+                    <td className="px-1 py-2 text-center">
+                      <span className={clsx('inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded-md',
+                        rule.isRealTrading ? 'bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-400' : 'bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400')}>
+                        {rule.isRealTrading ? 'Live' : 'Paper'}
+                      </span>
+                    </td>
+                    {hasPartialBooking && !isTemplateTab && (
+                      <td className="px-1 py-2">
+                        {rule.partialBookingRule?.partialBookingPercentage != null ? (
+                          <BookingCell pct={rule.partialBookingRule.partialBookingPercentage} />
+                        ) : (
+                          <span className="block text-center text-[10px] text-slate-300 dark:text-slate-600">—</span>
+                        )}
+                      </td>
+                    )}
+                  </tr>
                 ))}
-              </div>
-              {rules.map((rule, i) => (
-                <div key={i} className={clsx('grid grid-cols-[1fr_36px_64px_52px] items-center px-3 py-2.5 gap-1', i < rules.length - 1 && 'border-b border-slate-50 dark:border-slate-800/60')}>
-                  <span className="text-[11px] font-bold px-2 py-0.5 rounded-md text-white w-fit" style={{ background: `linear-gradient(90deg, ${c1}, ${c2})` }}>
-                    {rule.symbol}
-                  </span>
-                  <span className="text-xs font-bold text-slate-700 dark:text-slate-200 tabular-nums">{rule.number_lots}</span>
-                  <span className={clsx('text-[10px] font-semibold px-1.5 py-0.5 rounded-md w-fit',
-                    rule.traderType === 'BUYER'  ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400' :
-                    rule.traderType === 'SELLER' ? 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400' :
-                    'bg-slate-100 dark:bg-slate-700 text-slate-400')}>
-                    {rule.traderType ?? '—'}
-                  </span>
-                  <span className={clsx('text-[10px] font-semibold px-1.5 py-0.5 rounded-md w-fit',
-                    rule.isRealTrading ? 'bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-400' : 'bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400')}>
-                    {rule.isRealTrading ? 'Live' : 'Paper'}
-                  </span>
-                </div>
-              ))}
-            </div>
-
-            {/* Partial booking slider — visible on My Strategies + Deployed, NOT templates */}
-            {hasPartialBooking && !isTemplateTab && (
-              <div className="rounded-xl border border-slate-100 dark:border-slate-800 px-3 py-2.5 bg-slate-50 dark:bg-white/[0.02]">
-                <BookingSlider rules={rules} userStrategy={userStrategy!} onRefresh={onRefresh} />
-              </div>
-            )}
-          </>
+              </tbody>
+            </table>
+          </div>
 
         ) : !isSubscribed ? (
           /* ── Available: index info from configData ── */
@@ -274,26 +271,27 @@ export function StrategyCard({ strategy, userStrategy, tabContext, onSubscribe, 
           ) : (
             /* MY STRATEGIES + DEPLOYED: full action set */
             <>
-              {/* Edit */}
-              <button
-                onClick={() => onEdit(userStrategy!)}
-                className="w-full py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/5 transition-colors"
-              >
-                Edit
-              </button>
-
-              {/* Undeploy / Unsubscribe — different APIs, label + action by tab */}
               {!confirmUnsub ? (
-                <button
-                  onClick={() => setConfirmUnsub(true)}
-                  className="w-full py-2 rounded-xl text-xs font-medium text-slate-400 dark:text-slate-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/10 border border-transparent hover:border-red-100 dark:hover:border-red-900/30 transition-all"
-                >
-                  {tabContext === 'deployed' ? 'Undeploy' : 'Unsubscribe'}
-                </button>
+                /* Edit + Undeploy/Unsubscribe side by side */
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => onEdit(userStrategy!)}
+                    className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/5 transition-colors"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    onClick={() => setConfirmUnsub(true)}
+                    className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-medium text-red-400 dark:text-red-500 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/10 hover:border-red-200 dark:hover:border-red-800 transition-all"
+                  >
+                    {tabContext === 'deployed' ? 'Undeploy' : 'Unsubscribe'}
+                  </button>
+                </div>
               ) : (
+                /* Confirm dialog */
                 <div className="flex gap-2 rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/10 px-3 py-2.5 items-center">
                   <span className="text-xs text-red-600 dark:text-red-400 flex-1">
-                    {tabContext === 'deployed' ? 'Stop running this strategy?' : 'Remove this strategy?'}
+                    {tabContext === 'deployed' ? 'Stop this strategy?' : 'Remove this strategy?'}
                   </span>
                   <button
                     onClick={() => setConfirmUnsub(false)}

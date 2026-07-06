@@ -35,6 +35,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
                 : 'border-slate-200 dark:border-slate-700',
               icon ? 'pl-10 pr-4 py-2.5' : 'px-4 py-2.5',
               isPassword && 'pr-10',
+              'disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-50 dark:disabled:bg-white/[0.03]',
               className,
             )}
             {...props}

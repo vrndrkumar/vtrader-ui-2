@@ -8,7 +8,7 @@
 // message per channel is logged as "[VT-WS] …" so we can confirm whether the
 // server connects, whether it needs a subscribe frame, and in what format.
 
-import { parseEnvelope, type WsEnvelope } from './messages'
+import type { WsEnvelope } from './messages'
 
 export type ConnState = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed'
 
@@ -24,6 +24,7 @@ export const WS_CONFIG = {
   attachToken: true,
   sendSubscribeFrames: true,
   debug: true,
+  heartbeat: false,        // server has no app-level ping; data frames keep it alive
   heartbeatMs: 25_000,
   maxBackoffMs: 15_000,
   baseBackoffMs: 500,
@@ -87,13 +88,23 @@ class WebSocketManager {
       this.startHeartbeat()
     }
     ws.onmessage = (e) => {
-      const env = parseEnvelope(e.data)
-      if (!env) { log('unparsed frame', typeof e.data === 'string' ? e.data.slice(0, 200) : e.data); return }
-      if (!this.seenChannels.has(env.channel)) {
-        this.seenChannels.add(env.channel)
-        log('first message on', env.channel, env.payload)
+      const data = typeof e.data === 'string' ? e.data : ''
+      let msg: { type?: string; channel?: string; payload?: unknown } | null = null
+      try { msg = JSON.parse(data) } catch { log('non-JSON frame', data.slice(0, 120)); return }
+      if (!msg || typeof msg !== 'object') return
+
+      // Only `type: "data"` frames carry a payload; everything else
+      // (subscribed / unsubscribed / connected / pong) is a control ack — ignore.
+      if (msg.type === 'data' && typeof msg.channel === 'string' && 'payload' in msg) {
+        const env = msg as WsEnvelope
+        if (!this.seenChannels.has(env.channel)) {
+          this.seenChannels.add(env.channel)
+          log('first data on', env.channel)
+        }
+        this.msgListeners.forEach((l) => { try { l(env) } catch { /* isolate listener errors */ } })
+      } else if (msg.type === 'error') {
+        log('server error', (msg as { message?: string }).message)
       }
-      this.msgListeners.forEach((l) => { try { l(env) } catch { /* isolate listener errors */ } })
     }
     ws.onclose = (e) => {
       log('CLOSE', { code: e.code, reason: e.reason, wasClean: e.wasClean })
@@ -116,6 +127,7 @@ class WebSocketManager {
 
   private startHeartbeat(): void {
     this.stopHeartbeat()
+    if (!WS_CONFIG.heartbeat) return
     this.heartbeatTimer = setInterval(() => this.rawSend(WS_CONFIG.heartbeatFrame()), WS_CONFIG.heartbeatMs)
   }
   private stopHeartbeat(): void {
