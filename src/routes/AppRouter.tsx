@@ -8,6 +8,7 @@ const LoginPage       = lazy(() => import('@/pages/LoginPage'))
 const RegisterPage    = lazy(() => import('@/pages/RegisterPage'))
 const DashboardPage   = lazy(() => import('@/pages/DashboardPage'))
 const TradePage       = lazy(() => import('@/trade'))
+const JournalPage     = lazy(() => import('@/journal/JournalPage'))
 const BrokerPage      = lazy(() => import('@/pages/BrokerPage'))
 const ReportsPage     = lazy(() => import('@/pages/ReportsPage'))
 const AnalyticsPage   = lazy(() => import('@/pages/AnalyticsPage'))
@@ -46,6 +47,7 @@ export function AppRouter() {
           <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
             <Route path="/dashboard"   element={<DashboardPage />} />
             <Route path="/trade"       element={<TradePage />} />
+            <Route path="/journal"     element={<JournalPage />} />
             <Route path="/brokers"     element={<BrokerPage />} />
             <Route path="/strategies"  element={<StrategiesPage />} />
             <Route path="/analytics"   element={<AnalyticsPage />} />
