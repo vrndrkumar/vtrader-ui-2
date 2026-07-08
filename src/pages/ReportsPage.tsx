@@ -155,6 +155,15 @@ function TodayStrip({ trades, onTodayClick }: { trades: Trade[]; onTodayClick: (
   const realizedPnl   = todayTrades.reduce((s, t) => s + (t.realized_pnl ?? 0), 0)
   const unrealizedPnl = openTrades.reduce((s, t) => s + (t.unrealized_pnl ?? 0), 0)
 
+  // Derived quick-stats
+  const closedTrades  = todayTrades.filter((t) => t.status === 'CLOSED')
+  const winningTrades = closedTrades.filter((t) => (t.realized_pnl ?? 0) > 0).length
+  const losingTrades  = closedTrades.filter((t) => (t.realized_pnl ?? 0) < 0).length
+  const bestTrade     = closedTrades.length ? closedTrades.reduce((a, b) => (b.realized_pnl ?? 0) > (a.realized_pnl ?? 0) ? b : a) : null
+  const worstTrade    = closedTrades.length ? closedTrades.reduce((a, b) => (b.realized_pnl ?? 0) < (a.realized_pnl ?? 0) ? b : a) : null
+  const openIndices   = [...new Set(openTrades.map((t) => t.symbol_name.split('_')[0]))]
+  const strategies    = [...new Set(todayTrades.map((t) => t.group_name).filter(Boolean))]
+
   if (!todayTrades.length) return null
 
   return (
@@ -203,24 +212,84 @@ function TodayStrip({ trades, onTodayClick }: { trades: Trade[]; onTodayClick: (
           ))}
         </div>
 
-        {openTrades.length > 0 && (
-          <div className="flex flex-wrap gap-1.5">
-            {openTrades.map((t) => (
-              <span
-                key={t.trade_id}
-                className="inline-flex items-center gap-1.5 text-[10px] font-semibold bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800 rounded-full px-2.5 py-1 text-amber-800 dark:text-amber-300"
-              >
-                <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" />
-                {t.symbol_name.split('_')[0]}
-                {t.unrealized_pnl !== 0 && (
-                  <span className={t.unrealized_pnl >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-500 dark:text-red-400'}>
-                    · {formatPnl(t.unrealized_pnl)}
+        {/* Useful session summary row */}
+        <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center gap-x-5 gap-y-2">
+
+          {/* Win / Loss split */}
+          {closedTrades.length > 0 && (
+            <div>
+              <p className="text-[9px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-0.5">Closed W / L</p>
+              <p className="text-sm font-bold leading-none">
+                <span className="text-green-600 dark:text-green-400">{winningTrades}W</span>
+                <span className="text-slate-300 dark:text-slate-600 mx-1">·</span>
+                <span className="text-red-500 dark:text-red-400">{losingTrades}L</span>
+                {closedTrades.length - winningTrades - losingTrades > 0 && (
+                  <span className="text-slate-400 dark:text-slate-500">
+                    <span className="mx-1">·</span>{closedTrades.length - winningTrades - losingTrades}BE
                   </span>
                 )}
-              </span>
-            ))}
-          </div>
-        )}
+              </p>
+            </div>
+          )}
+
+          {/* Divider */}
+          {closedTrades.length > 0 && (bestTrade || worstTrade) && (
+            <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 hidden sm:block" />
+          )}
+
+          {/* Best trade */}
+          {bestTrade && (bestTrade.realized_pnl ?? 0) > 0 && (
+            <div>
+              <p className="text-[9px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-0.5">Best Trade</p>
+              <p className="text-sm font-bold text-green-600 dark:text-green-400 leading-none">
+                {bestTrade.symbol_name.split('_')[0]} &nbsp;+{formatPnl(bestTrade.realized_pnl ?? 0)}
+              </p>
+            </div>
+          )}
+
+          {/* Worst trade */}
+          {worstTrade && (worstTrade.realized_pnl ?? 0) < 0 && (
+            <div>
+              <p className="text-[9px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-0.5">Worst Trade</p>
+              <p className="text-sm font-bold text-red-500 dark:text-red-400 leading-none">
+                {worstTrade.symbol_name.split('_')[0]} &nbsp;{formatPnl(worstTrade.realized_pnl ?? 0)}
+              </p>
+            </div>
+          )}
+
+          {/* Open positions summary */}
+          {openTrades.length > 0 && (
+            <>
+              <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 hidden sm:block" />
+              <div>
+                <p className="text-[9px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-0.5">Open Now</p>
+                <p className="text-sm font-bold text-amber-600 dark:text-amber-400 leading-none">
+                  {openTrades.length} position{openTrades.length !== 1 ? 's' : ''}
+                  {openIndices.length > 0 && (
+                    <span className="font-normal text-slate-400 dark:text-slate-500 ml-1">
+                      · {openIndices.slice(0, 4).join(', ')}{openIndices.length > 4 ? ` +${openIndices.length - 4}` : ''}
+                    </span>
+                  )}
+                </p>
+              </div>
+            </>
+          )}
+
+          {/* Strategy tags */}
+          {strategies.length > 0 && (
+            <>
+              <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 hidden sm:block" />
+              <div className="flex flex-wrap gap-1.5">
+                {strategies.map((g) => (
+                  <span key={g} className="text-[9px] font-bold uppercase tracking-wide bg-slate-100 dark:bg-white/5 text-slate-500 dark:text-slate-400 rounded-full px-2.5 py-1 border border-slate-200 dark:border-slate-700">
+                    {g}
+                  </span>
+                ))}
+              </div>
+            </>
+          )}
+
+        </div>
       </div>
     </div>
   )

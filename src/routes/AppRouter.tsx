@@ -11,7 +11,8 @@ const TradePage       = lazy(() => import('@/trade'))
 const BrokerPage      = lazy(() => import('@/pages/BrokerPage'))
 const ReportsPage     = lazy(() => import('@/pages/ReportsPage'))
 const AnalyticsPage   = lazy(() => import('@/pages/AnalyticsPage'))
-const StrategiesPage  = lazy(() => import('@/pages/StrategiesPage'))
+const StrategiesPage      = lazy(() => import('@/pages/StrategiesPage'))
+const SignalGeneratorPage = lazy(() => import('@/pages/SignalGeneratorPage'))
 
 function GuestRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth()
@@ -49,6 +50,7 @@ export function AppRouter() {
             <Route path="/strategies"  element={<StrategiesPage />} />
             <Route path="/analytics"   element={<AnalyticsPage />} />
             <Route path="/reports"     element={<ReportsPage />} />
+            <Route path="/signals"     element={<SignalGeneratorPage />} />
           </Route>
 
           <Route path="*" element={<Navigate to="/login" replace />} />
