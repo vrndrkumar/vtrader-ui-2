@@ -3,8 +3,12 @@
 // to TradingView Lightweight Charts / another engine without touching features.
 
 import type { Candle } from '../types/market'
+import type { OrderLine } from './orderOverlays'
 
 export interface ChartEngine {
+  /** Reconcile the set of order/position lines on the chart. */
+  syncOrderLines(lines: OrderLine[]): void
+
   setData(candles: Candle[]): void
   /** Update the last candle or append a new one (by timestamp). */
   updateLast(candle: Candle): void

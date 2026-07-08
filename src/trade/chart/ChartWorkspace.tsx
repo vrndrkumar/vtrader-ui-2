@@ -2,7 +2,7 @@ import { useRef } from 'react'
 import { ChartToolbar } from './ChartToolbar'
 import { ChartGrid } from './ChartGrid'
 
-/** Shared toolbar + resizable multi-chart grid. Fullscreen wraps both. */
+/** Shared toolbar + resizable multi-chart grid. */
 export function ChartWorkspace() {
   const ref = useRef<HTMLDivElement>(null)
   const toggleFullscreen = () => {

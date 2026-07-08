@@ -3,6 +3,9 @@
 import { init, dispose, type KLineData } from 'klinecharts'
 import type { ChartEngine } from './ChartEngine'
 import type { Candle } from '../types/market'
+import './customOverlays' // register Shapes + Text overlays before any chart init
+import './orderOverlays'  // register the draggable order-line overlay
+import type { OrderLine } from './orderOverlays'
 
 type Chart = NonNullable<ReturnType<typeof init>>
 
@@ -47,6 +50,7 @@ export class KLineChartEngine implements ChartEngine {
   private chart: Chart | null
   private readonly el: HTMLElement
   private readonly indicators = new Map<string, string>() // name -> paneId
+  private readonly orderLines = new Map<string, string>() // lineId -> overlayId
 
   constructor(el: HTMLElement, dark: boolean) {
     this.el = el
@@ -95,6 +99,24 @@ export class KLineChartEngine implements ChartEngine {
 
   clearDrawings(): void {
     this.chart?.removeOverlay()
+  }
+
+  syncOrderLines(lines: OrderLine[]): void {
+    if (!this.chart) return
+    const seen = new Set<string>()
+    for (const l of lines) {
+      seen.add(l.lineId)
+      const existing = this.orderLines.get(l.lineId)
+      if (existing) {
+        this.chart.overrideOverlay({ id: existing, points: [{ value: l.price }], extendData: l.data, lock: !l.editable } as never)
+      } else {
+        const id = this.chart.createOverlay({ name: 'orderLine', points: [{ value: l.price }], extendData: l.data, lock: !l.editable } as never)
+        if (typeof id === 'string') this.orderLines.set(l.lineId, id)
+      }
+    }
+    for (const [lineId, ovId] of [...this.orderLines]) {
+      if (!seen.has(lineId)) { this.chart.removeOverlay(ovId); this.orderLines.delete(lineId) }
+    }
   }
 
   resize(): void {

@@ -97,7 +97,8 @@ function OptionChainPanel() {
   const addWatch = useWatchlistStore((s) => s.add)
 
   useEffect(() => { setExpiry('') }, [symbolCode])
-  useEffect(() => { if (!expiry && expiries.length) setExpiry(expiries[0]) }, [expiries, expiry])
+  // Default to nearest; also re-select if the current one expired / vanished.
+  useEffect(() => { if (expiries.length && !expiries.includes(expiry)) setExpiry(expiries[0]) }, [expiries, expiry])
 
   const onAction = (strike: number, optType: OptType, side: Side, ltp: number) =>
     placeOrder({ instrument: `${symbolCode} ${strike} ${optType}`, underlying: symbolCode, side, ltp, orderType: 'MARKET' })

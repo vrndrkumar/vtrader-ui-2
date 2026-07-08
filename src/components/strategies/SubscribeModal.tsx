@@ -16,80 +16,38 @@ interface Props {
   onSuccess: () => void
 }
 
-// ── Lot count stepper — value = number of lots, min 0 ──────────────────────
-function LotCountInput({
-  label,
-  lotSize,
-  value,
-  onChange,
-}: {
-  label: string
-  lotSize: number
-  value: number
-  onChange: (v: number) => void
-}) {
-  return (
-    <div className="flex flex-col items-center gap-1.5">
-      <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300 uppercase tracking-wide">
-        {label}
-      </span>
-
-      <div className="flex items-stretch w-full rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden focus-within:border-brand-500 focus-within:ring-1 focus-within:ring-brand-500">
-        <button
-          type="button"
-          onClick={() => onChange(Math.max(0, value - 1))}
-          disabled={value <= 0}
-          className="px-2.5 py-2 bg-slate-50 dark:bg-white/5 text-slate-500 hover:bg-slate-100 dark:hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed border-r border-slate-200 dark:border-slate-700 text-sm font-bold select-none transition-colors"
-        >
-          −
-        </button>
-        <input
-          type="number"
-          min={0}
-          value={value}
-          onChange={(e) => {
-            const n = parseInt(e.target.value, 10)
-            if (!isNaN(n) && n >= 0) onChange(n)
-          }}
-          className="flex-1 text-center text-sm font-semibold text-slate-900 dark:text-slate-100 bg-white dark:bg-white/5 focus:outline-none py-2 w-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-        />
-        <button
-          type="button"
-          onClick={() => onChange(value + 1)}
-          className="px-2.5 py-2 bg-slate-50 dark:bg-white/5 text-slate-500 hover:bg-slate-100 dark:hover:bg-white/10 border-l border-slate-200 dark:border-slate-700 text-sm font-bold select-none transition-colors"
-        >
-          +
-        </button>
-      </div>
-
-      {/* Show: X lots · qty Y  where Y = lots × lotSize */}
-      <span className="text-[10px] text-slate-400 dark:text-slate-500 text-center">
-        {value} lot{value !== 1 ? 's' : ''} · qty {value * lotSize}
-      </span>
-    </div>
-  )
-}
-
 // ── Main modal ────────────────────────────────────────────────────────────────
 export function SubscribeModal({ strategy, existing, onClose, onSuccess }: Props) {
   const isEdit = !!existing
-
-  // When editing, derive indices from the saved executionRule; otherwise from configData
-  const indices = isEdit && existing?.executionRule?.length
-    ? existing.executionRule.map((r) => r.symbol)
-    : getStrategyIndices(strategy)
 
   const [brokers, setBrokers]         = useState<UserBroker[]>([])
   const [indexMaster, setIndexMaster] = useState<IndexMaster[]>([])
   const [dataLoading, setDataLoading] = useState(true)
 
+  // When editing, indices come from server executionRule.
+  // When subscribing, start with configData detection; upgraded once IndexMaster loads.
+  const [indices, setIndices] = useState<string[]>(() =>
+    isEdit && existing?.executionRule?.length
+      ? existing.executionRule.map((r) => r.symbol)
+      : getStrategyIndices(strategy),
+  )
+
   // lot COUNT per index (not qty) — 0 means opt-out
-  // When editing: initialise from existing executionRule (number_lots per symbol)
   const [lots, setLots] = useState<IndexLots>(() => {
     const init: IndexLots = {}
     indices.forEach((idx) => {
       const rule = existing?.executionRule?.find((r) => r.symbol === idx)
       init[idx] = rule?.number_lots ?? existing?.lots?.[idx] ?? 1
+    })
+    return init
+  })
+
+  // isRealTrading per index — false = Paper, true = Live
+  const [isRealTrading, setIsRealTrading] = useState<Record<string, boolean>>(() => {
+    const init: Record<string, boolean> = {}
+    indices.forEach((idx) => {
+      const rule = existing?.executionRule?.find((r) => r.symbol === idx)
+      init[idx] = rule?.isRealTrading ?? false
     })
     return init
   })
@@ -128,6 +86,35 @@ export function SubscribeModal({ strategy, existing, onClose, onSuccess }: Props
       setDataLoading(false)
     })
   }, [])
+
+  // Once IndexMaster loads, re-detect indices from it (most accurate — covers any symbol).
+  // Skip when editing (indices come from server executionRule).
+  useEffect(() => {
+    if (isEdit || !indexMaster.length) return
+    const imSymbols = indexMaster
+      .map((im) => ((im.symbolCode ?? im.symbol_code) ?? '').toUpperCase())
+      .filter(Boolean)
+    const detected = getStrategyIndices(strategy, imSymbols)
+    if (detected.join(',') === indices.join(',')) return   // no change, skip re-render
+    setIndices(detected)
+    // Backfill per-index state for any newly discovered symbols
+    setLots((prev) => {
+      const next = { ...prev }
+      detected.forEach((idx) => { if (!(idx in next)) next[idx] = 1 })
+      return next
+    })
+    setIsRealTrading((prev) => {
+      const next = { ...prev }
+      detected.forEach((idx) => { if (!(idx in next)) next[idx] = false })
+      return next
+    })
+    setPartialBooking((prev) => {
+      const next = { ...prev }
+      detected.forEach((idx) => { if (!(idx in next)) next[idx] = 100 })
+      return next
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [indexMaster])
 
   // Close broker dropdown on outside click
   useEffect(() => {
@@ -186,7 +173,7 @@ export function SubscribeModal({ strategy, existing, onClose, onSuccess }: Props
                 number_lots:          lots[idx] ?? existingRule?.number_lots ?? 1,
                 marginBenefitRequired: marginRequired,
                 active:               existingRule?.active               ?? true,
-                isRealTrading:        existingRule?.isRealTrading         ?? false,
+                isRealTrading:        isRealTrading[idx] ?? false,
                 traderType:           existingRule?.traderType            ?? 'SELLER',
                 lotChangeOnSL:        existingRule?.lotChangeOnSL         ?? { active: false, lotChangeQty: 1 },
                 partialBookingRule:   { partialBookingPercentage: partialBooking[idx] ?? 100 },
@@ -205,7 +192,7 @@ export function SubscribeModal({ strategy, existing, onClose, onSuccess }: Props
               number_lots:          lots[idx] ?? 1,
               marginBenefitRequired: marginRequired,
               active:               true,
-              isRealTrading:        false,
+              isRealTrading:        isRealTrading[idx] ?? false,
               traderType:           'SELLER',
               lotChangeOnSL:        { active: false, lotChangeQty: 1 },
               partialBookingRule:   { partialBookingPercentage: partialBooking[idx] ?? 100 },
@@ -254,10 +241,10 @@ export function SubscribeModal({ strategy, existing, onClose, onSuccess }: Props
 
         <div className="px-6 py-5 space-y-6">
 
-          {/* ── Lots per index ── */}
+          {/* ── Per-index settings: Lots · Paper/Live · Partial Booking % ── */}
           <div>
             <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">
-              Lots per index
+              Index Settings
             </p>
             {dataLoading ? (
               <div className="flex justify-center py-6">
@@ -267,66 +254,109 @@ export function SubscribeModal({ strategy, existing, onClose, onSuccess }: Props
                 </svg>
               </div>
             ) : (
-              <div className={clsx(
-                'grid gap-4',
-                indices.length <= 2 ? 'grid-cols-2' :
-                indices.length <= 4 ? 'grid-cols-2 sm:grid-cols-4' :
-                'grid-cols-2 sm:grid-cols-3',
-              )}>
-                {indices.map((idx) => (
-                  <LotCountInput
-                    key={idx}
-                    label={idx}
-                    lotSize={lotSizeFor(idx)}
-                    value={lots[idx] ?? 1}
-                    onChange={(v) => setLots((prev) => ({ ...prev, [idx]: v }))}
-                  />
-                ))}
+              <div className="space-y-2">
+                {indices.map((idx) => {
+                  const pct     = partialBooking[idx] ?? 100
+                  const isLive  = isRealTrading[idx] ?? false
+                  const trackPct = ((pct - 25) / 75) * 100
+                  return (
+                    <div key={idx} className="rounded-xl border border-slate-100 dark:border-slate-800 overflow-hidden">
+
+                      {/* ── Row 1: badge + Paper/Live toggle ── */}
+                      <div className="flex items-center justify-between px-3 py-2 bg-slate-50 dark:bg-white/[0.03] border-b border-slate-100 dark:border-slate-800">
+                        <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-md text-white"
+                          style={{ background: 'linear-gradient(90deg,#3b82f6,#6366f1)' }}>
+                          {idx}
+                        </span>
+
+                        {/* Segmented Paper / Live */}
+                        <div className="flex rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 text-[11px] font-semibold">
+                          <button
+                            type="button"
+                            onClick={() => setIsRealTrading((prev) => ({ ...prev, [idx]: false }))}
+                            className={clsx(
+                              'px-3 py-1 transition-colors',
+                              !isLive
+                                ? 'bg-slate-700 dark:bg-slate-600 text-white'
+                                : 'bg-white dark:bg-white/5 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-white/10',
+                            )}
+                          >
+                            Paper
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setIsRealTrading((prev) => ({ ...prev, [idx]: true }))}
+                            className={clsx(
+                              'px-3 py-1 border-l border-slate-200 dark:border-slate-700 transition-colors',
+                              isLive
+                                ? 'bg-emerald-500 text-white'
+                                : 'bg-white dark:bg-white/5 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-white/10',
+                            )}
+                          >
+                            Live
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* ── Row 2: Lots stepper + Partial Booking % ── */}
+                      <div className="px-3 py-3 flex items-start gap-4">
+                        {/* Lots */}
+                        <div className="flex flex-col gap-1 min-w-0 flex-1">
+                          <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wide">Lots</span>
+                          <div className="flex items-stretch rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
+                            <button type="button"
+                              onClick={() => setLots((prev) => ({ ...prev, [idx]: Math.max(0, (prev[idx] ?? 1) - 1) }))}
+                              disabled={(lots[idx] ?? 1) <= 0}
+                              className="px-2 py-1.5 bg-slate-50 dark:bg-white/5 text-slate-500 hover:bg-slate-100 dark:hover:bg-white/10 disabled:opacity-30 border-r border-slate-200 dark:border-slate-700 text-sm font-bold select-none transition-colors">
+                              −
+                            </button>
+                            <input type="number" min={0} value={lots[idx] ?? 1}
+                              onChange={(e) => { const n = parseInt(e.target.value, 10); if (!isNaN(n) && n >= 0) setLots((prev) => ({ ...prev, [idx]: n })) }}
+                              className="w-10 text-center text-sm font-semibold text-slate-900 dark:text-slate-100 bg-white dark:bg-white/5 focus:outline-none py-1.5 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                            />
+                            <button type="button"
+                              onClick={() => setLots((prev) => ({ ...prev, [idx]: (prev[idx] ?? 1) + 1 }))}
+                              className="px-2 py-1.5 bg-slate-50 dark:bg-white/5 text-slate-500 hover:bg-slate-100 dark:hover:bg-white/10 border-l border-slate-200 dark:border-slate-700 text-sm font-bold select-none transition-colors">
+                              +
+                            </button>
+                          </div>
+                          <span className="text-[10px] text-slate-400 dark:text-slate-500">
+                            qty {(lots[idx] ?? 1) * lotSizeFor(idx)}
+                          </span>
+                        </div>
+
+                        {/* Partial Booking % */}
+                        <div className="flex flex-col gap-1 flex-[2] min-w-0">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wide">Partial Book %</span>
+                            <span className="text-[10px] font-bold text-blue-600 dark:text-blue-400 tabular-nums">{pct}%</span>
+                          </div>
+                          <div className="flex gap-1">
+                            {[25, 50, 75, 100].map((v) => (
+                              <button key={v} type="button"
+                                onClick={() => setPartialBooking((prev) => ({ ...prev, [idx]: v }))}
+                                className={clsx(
+                                  'flex-1 py-1 rounded-lg text-[10px] font-semibold transition-colors',
+                                  pct === v
+                                    ? 'bg-blue-500 text-white'
+                                    : 'bg-white dark:bg-white/5 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:border-blue-400 hover:text-blue-500',
+                                )}>
+                                {v}%
+                              </button>
+                            ))}
+                          </div>
+                          <div className="h-1 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
+                            <div className="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-500 transition-all duration-200"
+                              style={{ width: `${trackPct}%` }} />
+                          </div>
+                        </div>
+                      </div>
+
+                    </div>
+                  )
+                })}
               </div>
             )}
-          </div>
-
-          {/* ── Partial Booking % per index ── */}
-          <div>
-            <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-3">
-              Partial Booking %
-            </p>
-            <div className="space-y-3">
-              {indices.map((idx) => {
-                const pct = partialBooking[idx] ?? 100
-                const trackPct = ((pct - 25) / 75) * 100
-                return (
-                  <div key={idx} className="bg-slate-50 dark:bg-white/[0.03] rounded-xl px-3 py-2.5 border border-slate-100 dark:border-slate-800">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">{idx}</span>
-                      <span className="text-[11px] font-bold text-slate-800 dark:text-slate-100 tabular-nums">{pct}%</span>
-                    </div>
-                    {/* Segmented selector 25 / 50 / 75 / 100 */}
-                    <div className="flex gap-1">
-                      {[25, 50, 75, 100].map((v) => (
-                        <button
-                          key={v}
-                          type="button"
-                          onClick={() => setPartialBooking((prev) => ({ ...prev, [idx]: v }))}
-                          className={clsx(
-                            'flex-1 py-1 rounded-lg text-[10px] font-semibold transition-colors',
-                            pct === v
-                              ? 'bg-blue-500 text-white'
-                              : 'bg-white dark:bg-white/5 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:border-blue-400 hover:text-blue-500',
-                          )}
-                        >
-                          {v}%
-                        </button>
-                      ))}
-                    </div>
-                    {/* Visual track */}
-                    <div className="mt-2 h-1 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
-                      <div className="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-500 transition-all duration-200" style={{ width: `${trackPct}%` }} />
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
           </div>
 
           {/* ── Broker Name (dropdown with multi-select checkboxes) ── */}

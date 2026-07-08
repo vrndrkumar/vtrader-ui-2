@@ -26,7 +26,7 @@ export function StrategyBuilder({ onOpenStrikeChart }: { onOpenStrikeChart?: (cs
   const [expiry, setExpiry] = useState('')
   const { chain, expiries } = useLiveOptionChain(symbolCode, expiry)
   useEffect(() => { setExpiry('') }, [symbolCode])
-  useEffect(() => { if (!expiry && expiries.length) setExpiry(expiries[0]) }, [expiries, expiry])
+  useEffect(() => { if (expiries.length && !expiries.includes(expiry)) setExpiry(expiries[0]) }, [expiries, expiry])
   const step = symbolCode === 'SENSEX' ? 100 : 50
 
   const { legs, product, sameQty, addFromChain, removeLeg, updateLeg, clear, setProduct, setSameQty, setLegs } = useStrategyStore()

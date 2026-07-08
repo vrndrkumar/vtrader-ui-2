@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react'
 import { clsx } from 'clsx'
 import { useChartLayoutStore, applySymbol, applyTimeframe, type SyncState } from '../store/chartLayoutStore'
-import { engineRegistry } from './engineRegistry'
 import { getLayout, layoutsByCount } from './layouts'
 import { LayoutIcon } from './LayoutIcon'
 import { useWatchlistStore } from '../store/watchlistStore'
@@ -10,14 +9,6 @@ import { SYMBOLS, indexChartSymbol, TIMEFRAMES, type ChartSymbol } from '../type
 const INDICATOR_GROUPS = [
   { group: 'Overlays', items: ['MA', 'EMA', 'BOLL', 'SAR'] },
   { group: 'Oscillators', items: ['VOL', 'MACD', 'RSI', 'KDJ'] },
-]
-const DRAW_TOOLS = [
-  { name: 'segment', label: 'Trend line', d: 'M4 20L20 4' },
-  { name: 'horizontalStraightLine', label: 'Horizontal', d: 'M3 12h18' },
-  { name: 'verticalStraightLine', label: 'Vertical', d: 'M12 3v18' },
-  { name: 'rayLine', label: 'Ray', d: 'M4 20L20 4M20 4h-5M20 4v5' },
-  { name: 'priceLine', label: 'Price line', d: 'M3 12h14M17 9l4 3-4 3' },
-  { name: 'fibonacciLine', label: 'Fibonacci', d: 'M3 5h18M3 10h18M3 14h18M3 19h18' },
 ]
 const SYNC_ROWS: { key: keyof SyncState; label: string; wired: boolean }[] = [
   { key: 'symbol', label: 'Symbol', wired: true },
@@ -139,14 +130,12 @@ export function ChartToolbar({ onFullscreen }: { onFullscreen: () => void }) {
   const activeId = useChartLayoutStore((s) => s.activePanelId)
   const setPanelIndicators = useChartLayoutStore((s) => s.setPanelIndicators)
   const active = panels[activeId]
-  const [menu, setMenu] = useState<null | 'ind' | 'draw'>(null)
+  const [menu, setMenu] = useState<null | 'ind'>(null)
 
   const toggleIndicator = (name: string) => {
     const cur = active?.indicators ?? []
     setPanelIndicators(activeId, cur.includes(name) ? cur.filter((x) => x !== name) : [...cur, name])
   }
-  const startDrawing = (name: string) => { engineRegistry.get(activeId)?.startDrawing(name); setMenu(null) }
-  const clearDrawings = () => engineRegistry.get(activeId)?.clearDrawings()
 
   return (
     <div className="flex items-center gap-1.5 h-11 px-2 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-card-dark shrink-0">
@@ -181,18 +170,6 @@ export function ChartToolbar({ onFullscreen }: { onFullscreen: () => void }) {
           </div>
         )}
       </div>
-
-      <div className="relative">
-        <button className={toolBtn} onClick={() => setMenu(menu === 'draw' ? null : 'draw')}><Icon d="M4 20L20 4M14 4h6v6" />Draw</button>
-        {menu === 'draw' && (
-          <div className="absolute z-40 mt-1 w-48 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-card-dark shadow-xl py-1.5 animate-fade-in">
-            {DRAW_TOOLS.map((t) => (
-              <button key={t.name} onClick={() => startDrawing(t.name)} className="flex w-full items-center gap-2.5 px-3 py-1.5 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5"><Icon d={t.d} className="h-4 w-4 text-slate-400" />{t.label}</button>
-            ))}
-          </div>
-        )}
-      </div>
-      <button className={toolBtn} onClick={clearDrawings} title="Clear drawings"><Icon d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14" /></button>
 
       <div className="ml-auto flex items-center gap-1">
         <LayoutMenu />

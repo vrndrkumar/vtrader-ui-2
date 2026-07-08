@@ -5,6 +5,7 @@
 // affected expiry subscribers are notified. Bindable via useSyncExternalStore.
 
 import type { OptionChainPayload } from '../ws/messages'
+import { istParts } from '../../utils/marketStatus'
 
 export interface OptionContract {
   index: string
@@ -151,9 +152,24 @@ export function getStrikeRow(index: string, expiry: string, strike: number): Str
   return books.get(index)?.get(expiry)?.strikes.get(strike)
 }
 
+// Chronological ordering for feed expiries like "28JUL26" (nearest first).
+const EXP_MONS: Record<string, number> = { JAN: 1, FEB: 2, MAR: 3, APR: 4, MAY: 5, JUN: 6, JUL: 7, AUG: 8, SEP: 9, OCT: 10, NOV: 11, DEC: 12 }
+function expiryOrder(s: string): number {
+  const m = /^(\d{2})([A-Z]{3})(\d{2})$/.exec(s.trim().toUpperCase())
+  if (!m) return Number.MAX_SAFE_INTEGER
+  const mon = EXP_MONS[m[2]]
+  if (!mon) return Number.MAX_SAFE_INTEGER
+  return (2000 + Number(m[3])) * 10000 + mon * 100 + Number(m[1])
+}
+
 export function getExpiries(index: string): string[] {
   const ib = books.get(index)
-  return ib ? [...ib.keys()] : []
+  if (!ib) return []
+  const t = istParts()
+  const todayOrder = t.y * 10000 + (t.m + 1) * 100 + t.d
+  return [...ib.keys()]
+    .filter((e) => expiryOrder(e) >= todayOrder) // never show expired expiries
+    .sort((a, b) => expiryOrder(a) - expiryOrder(b))
 }
 
 export function hasLiveData(index: string, expiry: string): boolean {

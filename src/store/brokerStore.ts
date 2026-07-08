@@ -4,6 +4,7 @@
 // trade book) reads the current broker context from here — nothing re-implements
 // broker selection. App-level on purpose (not Trade-scoped).
 
+import { useMemo } from 'react'
 import { create } from 'zustand'
 
 export interface BrokerAccount {
@@ -132,5 +133,9 @@ export function resolveQty(account: BrokerAccount, underlying: string): number {
 
 /** Currently selected broker accounts (respecting reconciliation). */
 export function useSelectedBrokers(): BrokerAccount[] {
-  return useBrokerStore((s) => s.accounts.filter((a) => s.selectedIds.includes(a.id)))
+  // Select stable slices, derive with useMemo — never return a fresh array
+  // straight from the store selector (breaks useSyncExternalStore).
+  const accounts = useBrokerStore((s) => s.accounts)
+  const selectedIds = useBrokerStore((s) => s.selectedIds)
+  return useMemo(() => accounts.filter((a) => selectedIds.includes(a.id)), [accounts, selectedIds])
 }

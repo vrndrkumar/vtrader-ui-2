@@ -1,11 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { clsx } from 'clsx'
 import { KLineChartEngine } from './KLineChartEngine'
 import type { ChartEngine } from './ChartEngine'
+import type { OrderLine } from './orderOverlays'
 import { engineRegistry } from './engineRegistry'
 import { dataSource } from '../data/dataSource'
+import { placeMarket } from '../data/trade/tradeAdapter'
 import { useQuote } from '../store/marketStore'
 import { useChartLayoutStore } from '../store/chartLayoutStore'
+import { useTradeStore } from '../store/tradeStore'
+import { useBrokerStore, resolveQty } from '@/store/brokerStore'
 import { TF_MINUTES, type Candle } from '../types/market'
 
 const isDark = () => document.documentElement.classList.contains('dark')
@@ -71,6 +75,36 @@ export function ChartPanel({ panelId }: { panelId: string }) {
     have.forEach((n) => { if (!want.has(n)) engine.toggleIndicator(n) })
   }, [config?.indicators])
 
+  // ── Order / position lines (from-chart trading) ──
+  const positions = useTradeStore((s) => s.positions)
+  const accounts = useBrokerStore((s) => s.accounts)
+  const selectedIds = useBrokerStore((s) => s.selectedIds)
+  const orderLines = useMemo<OrderLine[]>(() => {
+    const key = config?.symbol?.key
+    if (!key) return []
+    const ltp = quote?.ltp ?? 0
+    const out: OrderLine[] = []
+    for (const p of Object.values(positions)) {
+      if (p.symbolKey !== key) continue
+      const pnl = ltp ? (ltp - p.avgPrice) * p.netQty : 0
+      const long = p.netQty > 0
+      out.push({ lineId: `${p.id}-pos`, price: p.avgPrice, editable: false, data: { lineId: `${p.id}-pos`, kind: 'position', color: '#2563eb', label: `${long ? 'LONG' : 'SHORT'} ${Math.abs(p.netQty)} · ${pnl >= 0 ? '+' : ''}₹${pnl.toFixed(0)}`, positionId: p.id } })
+      if (p.stopLoss != null) out.push({ lineId: `${p.id}-sl`, price: p.stopLoss, editable: true, data: { lineId: `${p.id}-sl`, kind: 'sl', color: '#dc2626', label: `SL ${p.stopLoss.toFixed(1)}`, positionId: p.id } })
+      if (p.target != null) out.push({ lineId: `${p.id}-tgt`, price: p.target, editable: true, data: { lineId: `${p.id}-tgt`, kind: 'target', color: '#16a34a', label: `TGT ${p.target.toFixed(1)}`, positionId: p.id } })
+    }
+    return out
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [positions, quote?.ltp, config?.symbol?.key])
+
+  useEffect(() => { engineRef.current?.syncOrderLines(orderLines) }, [orderLines])
+
+  const trade = (side: 'BUY' | 'SELL') => {
+    const b = accounts.find((a) => selectedIds.includes(a.id))
+    const sym = config?.symbol
+    if (!b || !sym) return
+    placeMarket(sym.key, sym.display, side, resolveQty(b, sym.key), b.id, { slPct: 0.08, tgtPct: 0.12 })
+  }
+
   const up = (quote?.chg ?? 0) >= 0
 
   return (
@@ -78,6 +112,14 @@ export function ChartPanel({ panelId }: { panelId: string }) {
       onMouseDown={() => setActive(panelId)}
       className={clsx('relative h-full w-full bg-white dark:bg-surface-dark', active ? 'ring-2 ring-inset ring-brand-500 z-10' : 'ring-1 ring-inset ring-slate-200 dark:ring-slate-800')}
     >
+      {/* From-chart Buy/Sell (tradable strikes) */}
+      {config?.symbol?.kind === 'OPTION' && (
+        <div className="absolute top-1.5 right-2 z-20 flex gap-1">
+          <button onClick={(e) => { e.stopPropagation(); trade('BUY') }} className="h-6 px-2.5 rounded-md bg-brand-600 hover:bg-brand-700 text-white text-[10px] font-bold shadow">B</button>
+          <button onClick={(e) => { e.stopPropagation(); trade('SELL') }} className="h-6 px-2.5 rounded-md bg-red-600 hover:bg-red-700 text-white text-[10px] font-bold shadow">S</button>
+        </div>
+      )}
+
       {/* Symbol label (top-left overlay, row 1 — KLineCharts legend sits below it) */}
       {config?.symbol && (
         <div className="absolute top-1 left-1.5 z-10 flex items-center gap-1.5 px-1.5 py-0.5 rounded-md bg-white/75 dark:bg-surface-dark/75 backdrop-blur-sm pointer-events-none">

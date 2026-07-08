@@ -9,6 +9,7 @@ import { istDate } from '../../utils/marketStatus'
 export interface DailyMarks {
   lastClose: number   // close of the most recent trading session
   prevClose: number   // close of the session before that (baseline for change%)
+  lastTs: number      // timestamp (ms) of the most recent candle
 }
 
 const cache = new Map<string, DailyMarks>()
@@ -26,8 +27,9 @@ export async function getDailyMarks(candleSymbol: string, kind: CandleKind = 'IN
   const dates = [...byDate.keys()].sort()
   const lastClose = byDate.get(dates[dates.length - 1])!
   const prevClose = dates.length >= 2 ? byDate.get(dates[dates.length - 2])! : lastClose
+  const lastTs = candles[candles.length - 1].timestamp
 
-  const marks: DailyMarks = { lastClose, prevClose }
+  const marks: DailyMarks = { lastClose, prevClose, lastTs }
   cache.set(candleSymbol, marks)
   return marks
 }

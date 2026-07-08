@@ -17,6 +17,9 @@ export interface StrategyConfig {
 export const STANDARD_INDICES = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'SENSEX', 'BANKEX', 'MIDCPNIFTY'] as const
 export type IndexKey = typeof STANDARD_INDICES[number]
 
+/** configData keys that are non-index objects (never treated as a symbol) */
+const NON_INDEX_KEYS = new Set(['timeWindow', 'slTrailingRule', 'strike', 'sl', 'lotChangeOnSL'])
+
 /** Lot size per index (fallback if index master unavailable) */
 export const INDEX_LOT_SIZES: Record<string, number> = {
   NIFTY: 65,
@@ -27,12 +30,42 @@ export const INDEX_LOT_SIZES: Record<string, number> = {
   MIDCPNIFTY: 75,
 }
 
-/** Extract which indices a strategy config covers */
-export function getStrategyIndices(config: StrategyConfig): string[] {
+/**
+ * Extract which indices a strategy config covers.
+ *
+ * @param config     The strategy config
+ * @param allSymbols Optional: all symbols from IndexMaster (most accurate — pass when available)
+ *
+ * Priority:
+ *  1. configData keys ∩ allSymbols (IndexMaster) — fully dynamic, covers equity + any crypto
+ *  2. configData keys ∩ STANDARD_INDICES            — equity fallback
+ *  3. Any ALL-CAPS configData key with an object value — catches BTC/ETH without hardcoding
+ *  4. Hard fallback: ['NIFTY', 'BANKNIFTY']
+ */
+export function getStrategyIndices(config: StrategyConfig, allSymbols?: string[]): string[] {
   if (!config.configData) return ['NIFTY', 'BANKNIFTY']
   const keys = Object.keys(config.configData)
-  const found = STANDARD_INDICES.filter((idx) => keys.includes(idx))
-  return found.length > 0 ? found : ['NIFTY', 'BANKNIFTY']
+
+  // 1. Use IndexMaster symbols when provided — most accurate
+  if (allSymbols?.length) {
+    const found = allSymbols.filter((s) => keys.includes(s))
+    if (found.length > 0) return found
+  }
+
+  // 2. Known equity indices
+  const known = STANDARD_INDICES.filter((idx) => keys.includes(idx))
+  if (known.length > 0) return known as string[]
+
+  // 3. Any ALL-CAPS key with an object value (catches BTC, ETH, any future symbol)
+  const dynamic = keys.filter((k) => {
+    if (NON_INDEX_KEYS.has(k)) return false
+    if (k !== k.toUpperCase()) return false
+    const v = config.configData![k]
+    return v !== null && typeof v === 'object' && !Array.isArray(v)
+  })
+  if (dynamic.length > 0) return dynamic
+
+  return ['NIFTY', 'BANKNIFTY']
 }
 
 /** Per-index lot counts for subscription */

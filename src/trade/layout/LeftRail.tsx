@@ -1,4 +1,5 @@
 import { clsx } from 'clsx'
+import { DrawingTools } from '../chart/DrawingTools'
 
 export type PanelKey = 'watchlist' | 'optionchain'
 export type TradeView = 'chart' | 'strategy'
@@ -47,6 +48,16 @@ export function LeftRail({ view, panel, onPanel, onStrategy, onToggleCollapse }:
         <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 15l5-6 4 3 5-7 4 5" /><path d="M3 20h18" /></svg>
         Strategy
       </button>
+
+      {/* Drawing tools — grouped, act on the active chart panel (chart view only) */}
+      {chartMode && (
+        <div className="mt-5 flex flex-col items-center w-full px-1">
+          <span className="mb-2 text-[8px] font-bold uppercase tracking-wider text-brand-700 dark:text-brand-300 bg-brand-100 dark:bg-brand-900/40 px-2 py-0.5 rounded-full">Draw</span>
+          <div className="flex flex-col items-center gap-0.5 w-full py-2 rounded-2xl bg-slate-50 dark:bg-white/[0.04]">
+            <DrawingTools />
+          </div>
+        </div>
+      )}
     </nav>
   )
 }

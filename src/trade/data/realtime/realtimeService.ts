@@ -50,23 +50,32 @@ function handleIndexTick(p: IndexTickPayload) {
  *  - when the market is closed with no live tick, the last real close is shown
  *    (never a fabricated value).
  */
+// Seed the last price from the freshest source: use a persisted/last tick ONLY
+// if it's newer than the most recent candle, otherwise the candle close wins
+// (prevents a stale persisted tick from masking the latest close).
+function seedFromMarks(key: string, marks: { lastClose: number; prevClose: number; lastTs: number }) {
+  prevClose.set(key, marks.prevClose)
+  const t = lastTicks[key]
+  if (!t || t.ts < marks.lastTs) {
+    lastTicks[key] = { ltp: marks.lastClose, ts: marks.lastTs }
+    lastTickTs.set(key, marks.lastTs)
+    emitQuote(key, marks.lastClose, marks.lastTs)
+  } else {
+    emitQuote(key, t.ltp, t.ts)
+  }
+}
+
 async function primeIndex(index: string) {
   if (prevClose.has(index)) return
   const marks = await getDailyMarks(index, 'INDEX')
-  if (!marks) return
-  prevClose.set(index, marks.prevClose)
-  const t = lastTicks[index]
-  emitQuote(index, t?.ltp ?? marks.lastClose, t?.ts ?? Date.now())
+  if (marks) seedFromMarks(index, marks)
 }
 
 /** Same as primeIndex but for an option strike symbol (2-month candle range). */
 async function primeSymbol(symbol: string) {
   if (prevClose.has(symbol)) return
   const marks = await getDailyMarks(symbol, 'OPTION')
-  if (!marks) return
-  prevClose.set(symbol, marks.prevClose)
-  const t = lastTicks[symbol]
-  emitQuote(symbol, t?.ltp ?? marks.lastClose, t?.ts ?? Date.now())
+  if (marks) seedFromMarks(symbol, marks)
 }
 
 function handleSymbolTick(p: SymbolTickPayload) {

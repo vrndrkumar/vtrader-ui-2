@@ -11,7 +11,7 @@ import { SYMBOLS, type ChartSymbol } from './types/market'
 
 export default function TradePage() {
   const [view, setView] = useState<TradeView>('chart')
-  const [panel, setPanel] = useState<PanelKey | null>('watchlist')
+  const [panel, setPanel] = useState<PanelKey | null>(null) // collapsed by default
   const lastPanel = useRef<PanelKey>('watchlist')
 
   // Keep the realtime cache warm for all indices for the whole session.

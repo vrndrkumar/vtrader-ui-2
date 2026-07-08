@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { clsx } from 'clsx'
 import type { StrategyConfig, UserStrategy, EditStrategyPayload } from '@/types/strategy'
-import { getStrategyIndices, STANDARD_INDICES, isUserStrategyDeployed } from '@/types/strategy'
+import { getStrategyIndices, isUserStrategyDeployed } from '@/types/strategy'
 import { editStrategy, unsubscribeStrategy } from '@/api/strategy'
 
 export type TabContext = 'templates' | 'my' | 'deployed'
@@ -122,9 +122,7 @@ export function StrategyCard({ strategy, userStrategy, tabContext, onSubscribe, 
   const templateIndices = (() => {
     const fromExpiry = Object.keys(expiryDays)
     if (fromExpiry.length) return fromExpiry
-    const keys  = Object.keys(strategy.configData ?? {})
-    const found = STANDARD_INDICES.filter((i) => keys.includes(i))
-    return found.length ? found : getStrategyIndices(strategy)
+    return getStrategyIndices(strategy)   // handles equity + crypto + dynamic detection
   })()
 
   const rules            = userStrategy?.executionRule ?? []
