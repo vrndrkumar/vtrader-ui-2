@@ -8,6 +8,7 @@ import { realtime } from './data/realtime/realtimeService'
 import { applySymbol } from './store/chartLayoutStore'
 import { OrderWindow } from '@/components/order/OrderWindow'
 import { ensureLotSizes } from '@/services/orders/lotSize'
+import { TradebookPanel } from './features/tradebook/TradebookPanel'
 import { SYMBOLS, type ChartSymbol } from './types/market'
 
 export default function TradePage() {
@@ -44,14 +45,19 @@ export default function TradePage() {
       <TopBar />
       <div className="flex-1 flex min-h-0">
         <LeftRail view={view} panel={panel} onPanel={onPanel} onStrategy={onStrategy} onToggleCollapse={toggleCollapse} />
-        {view === 'chart' ? (
-          <>
-            {panel && <SidePanel panel={panel} onClose={() => setPanel(null)} />}
-            <div className="flex-1 min-w-0"><ChartWorkspace /></div>
-          </>
-        ) : (
-          <div className="flex-1 min-w-0"><StrategyBuilder onOpenStrikeChart={openStrikeChart} /></div>
-        )}
+        <div className="flex-1 min-w-0 flex flex-col">
+          <div className="flex-1 min-h-0 flex">
+            {view === 'chart' ? (
+              <>
+                {panel && <SidePanel panel={panel} onClose={() => setPanel(null)} />}
+                <div className="flex-1 min-w-0"><ChartWorkspace /></div>
+              </>
+            ) : (
+              <div className="flex-1 min-w-0"><StrategyBuilder onOpenStrikeChart={openStrikeChart} /></div>
+            )}
+          </div>
+          <TradebookPanel />
+        </div>
       </div>
       <OrderWindow />
     </div>
