@@ -15,14 +15,17 @@ export interface StripIndex {
 
 export const STRIP_INDICES: StripIndex[] = [
   { code: 'NIFTY', name: 'NIFTY', exchange: 'NSE', selectable: true },
-  { code: 'BANKNIFTY', name: 'BANKNIFTY', exchange: 'NSE' },
-  { code: 'FINNIFTY', name: 'FINNIFTY', exchange: 'NSE' },
-  { code: 'MIDCPNIFTY', name: 'MIDCPNIFTY', exchange: 'NSE' },
+  { code: 'BANKNIFTY', name: 'BANKNIFTY', exchange: 'NSE', selectable: true },
+  { code: 'FINNIFTY', name: 'FINNIFTY', exchange: 'NSE', selectable: true },
+  { code: 'MIDCPNIFTY', name: 'MIDCPNIFTY', exchange: 'NSE', selectable: true },
   { code: 'INDIAVIX', name: 'INDIA VIX', exchange: 'NSE', decimals: 2 },
   { code: 'SENSEX', name: 'SENSEX', exchange: 'BSE', selectable: true },
-  { code: 'BANKEX', name: 'BANKEX', exchange: 'BSE' },
-  { code: 'BTC', name: 'BTC', exchange: 'CRYPTO', decimals: 1 },
-  { code: 'ETH', name: 'ETH', exchange: 'CRYPTO', decimals: 1 },
+  { code: 'BANKEX', name: 'BANKEX', exchange: 'BSE', selectable: true },
+  { code: 'BTC', name: 'BTC', exchange: 'CRYPTO', decimals: 1, selectable: true },
+  { code: 'ETH', name: 'ETH', exchange: 'CRYPTO', decimals: 1, selectable: true },
 ]
+
+/** Indices that support an option chain (used by the index selector). */
+export const OPTION_CHAIN_INDICES = STRIP_INDICES.filter((i) => i.selectable)
 
 export const EXCHANGE_ORDER: Exchange[] = ['NSE', 'BSE', 'CRYPTO']

@@ -1,41 +1,111 @@
-// ── Order funnel (single entry point for ALL order placement) ────────────────
-// Quick Trade ON  → submit directly across selected brokers with default qty.
-// Quick Trade OFF → open the shared Order Window for review.
-// Execution is simulated for now; real broker APIs map into submitOrder() later.
+// ── Global order service — single entry point for ALL order placement ────────
+// Every module (Option Chain, Chart, Strategy execution, future modules) calls
+// placeOrder(intent). Nothing else builds payloads or talks to the broker API.
+//
+//   • Reads trading config from brokerStore: Quick Trade vs Normal, and the
+//     selected broker(s) (single or multi — the fan-out is identical).
+//   • Quick Trade ON  → submits immediately across selected brokers.
+//   • Quick Trade OFF → opens the shared Order Window for review, which then
+//     calls submitOrder() with the reviewed legs.
+//   • Order-building logic lives entirely in buildPayload.ts.
 
+import { AxiosError } from 'axios'
 import toast from 'react-hot-toast'
 import { resolveQty, useBrokerStore, type BrokerAccount } from '@/store/brokerStore'
-import { useOrderStore, type BrokerExecResult, type OrderIntent } from '@/store/orderStore'
+import { useOrderStore, type BrokerExecResult } from '@/store/orderStore'
+import { placeOrderApi } from '@/api/trade'
+import { buildPlaceOrderRequest, validateIntent } from './buildPayload'
+import { ensureLotSizes, lotSizeFor } from './lotSize'
+import { interpretOrderResponse } from './parseResponse'
+import type { BrokerOrderResult, OrderIntent, PlaceOrderOutcome } from './types'
 
-export interface BrokerQty { broker: BrokerAccount; qty: number }
+/** A broker leg expressed in LOTS (quantity = lots × index lot size). */
+export interface BrokerLeg { broker: BrokerAccount; lots: number }
 
-/** Every Buy/Sell in the app funnels through here. */
+/** Default number of lots for a broker, from its configured quantity ÷ lot size. */
+export function defaultLotsFor(broker: BrokerAccount, index: string): number {
+  const size = lotSizeFor(index)
+  return Math.max(1, Math.round(resolveQty(broker, index) / size))
+}
+
+function errMessage(e: unknown): string {
+  if (e instanceof AxiosError) {
+    const d = e.response?.data as { message?: string; error?: string } | undefined
+    return d?.message || d?.error || e.message || 'Order failed'
+  }
+  return e instanceof Error ? e.message : 'Order failed'
+}
+
+/** Currently selected broker accounts (single- or multi-broker — same path). */
+function selectedBrokers(): BrokerAccount[] {
+  const { accounts, selectedIds } = useBrokerStore.getState()
+  return accounts.filter((a) => selectedIds.includes(a.id))
+}
+
+/**
+ * Public entry point. Funnels through trading config and either submits
+ * immediately (Quick Trade) or opens the Order Window for review.
+ */
 export function placeOrder(intent: OrderIntent): void {
-  const { accounts, selectedIds, quickTrade } = useBrokerStore.getState()
-  const brokers = accounts.filter((a) => selectedIds.includes(a.id))
+  const brokers = selectedBrokers()
   if (!brokers.length) { toast.error('Select a broker first'); return }
 
-  if (quickTrade) {
-    submitOrder(intent, brokers.map((b) => ({ broker: b, qty: resolveQty(b, intent.underlying) })))
-    toast.success(`${intent.side} ${intent.instrument} · ${brokers.length} broker${brokers.length > 1 ? 's' : ''} (Quick Trade)`)
+  const { quickTrade } = useBrokerStore.getState()
+  const err = validateIntent(intent)
+
+  // Quick Trade can only auto-submit when the intent is already complete
+  // (e.g. a market order). Anything needing a price falls back to the window.
+  if (quickTrade && !err) {
+    // Warm lot sizes first so default lots reflect the real index lot size.
+    void ensureLotSizes().then(() =>
+      submitOrder(intent, brokers.map((b) => ({ broker: b, lots: intent.lot ?? defaultLotsFor(b, intent.indexName) }))),
+    )
   } else {
     useOrderStore.getState().openWindow(intent)
   }
 }
 
-/** Fan out across brokers, tracking per-broker execution status. */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-export function submitOrder(_intent: OrderIntent, legs: BrokerQty[]): void {
-  const sent: BrokerExecResult[] = legs.map((l) => ({ brokerId: l.broker.id, displayName: l.broker.displayName, qty: l.qty, status: 'sent' }))
-  useOrderStore.getState().setResults(sent)
+/**
+ * Fan out across brokers, calling the real Place Order API per leg.
+ * Updates the order store for live UI status and returns a standardized outcome.
+ */
+export async function submitOrder(intent: OrderIntent, legs: BrokerLeg[]): Promise<PlaceOrderOutcome> {
+  const err = validateIntent(intent)
+  if (err) { toast.error(err); return { ok: false, results: [] } }
+  const active = legs.filter((l) => l.lots > 0)
+  if (!active.length) { toast.error('Set a quantity'); return { ok: false, results: [] } }
 
-  // Simulated fills — real API responses replace this, preserving partial-failure handling.
-  window.setTimeout(() => {
-    const filled: BrokerExecResult[] = legs.map((l, i) => ({
-      brokerId: l.broker.id, displayName: l.broker.displayName, qty: l.qty,
-      status: i > 0 && i % 7 === 0 ? 'failed' : 'filled',
-      message: i > 0 && i % 7 === 0 ? 'Margin shortfall' : undefined,
-    }))
-    useOrderStore.getState().setResults(filled)
-  }, 650)
+  await ensureLotSizes()
+  const size = lotSizeFor(intent.indexName)
+
+  const store = useOrderStore.getState()
+  // Optimistic "sent" state for the Order Window (qty = lots × lot size).
+  store.setResults(active.map<BrokerExecResult>((l) => ({
+    brokerId: l.broker.id, displayName: l.broker.displayName, qty: l.lots * size, status: 'sent',
+  })))
+
+  const results = await Promise.all(active.map<Promise<BrokerOrderResult>>(async (l) => {
+    const qty = l.lots * size
+    const base = { brokerId: l.broker.id, brokerName: l.broker.brokerName, displayName: l.broker.displayName, qty }
+    try {
+      const raw = await placeOrderApi(buildPlaceOrderRequest(intent, l.broker.brokerName, l.lots))
+      // HTTP 200 can still carry a broker rejection — judge by order status.
+      const verdict = interpretOrderResponse(raw)
+      return { ...base, ok: verdict.ok, message: verdict.message, data: raw }
+    } catch (e) {
+      return { ...base, ok: false, message: errMessage(e) }
+    }
+  }))
+
+  store.setResults(results.map<BrokerExecResult>((r) => ({
+    brokerId: r.brokerId, displayName: r.displayName, qty: r.qty,
+    status: r.ok ? 'filled' : 'failed', message: r.message,
+  })))
+
+  const okCount = results.filter((r) => r.ok).length
+  if (okCount === results.length) toast.success(`${intent.side} ${intent.display ?? intent.symbolName} placed · ${okCount} broker${okCount > 1 ? 's' : ''}`)
+  else if (okCount === 0) toast.error(`Order failed · ${results[0]?.message ?? ''}`)
+  else toast(`Placed on ${okCount}/${results.length} brokers`, { icon: '⚠️' })
+
+  return { ok: okCount === results.length, results }
 }

@@ -3,9 +3,10 @@ import toast from 'react-hot-toast'
 import { clsx } from 'clsx'
 import { useChartStore } from '../store/chartStore'
 import { useQuote } from '../store/marketStore'
-import { SYMBOLS, getSymbol } from '../types/market'
+import { SYMBOLS } from '../types/market'
 import { type OptType, type Side } from '../types/options'
 import { OptionChainTable } from '../features/optionchain/OptionChainTable'
+import { IndexSelect } from '../features/optionchain/IndexSelect'
 import { useLiveOptionChain } from '../features/optionchain/useOptionChain'
 import { useWatchlistStore } from '../store/watchlistStore'
 import { applySymbol } from '../store/chartLayoutStore'
@@ -92,6 +93,7 @@ function Watchlist() {
 
 function OptionChainPanel() {
   const symbolCode = useChartStore((s) => s.symbolCode)
+  const setSymbol = useChartStore((s) => s.setSymbol)
   const [expiry, setExpiry] = useState('')
   const { chain, expiries } = useLiveOptionChain(symbolCode, expiry)
   const addWatch = useWatchlistStore((s) => s.add)
@@ -101,31 +103,39 @@ function OptionChainPanel() {
   useEffect(() => { if (expiries.length && !expiries.includes(expiry)) setExpiry(expiries[0]) }, [expiries, expiry])
 
   const onAction = (strike: number, optType: OptType, side: Side, ltp: number) =>
-    placeOrder({ instrument: `${symbolCode} ${strike} ${optType}`, underlying: symbolCode, side, ltp, orderType: 'MARKET' })
+    placeOrder({
+      symbolName: `${symbolCode}_${expiry.replace(/\s/g, '')}_${optType}_${strike}`,
+      indexName: symbolCode,
+      display: `${symbolCode} ${strike} ${optType}`,
+      side, ltp, priceType: 'MKT',
+    })
   const onWatch = (strike: number, optType: OptType, ltp: number) => {
     addWatch({ id: `${symbolCode}_${expiry}_${optType}_${strike}`, symbol: `${symbolCode}_${expiry.replace(/\s/g, '')}_${optType}_${strike}`, display: `${symbolCode} ${strike} ${optType}`, ltp })
     toast.success('Added to watchlist')
   }
   return (
-    <OptionChainTable
-      chain={chain} expiries={expiries} compact expiry={expiry} onExpiry={setExpiry}
-      onAction={onAction} onWatch={onWatch}
-      onChart={(strike, optType) => applySymbol({
-        key: `${symbolCode}_${expiry}_${optType}_${strike}`,
-        candleSymbol: `${symbolCode}_${expiry}_${optType}_${strike}`,
-        display: `${symbolCode} ${strike} ${optType}`,
-        kind: 'OPTION',
-      })}
-    />
+    <div className="flex flex-col h-full">
+      <IndexSelect value={symbolCode} onChange={setSymbol} />
+      <div className="flex-1 min-h-0">
+        <OptionChainTable
+          chain={chain} expiries={expiries} compact expiry={expiry} onExpiry={setExpiry}
+          onAction={onAction} onWatch={onWatch}
+          onChart={(strike, optType) => applySymbol({
+            key: `${symbolCode}_${expiry}_${optType}_${strike}`,
+            candleSymbol: `${symbolCode}_${expiry}_${optType}_${strike}`,
+            display: `${symbolCode} ${strike} ${optType}`,
+            kind: 'OPTION',
+          })}
+        />
+      </div>
+    </div>
   )
 }
 
 // ── Side panel container ─────────────────────────────────────────────────────
 
 export function SidePanel({ panel, onClose }: { panel: PanelKey; onClose: () => void }) {
-  const symbolCode = useChartStore((s) => s.symbolCode)
-  const sym = getSymbol(symbolCode)
-  const title = panel === 'watchlist' ? 'Watchlist' : `${sym.display} · Option Chain`
+  const title = panel === 'watchlist' ? 'Watchlist' : 'Option Chain'
 
   return (
     <aside className="flex flex-col w-72 shrink-0 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-card-dark">

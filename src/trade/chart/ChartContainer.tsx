@@ -97,7 +97,12 @@ export function ChartContainer({ symbol, tradable, defaultTimeframe = '5' }: Pro
   const startDrawing = (name: string) => { engineRef.current?.startDrawing(name); setMenu(null) }
   const clearDrawings = () => engineRef.current?.clearDrawings()
   const toggleFullscreen = () => { if (!document.fullscreenElement) wrapRef.current?.requestFullscreen?.(); else document.exitFullscreen?.() }
-  const trade = (side: 'BUY' | 'SELL') => placeOrder({ instrument: symbol.display, underlying: symbol.key, side, ltp: quote?.ltp, orderType: 'MARKET' })
+  const trade = (side: 'BUY' | 'SELL') => placeOrder({
+    symbolName: symbol.candleSymbol,
+    indexName: symbol.key.split('_')[0],
+    display: symbol.display,
+    side, ltp: quote?.ltp, priceType: 'MKT',
+  })
 
   const toolBtn = 'flex items-center gap-1.5 h-8 px-2 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5 transition-colors'
   const up = (quote?.chg ?? 0) >= 0

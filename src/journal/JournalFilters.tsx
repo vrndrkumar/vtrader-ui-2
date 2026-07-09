@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { clsx } from 'clsx'
 import { StrategySelect } from './StrategySelect'
 import {
-  DATE_PRESETS, activeCount, defaultFilters, presetRange, loadPresets, savePresets,
+  DATE_PRESETS, activeCount, defaultFilters, presetRange, loadPresets, savePresets, rehydratePreset,
   type Filters, type SavedPreset,
 } from './filters'
 
@@ -102,7 +102,7 @@ export function JournalFilters({ filters, onChange, brokers, tagOptions }: {
           <span className="text-[10px] uppercase tracking-wide text-slate-400">Presets</span>
           {presets.map((p) => (
             <span key={p.name} className="group inline-flex items-center gap-1 pl-2 pr-1 h-6 rounded-full bg-white dark:bg-white/5 border border-slate-200 dark:border-slate-700 text-xs">
-              <button onClick={() => onChange(p.filters)} className="text-slate-600 dark:text-slate-300">{p.name}</button>
+              <button onClick={() => onChange(rehydratePreset(p.filters))} className="text-slate-600 dark:text-slate-300">{p.name}</button>
               <button onClick={() => delPreset(p.name)} className="text-slate-300 hover:text-red-500"><svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 6l12 12M18 6L6 18" /></svg></button>
             </span>
           ))}

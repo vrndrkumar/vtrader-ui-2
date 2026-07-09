@@ -1,11 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import { clsx } from 'clsx'
-import { resolveQty, useBrokerStore } from '@/store/brokerStore'
-import { useOrderStore, type ExecStatus, type OrderType } from '@/store/orderStore'
-import { submitOrder } from '@/services/orders/placeOrder'
+import { useBrokerStore } from '@/store/brokerStore'
+import { useOrderStore, type ExecStatus } from '@/store/orderStore'
+import { submitOrder, defaultLotsFor } from '@/services/orders/placeOrder'
+import { ensureLotSizes, lotSizeFor } from '@/services/orders/lotSize'
+import type { PriceType } from '@/services/orders/types'
 
-const ORDER_TYPES: OrderType[] = ['MARKET', 'LIMIT', 'SL', 'SL-M']
-const needsPrice = (t: OrderType) => t === 'LIMIT' || t === 'SL' || t === 'SL-M'
+const PRICE_TYPES: { v: PriceType; l: string }[] = [
+  { v: 'MKT', l: 'Market' }, { v: 'LMT', l: 'Limit' }, { v: 'SL-LMT', l: 'SL-Limit' },
+]
+const needsPrice = (t: PriceType) => t === 'LMT' || t === 'SL-LMT'
+const priceLabel = (t: PriceType) => (t === 'SL-LMT' ? 'Trigger price' : 'Limit price')
 
 const statusStyle: Record<ExecStatus, string> = {
   queued: 'bg-slate-100 text-slate-500 dark:bg-white/10',
@@ -20,31 +25,38 @@ export function OrderWindow() {
   const selectedIds = useBrokerStore((s) => s.selectedIds)
   const brokers = useMemo(() => accounts.filter((a) => selectedIds.includes(a.id)), [accounts, selectedIds])
 
-  const [orderType, setOrderType] = useState<OrderType>('MARKET')
+  const [orderType, setOrderType] = useState<PriceType>('MKT')
   const [product, setProduct] = useState<'Normal' | 'MIS'>('Normal')
   const [price, setPrice] = useState('')
-  const [qty, setQty] = useState<Record<number, number>>({})
+  const [lots, setLots] = useState<Record<number, number>>({})
+  const [lotSize, setLotSize] = useState(1)
 
-  // Initialise per-broker qty + price whenever a new order is opened.
+  // Initialise per-broker lots + price whenever a new order is opened.
   useEffect(() => {
     if (!open || !intent) return
-    setOrderType(intent.orderType ?? 'MARKET')
+    setOrderType(intent.priceType ?? 'MKT')
     setPrice(intent.price != null ? String(intent.price) : intent.ltp != null ? String(intent.ltp) : '')
     setProduct(intent.product ?? 'Normal')
-    setQty(Object.fromEntries(brokers.map((b) => [b.id, resolveQty(b, intent.underlying)])))
+    void ensureLotSizes().then(() => {
+      setLotSize(lotSizeFor(intent.indexName))
+      setLots(Object.fromEntries(brokers.map((b) => [b.id, intent.lot ?? defaultLotsFor(b, intent.indexName)])))
+    })
   }, [open, intent, brokers])
 
   if (!open || !intent) return null
 
   const placed = results.length > 0
   const isBuy = intent.side === 'BUY'
-  const totalQty = brokers.reduce((s, b) => s + (qty[b.id] ?? 0), 0)
-  const statusOf = (id: number) => results.find((r) => r.brokerId === id)?.status
+  const totalLots = brokers.reduce((s, b) => s + (lots[b.id] ?? 0), 0)
+  const totalQty = totalLots * lotSize
+  const resultOf = (id: number) => results.find((r) => r.brokerId === id)
+  const statusOf = (id: number) => resultOf(id)?.status
+  const priceMissing = needsPrice(orderType) && !(Number(price) > 0)
 
   const place = () => {
-    submitOrder(
-      { ...intent, orderType, product, price: needsPrice(orderType) ? Number(price) || 0 : undefined },
-      brokers.map((b) => ({ broker: b, qty: qty[b.id] ?? 0 })),
+    void submitOrder(
+      { ...intent, priceType: orderType, product, price: needsPrice(orderType) ? Number(price) || 0 : undefined },
+      brokers.map((b) => ({ broker: b, lots: lots[b.id] ?? 0 })),
     )
   }
 
@@ -55,7 +67,7 @@ export function OrderWindow() {
         <div className={clsx('flex items-center justify-between px-4 py-3', isBuy ? 'bg-brand-600' : 'bg-red-600')}>
           <div className="text-white">
             <p className="text-[11px] opacity-80">{isBuy ? 'BUY' : 'SELL'} · {product}</p>
-            <p className="font-semibold">{intent.instrument}</p>
+            <p className="font-semibold">{intent.display ?? intent.symbolName}</p>
           </div>
           <button onClick={close} className="text-white/80 hover:text-white"><svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 6l12 12M18 6L6 18" /></svg></button>
         </div>
@@ -64,8 +76,8 @@ export function OrderWindow() {
           {/* Order type + product */}
           <div className="flex items-center gap-2">
             <div className="flex gap-1 p-0.5 rounded-lg bg-slate-100 dark:bg-white/5">
-              {ORDER_TYPES.map((t) => (
-                <button key={t} onClick={() => setOrderType(t)} className={clsx('px-2.5 py-1 rounded-md text-xs font-medium', orderType === t ? 'bg-white dark:bg-slate-700 shadow-sm text-slate-800 dark:text-white' : 'text-slate-500')}>{t}</button>
+              {PRICE_TYPES.map((t) => (
+                <button key={t.v} onClick={() => setOrderType(t.v)} className={clsx('px-2.5 py-1 rounded-md text-xs font-medium', orderType === t.v ? 'bg-white dark:bg-slate-700 shadow-sm text-slate-800 dark:text-white' : 'text-slate-500')}>{t.l}</button>
               ))}
             </div>
             <div className="ml-auto flex gap-1 p-0.5 rounded-lg bg-slate-100 dark:bg-white/5">
@@ -77,27 +89,38 @@ export function OrderWindow() {
 
           {needsPrice(orderType) && (
             <div>
-              <label className="text-[11px] text-slate-400">Price</label>
-              <input value={price} onChange={(e) => setPrice(e.target.value)} inputMode="decimal" className="w-full h-9 px-3 rounded-lg bg-slate-100 dark:bg-white/5 text-sm outline-none tabular-nums" placeholder="0.00" />
+              <label className="text-[11px] text-slate-400">{priceLabel(orderType)}</label>
+              <input value={price} onChange={(e) => setPrice(e.target.value)} inputMode="decimal" className="w-full h-9 px-3 rounded-lg bg-slate-100 dark:bg-white/5 text-sm outline-none tabular-nums" placeholder="0.00" autoFocus />
+              {orderType === 'SL-LMT' && <p className="mt-1 text-[10px] text-slate-400">Limit price is derived from the trigger automatically.</p>}
             </div>
           )}
 
-          {/* Per-broker legs */}
+          {/* Per-broker legs — input is LOTS, quantity = lots × lot size */}
           <div>
-            <p className="text-[11px] font-medium text-slate-400 mb-1.5">Brokers ({brokers.length})</p>
+            <div className="flex items-center justify-between mb-1.5">
+              <p className="text-[11px] font-medium text-slate-400">Brokers ({brokers.length}) · Lots</p>
+              <p className="text-[11px] text-slate-400">Lot size <span className="font-semibold text-slate-600 dark:text-slate-300 tabular-nums">{lotSize}</span></p>
+            </div>
             <div className="space-y-1.5">
               {brokers.map((b) => {
                 const st = statusOf(b.id)
+                const res = resultOf(b.id)
+                const l = lots[b.id] ?? 0
                 return (
                   <div key={b.id} className="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-slate-50 dark:bg-white/5">
-                    <span className="text-sm font-medium text-slate-700 dark:text-slate-200 truncate flex-1">{b.displayName}</span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-slate-700 dark:text-slate-200 truncate">{b.displayName}</p>
+                      {st === 'failed' && res?.message
+                        ? <p className="text-[10px] text-red-600 leading-tight" title={res.message}>{res.message}</p>
+                        : <p className="text-[10px] text-slate-400 tabular-nums">{l} × {lotSize} = <span className="font-semibold text-slate-500 dark:text-slate-300">{l * lotSize}</span> qty</p>}
+                    </div>
                     {st ? (
-                      <span className={clsx('text-[10px] font-semibold px-2 py-0.5 rounded capitalize', statusStyle[st])}>{st}</span>
+                      <span className={clsx('text-[10px] font-semibold px-2 py-0.5 rounded capitalize', statusStyle[st])}>{st === 'failed' ? 'Rejected' : st}</span>
                     ) : (
                       <div className="flex items-center gap-1">
-                        <button onClick={() => setQty((q) => ({ ...q, [b.id]: Math.max(0, (q[b.id] ?? 0) - 1) }))} className="h-6 w-6 rounded bg-white dark:bg-slate-700 text-slate-500">−</button>
-                        <input value={qty[b.id] ?? 0} onChange={(e) => setQty((q) => ({ ...q, [b.id]: Math.max(0, Number(e.target.value) || 0) }))} className="w-12 h-6 text-center text-sm tabular-nums bg-white dark:bg-slate-700 rounded outline-none" />
-                        <button onClick={() => setQty((q) => ({ ...q, [b.id]: (q[b.id] ?? 0) + 1 }))} className="h-6 w-6 rounded bg-white dark:bg-slate-700 text-slate-500">+</button>
+                        <button onClick={() => setLots((q) => ({ ...q, [b.id]: Math.max(0, (q[b.id] ?? 0) - 1) }))} className="h-6 w-6 rounded bg-white dark:bg-slate-700 text-slate-500">−</button>
+                        <input value={l} onChange={(e) => setLots((q) => ({ ...q, [b.id]: Math.max(0, Number(e.target.value) || 0) }))} className="w-12 h-6 text-center text-sm tabular-nums bg-white dark:bg-slate-700 rounded outline-none" />
+                        <button onClick={() => setLots((q) => ({ ...q, [b.id]: (q[b.id] ?? 0) + 1 }))} className="h-6 w-6 rounded bg-white dark:bg-slate-700 text-slate-500">+</button>
                       </div>
                     )}
                   </div>
@@ -109,11 +132,11 @@ export function OrderWindow() {
 
         {/* Footer */}
         <div className="flex items-center justify-between px-4 py-3 border-t border-slate-100 dark:border-slate-800">
-          <div className="text-xs text-slate-500">Total qty <span className="font-semibold text-slate-800 dark:text-slate-100 tabular-nums">{totalQty}</span></div>
+          <div className="text-xs text-slate-500">{totalLots} lot{totalLots !== 1 ? 's' : ''} · Total qty <span className="font-semibold text-slate-800 dark:text-slate-100 tabular-nums">{totalQty}</span></div>
           {placed ? (
             <button onClick={close} className="px-6 py-2 rounded-lg bg-slate-800 dark:bg-white/10 text-white text-sm font-semibold">Done</button>
           ) : (
-            <button onClick={place} disabled={brokers.length === 0 || totalQty === 0} className={clsx('px-8 py-2 rounded-lg text-white text-sm font-semibold disabled:opacity-40', isBuy ? 'bg-brand-600 hover:bg-brand-700' : 'bg-red-600 hover:bg-red-700')}>
+            <button onClick={place} disabled={brokers.length === 0 || totalQty === 0 || priceMissing} className={clsx('px-8 py-2 rounded-lg text-white text-sm font-semibold disabled:opacity-40', isBuy ? 'bg-brand-600 hover:bg-brand-700' : 'bg-red-600 hover:bg-red-700')}>
               {isBuy ? 'Buy' : 'Sell'}
             </button>
           )}

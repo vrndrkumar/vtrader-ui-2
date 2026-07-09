@@ -7,6 +7,7 @@ import { StrategyBuilder } from './features/strategy/StrategyBuilder'
 import { realtime } from './data/realtime/realtimeService'
 import { applySymbol } from './store/chartLayoutStore'
 import { OrderWindow } from '@/components/order/OrderWindow'
+import { ensureLotSizes } from '@/services/orders/lotSize'
 import { SYMBOLS, type ChartSymbol } from './types/market'
 
 export default function TradePage() {
@@ -17,6 +18,7 @@ export default function TradePage() {
   // Keep the realtime cache warm for all indices for the whole session.
   useEffect(() => {
     realtime.start()
+    void ensureLotSizes() // preload index lot sizes for order quantity
     const unsubs = SYMBOLS.flatMap((s) => [realtime.subscribeOptionChain(s.code), realtime.subscribeIndexTick(s.code)])
     return () => unsubs.forEach((u) => u())
   }, [])

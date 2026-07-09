@@ -55,6 +55,7 @@ export default function JournalPage() {
   const [dir, setDir] = useState(-1)
   const [page, setPage] = useState(1)
   const [size, setSize] = useState(25)
+  const [syncedAt, setSyncedAt] = useState<Date | null>(null)
 
   const entries = useJournalStore((s) => s.entries)
   const strategyLabel = useStrategyLabel()
@@ -63,7 +64,8 @@ export default function JournalPage() {
   const fetchTrades = () => {
     setLoading(true)
     getTrades({ fromDate: filters.from, toDate: filters.to })
-      .then(setTrades).catch(() => setTrades([])).finally(() => setLoading(false))
+      .then(setTrades).catch(() => setTrades([]))
+      .finally(() => { setLoading(false); setSyncedAt(new Date()) })
   }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { fetchTrades() }, [filters.from, filters.to])
@@ -104,9 +106,18 @@ export default function JournalPage() {
   return (
     <div className="h-full overflow-y-auto bg-slate-50 dark:bg-surface-dark">
       <div className="max-w-7xl mx-auto px-6 pb-8">
-        <div className="pt-6 mb-4">
-          <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Trade Journal</h1>
-          <p className="text-sm text-slate-500">Review, annotate and learn from every trade.</p>
+        <div className="pt-6 mb-4 flex items-start justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Trade Journal</h1>
+            <p className="text-sm text-slate-500">Review, annotate and learn from every trade.</p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {syncedAt && <span className="text-[11px] text-slate-400 hidden sm:block">Synced {syncedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>}
+            <button onClick={fetchTrades} disabled={loading} className="flex items-center gap-1.5 h-9 px-3 rounded-lg text-sm font-medium border border-slate-200 dark:border-slate-700 bg-white dark:bg-white/5 text-slate-600 dark:text-slate-300 hover:border-slate-300 disabled:opacity-60">
+              <svg viewBox="0 0 24 24" className={clsx('h-4 w-4', loading && 'animate-spin')} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 11-2.64-6.36M21 3v6h-6" /></svg>
+              {loading ? 'Syncing…' : 'Sync'}
+            </button>
+          </div>
         </div>
 
         {/* Stats */}

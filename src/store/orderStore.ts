@@ -1,19 +1,10 @@
 // ── Order Window state (shared modal) ────────────────────────────────────────
 
 import { create } from 'zustand'
+import type { OrderIntent } from '@/services/orders/types'
 
-export type OrderType = 'MARKET' | 'LIMIT' | 'SL' | 'SL-M'
+export type { OrderIntent } from '@/services/orders/types'
 export type ExecStatus = 'queued' | 'sent' | 'filled' | 'failed'
-
-export interface OrderIntent {
-  instrument: string        // display, e.g. "NIFTY 24500 CE"
-  underlying: string        // "NIFTY" — drives default-qty class
-  side: 'BUY' | 'SELL'
-  ltp?: number
-  orderType?: OrderType
-  price?: number
-  product?: 'Normal' | 'MIS'
-}
 
 export interface BrokerExecResult {
   brokerId: number

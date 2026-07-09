@@ -109,6 +109,16 @@ export function applyFilters(
   })
 }
 
+/**
+ * Re-resolve a saved preset's date range at apply time. A preset saved as
+ * "Today" yesterday must mean today when clicked now — so recompute from/to for
+ * every relative preset; only 'custom' keeps its stored dates.
+ */
+export function rehydratePreset(f: Filters): Filters {
+  const r = presetRange(f.datePreset)
+  return r ? { ...f, ...r } : f
+}
+
 // ── Saved filter presets ─────────────────────────────────────────────────────
 export interface SavedPreset { name: string; filters: Filters }
 const PRESET_KEY = 'vtrader_journal_presets'
