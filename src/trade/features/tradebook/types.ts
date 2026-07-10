@@ -43,6 +43,7 @@ export type OrderStatus = 'PENDING' | 'OPEN' | 'COMPLETE' | 'CANCELLED' | 'REJEC
 
 export interface Order {
   id: string
+  orderId: string             // broker order id (used to modify/cancel)
   brokerId: number
   brokerName: string
   brokerLabel: string

@@ -31,7 +31,21 @@ export function placeMarket(
 
 export function modifyStop(id: string, price: number) { useTradeStore.getState().updatePosition(id, { stopLoss: +price.toFixed(2) }) }
 export function modifyTarget(id: string, price: number) { useTradeStore.getState().updatePosition(id, { target: +price.toFixed(2) }) }
+export function modifyStopQty(id: string, qty: number) { useTradeStore.getState().updatePosition(id, { stopQty: Math.max(1, Math.round(qty)) }) }
+export function modifyTargetQty(id: string, qty: number) { useTradeStore.getState().updatePosition(id, { targetQty: Math.max(1, Math.round(qty)) }) }
+export function clearStop(id: string) { useTradeStore.getState().updatePosition(id, { stopLoss: undefined, stopQty: undefined }) }
+export function clearTarget(id: string) { useTradeStore.getState().updatePosition(id, { target: undefined, targetQty: undefined }) }
 export function exitPosition(id: string) { useTradeStore.getState().removePosition(id) }
+
+/** Change a position's quantity magnitude (sign preserved). 0 closes it. */
+export function modifyQty(id: string, magnitude: number) {
+  const st = useTradeStore.getState()
+  const p = st.positions[id]
+  if (!p) return
+  if (magnitude <= 0) { st.removePosition(id); return }
+  const sign = p.netQty >= 0 ? 1 : -1
+  st.updatePosition(id, { netQty: sign * Math.round(magnitude) })
+}
 
 // Draggable SL/Target lines → modify (mock; real modify API maps here).
 setOrderLineDragEnd((d, price) => {

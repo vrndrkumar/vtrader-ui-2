@@ -1,75 +1,124 @@
-// ── Tradebook data source (SWAP POINT for real APIs) ─────────────────────────
-// Today these return mock data derived from the selected brokers. When broker
-// order/position endpoints land, replace the bodies of fetchPositions() and
-// fetchOrders() with real calls (e.g. GET /trade/positions, /trade/orders) that
-// map the responses into Position[] / Order[]. Nothing else in the UI changes.
+// ── Tradebook data source (live APIs only) ───────────────────────────────────
+// Positions come from GET /trade/positions, orders from GET /trade/order-book.
+// LTP / unrealized P&L are NOT taken from these snapshots — they are computed
+// live in the UI from the realtime tick feed (TICK_* per-symbol channel).
 
+import { getOrderBook, getPositions } from '@/api/trade'
 import type { BrokerAccount } from '@/store/brokerStore'
-import type { Order, Position, Product, TxnSide, PriceType, OrderStatus } from './types'
+import type { Order, Position, Product, PriceType, OrderStatus } from './types'
 
-const OPTIONS: { display: string; symbol: string; index: string; base: number }[] = [
-  { display: 'NIFTY 24500 CE',    symbol: 'NIFTY_24JUL26_CE_24500',    index: 'NIFTY',     base: 142 },
-  { display: 'NIFTY 24300 PE',    symbol: 'NIFTY_24JUL26_PE_24300',    index: 'NIFTY',     base: 118 },
-  { display: 'SENSEX 80500 CE',   symbol: 'SENSEX_22JUL26_CE_80500',   index: 'SENSEX',    base: 205 },
-  { display: 'BANKNIFTY 52000 PE', symbol: 'BANKNIFTY_29JUL26_PE_52000', index: 'BANKNIFTY', base: 264 },
-  { display: 'NIFTY 24700 CE',    symbol: 'NIFTY_31JUL26_CE_24700',    index: 'NIFTY',     base: 88 },
-]
-
-const rnd = (seed: number) => { const x = Math.sin(seed) * 10000; return x - Math.floor(x) }
-const round2 = (n: number) => Math.round(n * 100) / 100
-
-/** Mock positions spread across the selected brokers. */
-export async function fetchPositions(brokers: BrokerAccount[]): Promise<Position[]> {
-  const out: Position[] = []
-  brokers.forEach((b, bi) => {
-    const count = 2 + (bi % 2) // 2–3 positions per broker
-    for (let i = 0; i < count; i++) {
-      const o = OPTIONS[(bi * 2 + i) % OPTIONS.length]
-      const r = rnd(bi * 7 + i * 13 + 1)
-      const long = r > 0.4
-      const lot = o.index === 'SENSEX' ? 20 : o.index === 'BANKNIFTY' ? 35 : 75
-      const lots = 1 + Math.floor(rnd(bi + i + 3) * 3)
-      const q = lot * lots
-      const avg = round2(o.base * (0.9 + rnd(bi + i + 5) * 0.2))
-      const ltp = round2(avg * (0.85 + rnd(bi * 3 + i + 9) * 0.35))
-      out.push({
-        id: `pos-${b.id}-${i}`,
-        brokerId: b.id, brokerName: b.brokerName, brokerLabel: b.displayName,
-        symbol: o.symbol, display: o.display, indexName: o.index,
-        product: (['MIS', 'NRML'] as Product[])[i % 2],
-        buyQty: long ? q : 0, sellQty: long ? 0 : q,
-        buyAvg: long ? avg : 0, sellAvg: long ? 0 : avg,
-        avgPrice: avg, ltp, prevClose: round2(avg * 0.98), realized: 0, status: 'OPEN',
-      })
-    }
-  })
-  return out
+const num = (r: Record<string, unknown>, keys: string[], d = 0): number => {
+  for (const k of keys) { const v = r[k]; if (v != null && v !== '') { const n = Number(v); if (!Number.isNaN(n)) return n } }
+  return d
+}
+const str = (r: Record<string, unknown>, keys: string[], d = ''): string => {
+  for (const k of keys) { const v = r[k]; if (v != null && v !== '') return String(v) }
+  return d
 }
 
-/** Mock orders spread across the selected brokers, covering every status. */
+/** "NIFTY_24JUL26_CE_24500" → "NIFTY 24500 CE"; falls back to the raw symbol. */
+function prettySymbol(sym: string): { display: string; index: string } {
+  const m = /^([A-Z]+)[_-].*?[_-](CE|PE|FUT)[_-]?(\d+)?$/i.exec(sym)
+  if (m) {
+    const [, idx, kind, strike] = m
+    const k = kind.toUpperCase()
+    return { index: idx.toUpperCase(), display: k === 'FUT' ? `${idx} FUT` : `${idx} ${strike ?? ''} ${k}`.trim() }
+  }
+  return { display: sym || '—', index: (sym.split(/[_-]/)[0] || '').toUpperCase() }
+}
+
+// ── Positions ────────────────────────────────────────────────────────────────
+
+function mapPosition(r: Record<string, unknown>, b: BrokerAccount, i: number): Position {
+  const symbol = str(r, ['symbolName', 'symbol', 'tradingSymbol', 'tradingsymbol', 'symbol_name', 'instrument'])
+  const parsed = prettySymbol(symbol)
+  const buyQty = num(r, ['buyQty', 'buyQuantity', 'buy_quantity', 'totalBuyQty'])
+  const sellQty = num(r, ['sellQty', 'sellQuantity', 'sell_quantity', 'totalSellQty'])
+  const netQ = num(r, ['netQty', 'netQuantity', 'net_quantity', 'quantity', 'netqty'], buyQty - sellQty)
+  const buyAvg = num(r, ['buyAvg', 'buyAvgPrice', 'buy_price', 'avgBuyPrice'])
+  const sellAvg = num(r, ['sellAvg', 'sellAvgPrice', 'sell_price', 'avgSellPrice'])
+  const avgPrice = num(r, ['avgPrice', 'averagePrice', 'average_price', 'netAvgPrice', 'net_average_price'],
+    netQ >= 0 ? buyAvg : sellAvg)
+  const ltp = num(r, ['ltp', 'lastPrice', 'last_price', 'lastTradedPrice', 'ltpPrice'], avgPrice) // seed only; live LTP overrides
+  return {
+    id: str(r, ['id', 'positionId'], `${b.id}-${symbol}-${i}`),
+    brokerId: b.id, brokerName: b.brokerName, brokerLabel: b.displayName,
+    symbol, display: str(r, ['displayName', 'display'], parsed.display),
+    indexName: str(r, ['indexName', 'index', 'name'], parsed.index),
+    product: (str(r, ['product', 'productType'], 'MIS').toUpperCase() as Product) || 'MIS',
+    buyQty: buyQty || (netQ > 0 ? netQ : 0),
+    sellQty: sellQty || (netQ < 0 ? -netQ : 0),
+    buyAvg: buyAvg || (netQ > 0 ? avgPrice : 0),
+    sellAvg: sellAvg || (netQ < 0 ? avgPrice : 0),
+    avgPrice,
+    ltp,
+    prevClose: num(r, ['prevClose', 'close', 'closePrice', 'close_price'], avgPrice),
+    realized: num(r, ['realized', 'realised', 'realizedPnl', 'realisedPnl', 'realized_pnl', 'bookedPnl']),
+    status: netQ === 0 ? 'CLOSED' : 'OPEN',
+  }
+}
+
+/** Live positions across the selected brokers. */
+export async function fetchPositions(brokers: BrokerAccount[]): Promise<Position[]> {
+  const perBroker = await Promise.all(brokers.map(async (b) => {
+    try {
+      const rows = await getPositions(b.brokerName)
+      return rows.map((r, i) => mapPosition(r, b, i))
+    } catch { return [] as Position[] } // one broker failing shouldn't blank the rest
+  }))
+  return perBroker.flat()
+}
+
+// ── Orders ────────────────────────────────────────────────────────────────────
+
+function mapOrderStatus(raw: string): OrderStatus {
+  const s = raw.toLowerCase()
+  if (/reject/.test(s)) return 'REJECTED'
+  if (/cancel/.test(s)) return 'CANCELLED'
+  if (/complete|filled|traded|executed|success/.test(s)) return 'COMPLETE'
+  if (/trigger.?pending|pending/.test(s)) return 'PENDING'
+  return 'OPEN' // open / working / modified / etc.
+}
+
+function mapPriceType(raw: string): PriceType {
+  const s = raw.toUpperCase()
+  if (s.includes('SL') && s.includes('M') && !s.includes('LMT')) return 'MKT' // SL-M → market leg
+  if (s.includes('SL')) return 'SL-LMT'
+  if (s === 'MKT' || s === 'MARKET') return 'MKT'
+  return 'LMT'
+}
+
+function mapOrder(r: Record<string, unknown>, b: BrokerAccount, i: number): Order {
+  const symbol = str(r, ['symbolName', 'symbol', 'tradingSymbol', 'tradingsymbol', 'symbol_name', 'instrument'])
+  const parsed = prettySymbol(symbol)
+  const side = str(r, ['txnType', 'transactionType', 'side', 'buyOrSell', 'trantype'], 'BUY').toUpperCase()
+  const orderId = str(r, ['orderId', 'order_id', 'orderNumber', 'norenordno', 'nOrdNo', 'id'], `${b.id}-${i}`)
+  return {
+    id: `${b.id}-${orderId}`,
+    orderId,
+    brokerId: b.id, brokerName: b.brokerName, brokerLabel: b.displayName,
+    symbol, display: str(r, ['displayName', 'display'], parsed.display),
+    indexName: str(r, ['indexName', 'index', 'name'], parsed.index),
+    side: side.startsWith('S') ? 'SELL' : 'BUY',
+    product: (str(r, ['product', 'productType'], 'MIS').toUpperCase() as Product) || 'MIS',
+    priceType: mapPriceType(str(r, ['priceType', 'orderType', 'order_type', 'prctyp'], 'LMT')),
+    qty: num(r, ['quantity', 'qty', 'orderQty', 'totalQty']),
+    filledQty: num(r, ['filledQty', 'filledQuantity', 'filled_quantity', 'tradedQty', 'fillshares']),
+    price: num(r, ['price', 'orderPrice', 'limitPrice', 'prc']),
+    triggerPrice: num(r, ['triggerPrice', 'trigger_price', 'trgprc', 'stopPrice']),
+    status: mapOrderStatus(str(r, ['orderStatus', 'status', 'orderstatus'], 'OPEN')),
+    time: str(r, ['time', 'orderTime', 'orderTimestamp', 'order_timestamp', 'exchTime', 'updatedAt', 'createdAt'], new Date().toISOString()),
+    message: str(r, ['message', 'rejectionReason', 'rejReason', 'rejreason', 'remarks']) || undefined,
+  }
+}
+
+/** Live order book across the selected brokers. */
 export async function fetchOrders(brokers: BrokerAccount[]): Promise<Order[]> {
-  const statuses: OrderStatus[] = ['OPEN', 'PENDING', 'COMPLETE', 'CANCELLED', 'REJECTED']
-  const out: Order[] = []
-  brokers.forEach((b, bi) => {
-    statuses.forEach((status, si) => {
-      const o = OPTIONS[(bi + si) % OPTIONS.length]
-      const side: TxnSide = si % 2 === 0 ? 'BUY' : 'SELL'
-      const lot = o.index === 'SENSEX' ? 20 : o.index === 'BANKNIFTY' ? 35 : 75
-      const qty = lot * (1 + (si % 2))
-      const priceType: PriceType = status === 'PENDING' ? 'SL-LMT' : si % 3 === 0 ? 'MKT' : 'LMT'
-      const price = priceType === 'MKT' ? 0 : round2(o.base * (0.9 + rnd(bi + si) * 0.2))
-      out.push({
-        id: `ord-${b.id}-${si}`,
-        brokerId: b.id, brokerName: b.brokerName, brokerLabel: b.displayName,
-        symbol: o.symbol, display: o.display, indexName: o.index,
-        side, product: 'MIS', priceType, qty,
-        filledQty: status === 'COMPLETE' ? qty : status === 'OPEN' ? Math.floor(qty / 2) : 0,
-        price, triggerPrice: priceType === 'SL-LMT' ? round2(price - 1) : 0,
-        status,
-        time: new Date(Date.now() - si * 6e5 - bi * 9e5).toISOString(),
-        message: status === 'REJECTED' ? 'Margin shortfall' : undefined,
-      })
-    })
-  })
-  return out
+  const perBroker = await Promise.all(brokers.map(async (b) => {
+    try {
+      const rows = await getOrderBook(b.brokerName)
+      return rows.map((r, i) => mapOrder(r, b, i))
+    } catch { return [] as Order[] }
+  }))
+  return perBroker.flat()
 }

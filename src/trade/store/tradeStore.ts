@@ -11,10 +11,12 @@ export interface Position {
   brokerId: number
   symbolKey: string   // matches ChartSymbol.key
   display: string
-  netQty: number      // + long / - short
+  netQty: number      // + long / - short (running position — fixed)
   avgPrice: number
   stopLoss?: number
+  stopQty?: number    // qty attached to the SL order (defaults to |netQty|)
   target?: number
+  targetQty?: number  // qty attached to the target order (defaults to |netQty|)
 }
 
 interface TradeState {

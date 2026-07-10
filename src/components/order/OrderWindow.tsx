@@ -95,10 +95,10 @@ export function OrderWindow() {
             </div>
           )}
 
-          {/* Per-broker legs — input is LOTS, quantity = lots × lot size */}
+          {/* Per-broker legs — input is QTY (in multiples of the lot size) */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <p className="text-[11px] font-medium text-slate-400">Brokers ({brokers.length}) · Lots</p>
+              <p className="text-[11px] font-medium text-slate-400">Brokers ({brokers.length}) · Qty</p>
               <p className="text-[11px] text-slate-400">Lot size <span className="font-semibold text-slate-600 dark:text-slate-300 tabular-nums">{lotSize}</span></p>
             </div>
             <div className="space-y-1.5">
@@ -106,20 +106,21 @@ export function OrderWindow() {
                 const st = statusOf(b.id)
                 const res = resultOf(b.id)
                 const l = lots[b.id] ?? 0
+                const setQtyFor = (id: number, q: number) => setLots((m) => ({ ...m, [id]: Math.max(0, Math.round(q / lotSize)) }))
                 return (
                   <div key={b.id} className="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-slate-50 dark:bg-white/5">
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium text-slate-700 dark:text-slate-200 truncate">{b.displayName}</p>
                       {st === 'failed' && res?.message
                         ? <p className="text-[10px] text-red-600 leading-tight" title={res.message}>{res.message}</p>
-                        : <p className="text-[10px] text-slate-400 tabular-nums">{l} × {lotSize} = <span className="font-semibold text-slate-500 dark:text-slate-300">{l * lotSize}</span> qty</p>}
+                        : <p className="text-[10px] text-slate-400 tabular-nums">{l} lot{l !== 1 ? 's' : ''}</p>}
                     </div>
                     {st ? (
                       <span className={clsx('text-[10px] font-semibold px-2 py-0.5 rounded capitalize', statusStyle[st])}>{st === 'failed' ? 'Rejected' : st}</span>
                     ) : (
                       <div className="flex items-center gap-1">
                         <button onClick={() => setLots((q) => ({ ...q, [b.id]: Math.max(0, (q[b.id] ?? 0) - 1) }))} className="h-6 w-6 rounded bg-white dark:bg-slate-700 text-slate-500">−</button>
-                        <input value={l} onChange={(e) => setLots((q) => ({ ...q, [b.id]: Math.max(0, Number(e.target.value) || 0) }))} className="w-12 h-6 text-center text-sm tabular-nums bg-white dark:bg-slate-700 rounded outline-none" />
+                        <input value={l * lotSize} onChange={(e) => setQtyFor(b.id, Number(e.target.value) || 0)} className="w-14 h-6 text-center text-sm tabular-nums bg-white dark:bg-slate-700 rounded outline-none" />
                         <button onClick={() => setLots((q) => ({ ...q, [b.id]: (q[b.id] ?? 0) + 1 }))} className="h-6 w-6 rounded bg-white dark:bg-slate-700 text-slate-500">+</button>
                       </div>
                     )}
@@ -132,7 +133,7 @@ export function OrderWindow() {
 
         {/* Footer */}
         <div className="flex items-center justify-between px-4 py-3 border-t border-slate-100 dark:border-slate-800">
-          <div className="text-xs text-slate-500">{totalLots} lot{totalLots !== 1 ? 's' : ''} · Total qty <span className="font-semibold text-slate-800 dark:text-slate-100 tabular-nums">{totalQty}</span></div>
+          <div className="text-xs text-slate-500">Total qty <span className="font-semibold text-slate-800 dark:text-slate-100 tabular-nums">{totalQty}</span> <span className="text-slate-400">· {totalLots} lot{totalLots !== 1 ? 's' : ''}</span></div>
           {placed ? (
             <button onClick={close} className="px-6 py-2 rounded-lg bg-slate-800 dark:bg-white/10 text-white text-sm font-semibold">Done</button>
           ) : (

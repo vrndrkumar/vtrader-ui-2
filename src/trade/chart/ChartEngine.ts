@@ -23,6 +23,11 @@ export interface ChartEngine {
   startDrawing(name: string): void
   clearDrawings(): void
 
+  /** Convert a price to a y pixel within the price pane (null if unavailable). */
+  priceToY(price: number): number | null
+  /** Convert a y pixel back to a price within the price pane. */
+  yToPrice(y: number): number | null
+
   resize(): void
   dispose(): void
 }

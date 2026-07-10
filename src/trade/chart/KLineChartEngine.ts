@@ -119,6 +119,26 @@ export class KLineChartEngine implements ChartEngine {
     }
   }
 
+  priceToY(price: number): number | null {
+    if (!this.chart) return null
+    try {
+      const r = (this.chart as unknown as { convertToPixel: (v: unknown, o: unknown) => unknown })
+        .convertToPixel({ value: price }, { paneId: 'candle_pane' })
+      const y = Array.isArray(r) ? (r[0] as { y?: number })?.y : (r as { y?: number })?.y
+      return typeof y === 'number' && Number.isFinite(y) ? y : null
+    } catch { return null }
+  }
+
+  yToPrice(y: number): number | null {
+    if (!this.chart) return null
+    try {
+      const r = (this.chart as unknown as { convertFromPixel: (v: unknown, o: unknown) => unknown })
+        .convertFromPixel({ y }, { paneId: 'candle_pane' })
+      const v = Array.isArray(r) ? (r[0] as { value?: number })?.value : (r as { value?: number })?.value
+      return typeof v === 'number' && Number.isFinite(v) ? v : null
+    } catch { return null }
+  }
+
   resize(): void {
     this.chart?.resize()
   }

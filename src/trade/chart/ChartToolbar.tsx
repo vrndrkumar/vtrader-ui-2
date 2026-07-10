@@ -5,6 +5,7 @@ import { getLayout, layoutsByCount } from './layouts'
 import { LayoutIcon } from './LayoutIcon'
 import { useWatchlistStore } from '../store/watchlistStore'
 import { SYMBOLS, indexChartSymbol, TIMEFRAMES, type ChartSymbol } from '../types/market'
+import { BrokerSelector } from '@/components/broker/BrokerSelector'
 
 const INDICATOR_GROUPS = [
   { group: 'Overlays', items: ['MA', 'EMA', 'BOLL', 'SAR'] },
@@ -172,6 +173,8 @@ export function ChartToolbar({ onFullscreen }: { onFullscreen: () => void }) {
       </div>
 
       <div className="ml-auto flex items-center gap-1">
+        <BrokerSelector />
+        <div className="mx-1 h-5 w-px bg-slate-200 dark:bg-slate-700" />
         <LayoutMenu />
         <button className={toolBtn} onClick={onFullscreen} title="Fullscreen"><Icon d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></button>
       </div>

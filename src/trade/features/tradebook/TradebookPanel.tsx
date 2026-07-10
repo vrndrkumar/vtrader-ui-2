@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { clsx } from 'clsx'
 import { useSelectedBrokers } from '@/store/brokerStore'
+import { useMarketStore } from '../../store/marketStore'
+import { realtime } from '../../data/realtime/realtimeService'
 import { useTradebookStore } from './tradebookStore'
 import { totalPnl } from './types'
 import { inr, pnlCls } from './format'
@@ -35,12 +37,23 @@ export function TradebookPanel() {
   const brokerKey = brokers.map((b) => b.id).join(',')
   useEffect(() => { void store.load(brokers) /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [brokerKey])
 
-  // Simulated live MTM while expanded.
+  // Live LTP for every position symbol from the realtime tick feed (TICK_*).
+  const quotes = useMarketStore((s) => s.quotes)
+  const symKey = useMemo(() => [...new Set(store.positions.map((p) => p.symbol))].filter(Boolean).join(','), [store.positions])
   useEffect(() => {
-    if (collapsed) return
-    const id = window.setInterval(() => store.tick(), 1500)
-    return () => window.clearInterval(id)
-  }, [collapsed, store])
+    if (!symKey) return
+    realtime.start()
+    const unsubs = symKey.split(',').map((s) => realtime.subscribeSymbolTick(s))
+    return () => unsubs.forEach((u) => u())
+  }, [symKey])
+  // Merge live LTP + day-change (prevClose) from the tick feed onto a position.
+  const enrich = <T extends { symbol: string; ltp: number; prevClose: number }>(p: T): T => {
+    const q = quotes[p.symbol]
+    if (!q) return p
+    const ltp = q.ltp ?? p.ltp
+    const prevClose = q.chg != null ? +(q.ltp - q.chg).toFixed(2) : p.prevClose // real day baseline
+    return { ...p, ltp, prevClose }
+  }
 
   // Drag-to-resize (panel anchored to viewport bottom).
   const onDragStart = useCallback((e: React.MouseEvent) => {
@@ -62,7 +75,11 @@ export function TradebookPanel() {
       (store.brokerFilter === 'ALL' || r.brokerLabel === store.brokerFilter) &&
       (!store.search || `${r.display} ${r.symbol}`.toLowerCase().includes(store.search.toLowerCase())))
 
-  const positions = useMemo(() => byBroker(store.positions), [store.positions, store.brokerFilter, store.search])
+  const positions = useMemo(
+    () => byBroker(store.positions).map(enrich),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [store.positions, store.brokerFilter, store.search, quotes],
+  )
   const openPositions = positions.filter((p) => p.status === 'OPEN')
   const ordersAll = useMemo(() => byBroker(store.orders), [store.orders, store.brokerFilter, store.search])
   const counts = useMemo(() => orderStatusCounts(ordersAll), [ordersAll])

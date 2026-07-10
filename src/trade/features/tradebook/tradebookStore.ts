@@ -1,13 +1,23 @@
 // ── Tradebook store (Positions & Orders) ─────────────────────────────────────
-// Holds live positions/orders + panel filter state, and exposes action methods.
-// Mutations are local/optimistic today (mock); each is the exact hook where a
-// broker API call will slot in later. Live MTM is simulated via a light ticker.
+// Holds positions/orders + panel filter state, and exposes action methods wired
+// to the real trading APIs:
+//   • Position actions (exit, square-off, partial, add, reverse, SL, target) are
+//     all order placements → POST /trade/place-order.
+//   • Order modify → PUT /trade/update-order.  Clone → place-order.
+// After a successful action the book is re-fetched from the server so the UI
+// reflects true broker state.
 
 import { create } from 'zustand'
 import toast from 'react-hot-toast'
+import { AxiosError } from 'axios'
 import type { BrokerAccount } from '@/store/brokerStore'
+import { placeOrderApi, updateOrderApi } from '@/api/trade'
+import { lotSizeFor } from '@/services/orders/lotSize'
+import { derivePrices } from '@/services/orders/buildPayload'
+import { interpretOrderResponse } from '@/services/orders/parseResponse'
+import type { PlaceOrderRequest } from '@/services/orders/types'
 import { fetchOrders, fetchPositions } from './tradebookData'
-import type { Order, OrderStatus, Position, TxnSide } from './types'
+import { netQty, type Order, type OrderStatus, type Position, type TxnSide } from './types'
 
 export type Tab = 'positions' | 'orders'
 export type OrderStatusFilter = 'ALL' | OrderStatus
@@ -17,10 +27,10 @@ interface TradebookState {
   orders: Order[]
   loading: boolean
   loadedAt: number | null
+  brokers: BrokerAccount[]
 
-  // Panel filters
   tab: Tab
-  brokerFilter: string          // 'ALL' or a brokerName
+  brokerFilter: string
   search: string
   orderStatus: OrderStatusFilter
 
@@ -30,9 +40,9 @@ interface TradebookState {
   setOrderStatus: (s: OrderStatusFilter) => void
 
   load: (brokers: BrokerAccount[]) => Promise<void>
-  tick: () => void              // simulated LTP drift → live MTM
+  reload: () => Promise<void>
 
-  // Position actions (swap points for APIs)
+  // Position actions → place-order
   exitPosition: (id: string) => void
   squareOff: (id: string) => void
   reversePosition: (id: string) => void
@@ -47,120 +57,103 @@ interface TradebookState {
   cloneOrder: (id: string) => void
 }
 
-const round2 = (n: number) => Math.round(n * 100) / 100
-
-export const useTradebookStore = create<TradebookState>((set, get) => ({
-  positions: [],
-  orders: [],
-  loading: false,
-  loadedAt: null,
-
-  tab: 'positions',
-  brokerFilter: 'ALL',
-  search: '',
-  orderStatus: 'ALL',
-
-  setTab: (tab) => set({ tab }),
-  setBrokerFilter: (brokerFilter) => set({ brokerFilter }),
-  setSearch: (search) => set({ search }),
-  setOrderStatus: (orderStatus) => set({ orderStatus }),
-
-  load: async (brokers) => {
-    set({ loading: true })
-    try {
-      const [positions, orders] = await Promise.all([fetchPositions(brokers), fetchOrders(brokers)])
-      set({ positions, orders, loadedAt: Date.now() })
-    } catch {
-      toast.error('Failed to load positions/orders')
-    } finally {
-      set({ loading: false })
-    }
-  },
-
-  tick: () => set((s) => ({
-    positions: s.positions.map((p) => {
-      if (p.status !== 'OPEN') return p
-      const drift = (Math.random() - 0.5) * Math.max(0.5, p.ltp * 0.004)
-      return { ...p, ltp: round2(Math.max(0.05, p.ltp + drift)) }
-    }),
-  })),
-
-  exitPosition: (id) => {
-    set((s) => ({ positions: s.positions.map((p) => p.id === id ? closeOut(p) : p) }))
-    toast.success('Position exited')
-  },
-  squareOff: (id) => {
-    set((s) => ({ positions: s.positions.map((p) => p.id === id ? closeOut(p) : p) }))
-    toast.success('Squared off at market')
-  },
-  reversePosition: (id) => {
-    set((s) => ({
-      positions: s.positions.map((p) => {
-        if (p.id !== id) return p
-        return { ...p, buyQty: p.sellQty, sellQty: p.buyQty, buyAvg: p.sellAvg, sellAvg: p.buyAvg }
-      }),
-    }))
-    toast.success('Position reversed')
-  },
-  addQty: (id, qty) => {
-    if (qty <= 0) return
-    set((s) => ({
-      positions: s.positions.map((p) => {
-        if (p.id !== id) return p
-        const long = p.buyQty >= p.sellQty
-        return long
-          ? { ...p, buyQty: p.buyQty + qty, buyAvg: p.ltp, avgPrice: p.ltp }
-          : { ...p, sellQty: p.sellQty + qty, sellAvg: p.ltp, avgPrice: p.ltp }
-      }),
-    }))
-    toast.success(`Added ${qty} qty`)
-  },
-  partialExit: (id, qty) => {
-    if (qty <= 0) return
-    set((s) => ({
-      positions: s.positions.map((p) => {
-        if (p.id !== id) return p
-        const long = p.buyQty >= p.sellQty
-        const realized = round2(p.realized + (p.ltp - p.avgPrice) * (long ? qty : -qty))
-        return long
-          ? { ...p, buyQty: Math.max(0, p.buyQty - qty), realized }
-          : { ...p, sellQty: Math.max(0, p.sellQty - qty), realized }
-      }),
-    }))
-    toast.success(`Exited ${qty} qty`)
-  },
-  setStop: (id, stop) => {
-    set((s) => ({ positions: s.positions.map((p) => p.id === id ? { ...p, stop } : p) }))
-    toast.success(`Stop loss set at ${stop}`)
-  },
-  setTarget: (id, target) => {
-    set((s) => ({ positions: s.positions.map((p) => p.id === id ? { ...p, target } : p) }))
-    toast.success(`Target set at ${target}`)
-  },
-
-  cancelOrder: (id) => {
-    set((s) => ({ orders: s.orders.map((o) => o.id === id ? { ...o, status: 'CANCELLED' } : o) }))
-    toast.success('Order cancelled')
-  },
-  modifyOrder: (id, patch) => {
-    set((s) => ({ orders: s.orders.map((o) => o.id === id ? { ...o, ...patch } : o) }))
-    toast.success('Order modified')
-  },
-  cloneOrder: (id) => {
-    const o = get().orders.find((x) => x.id === id)
-    if (!o) return
-    const clone: Order = { ...o, id: `ord-clone-${Date.now()}`, status: 'OPEN', filledQty: 0, time: new Date().toISOString(), message: undefined }
-    set((s) => ({ orders: [clone, ...s.orders] }))
-    toast.success('Order cloned')
-  },
-}))
-
-function closeOut(p: Position): Position {
-  const long = p.buyQty >= p.sellQty
-  const q = Math.abs(p.buyQty - p.sellQty)
-  const realized = round2(p.realized + (p.ltp - p.avgPrice) * (long ? q : -q))
-  return { ...p, buyQty: 0, sellQty: 0, realized, status: 'CLOSED' }
+function errMsg(e: unknown): string {
+  if (e instanceof AxiosError) {
+    const d = e.response?.data as { message?: string; error?: string } | undefined
+    return d?.message || d?.error || e.message || 'Request failed'
+  }
+  return e instanceof Error ? e.message : 'Request failed'
 }
 
-/** Reverse the side of a mock order's txn (used by "reverse"). */
-export const flipSide = (s: TxnSide): TxnSide => (s === 'BUY' ? 'SELL' : 'BUY')
+const lotsFor = (index: string, qty: number) => Math.max(1, Math.round(qty / lotSizeFor(index)))
+/** Side that closes/reduces a position (opposite of its net direction). */
+const closingSide = (p: Position): TxnSide => (netQty(p) >= 0 ? 'SELL' : 'BUY')
+const openingSide = (p: Position): TxnSide => (netQty(p) >= 0 ? 'BUY' : 'SELL')
+
+export const useTradebookStore = create<TradebookState>((set, get) => {
+  /** Post an order, judge the real broker verdict, then refresh the book. */
+  const submit = async (req: PlaceOrderRequest, okMsg: string) => {
+    try {
+      const verdict = interpretOrderResponse(await placeOrderApi(req))
+      if (verdict.ok) { toast.success(okMsg); await get().reload() }
+      else toast.error(verdict.message ?? 'Order rejected')
+    } catch (e) { toast.error(errMsg(e)) }
+  }
+
+  const posReq = (p: Position, side: TxnSide, priceType: PlaceOrderRequest['priceType'], quantity: number, price = 0, triggerPrice = 0): PlaceOrderRequest => ({
+    txnType: side, quantity, priceType, price, triggerPrice,
+    symbolName: p.symbol, lot: lotsFor(p.indexName, quantity), brokerName: p.brokerName, indexName: p.indexName,
+  })
+  const pos = (id: string) => get().positions.find((p) => p.id === id)
+
+  return {
+    positions: [],
+    orders: [],
+    loading: false,
+    loadedAt: null,
+    brokers: [],
+
+    tab: 'positions',
+    brokerFilter: 'ALL',
+    search: '',
+    orderStatus: 'ALL',
+
+    setTab: (tab) => set({ tab }),
+    setBrokerFilter: (brokerFilter) => set({ brokerFilter }),
+    setSearch: (search) => set({ search }),
+    setOrderStatus: (orderStatus) => set({ orderStatus }),
+
+    load: async (brokers) => {
+      set({ loading: true, brokers })
+      try {
+        const [positions, orders] = await Promise.all([fetchPositions(brokers), fetchOrders(brokers)])
+        set({ positions, orders, loadedAt: Date.now() })
+      } catch {
+        toast.error('Failed to load positions/orders')
+      } finally {
+        set({ loading: false })
+      }
+    },
+    reload: () => get().load(get().brokers),
+
+    exitPosition: (id) => { const p = pos(id); if (!p) return; const q = Math.abs(netQty(p)); if (q) void submit(posReq(p, closingSide(p), 'MKT', q), 'Exit order placed') },
+    squareOff: (id) => { const p = pos(id); if (!p) return; const q = Math.abs(netQty(p)); if (q) void submit(posReq(p, closingSide(p), 'MKT', q), 'Square-off order placed') },
+    reversePosition: (id) => { const p = pos(id); if (!p) return; const q = Math.abs(netQty(p)); if (q) void submit(posReq(p, closingSide(p), 'MKT', q * 2), 'Reverse order placed') },
+    addQty: (id, qty) => { const p = pos(id); if (!p || qty <= 0) return; void submit(posReq(p, openingSide(p), 'MKT', qty), `Add ${qty} qty order placed`) },
+    partialExit: (id, qty) => { const p = pos(id); if (!p || qty <= 0) return; void submit(posReq(p, closingSide(p), 'MKT', qty), `Exit ${qty} qty order placed`) },
+    setStop: (id, price) => {
+      const p = pos(id); if (!p || price <= 0) return
+      const side = closingSide(p)
+      const d = derivePrices(side, 'SL-LMT', price)
+      void submit(posReq(p, side, 'SL-LMT', Math.abs(netQty(p)), d.price, d.triggerPrice), `Stop-loss order placed @ ${price}`)
+    },
+    setTarget: (id, price) => {
+      const p = pos(id); if (!p || price <= 0) return
+      void submit(posReq(p, closingSide(p), 'LMT', Math.abs(netQty(p)), price, 0), `Target order placed @ ${price}`)
+    },
+
+    modifyOrder: (id, patch) => {
+      const o = get().orders.find((x) => x.id === id); if (!o) return
+      const quantity = patch.qty ?? o.qty
+      const price = patch.price ?? o.price
+      const triggerPrice = patch.triggerPrice ?? o.triggerPrice
+      updateOrderApi({
+        txnType: o.side, quantity, priceType: o.priceType, price, triggerPrice,
+        symbolName: o.symbol, lot: lotsFor(o.indexName, quantity), brokerName: o.brokerName, orderId: o.orderId, indexName: o.indexName,
+      }).then(() => { toast.success('Order modified'); void get().reload() })
+        .catch((e) => toast.error(errMsg(e)))
+    },
+    cloneOrder: (id) => {
+      const o = get().orders.find((x) => x.id === id); if (!o) return
+      void submit({
+        txnType: o.side, quantity: o.qty, priceType: o.priceType, price: o.price, triggerPrice: o.triggerPrice,
+        symbolName: o.symbol, lot: lotsFor(o.indexName, o.qty), brokerName: o.brokerName, indexName: o.indexName,
+      }, 'Order cloned')
+    },
+    // No dedicated cancel endpoint provided yet — optimistic local update.
+    cancelOrder: (id) => {
+      set((s) => ({ orders: s.orders.map((o) => o.id === id ? { ...o, status: 'CANCELLED' } : o) }))
+      toast('Cancel requested', { icon: '⏳' })
+    },
+  }
+})

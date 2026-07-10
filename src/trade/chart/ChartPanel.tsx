@@ -1,15 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { clsx } from 'clsx'
 import { KLineChartEngine } from './KLineChartEngine'
 import type { ChartEngine } from './ChartEngine'
-import type { OrderLine } from './orderOverlays'
+import { ChartOrderLayer } from './ChartOrderLayer'
 import { engineRegistry } from './engineRegistry'
 import { dataSource } from '../data/dataSource'
 import { placeMarket } from '../data/trade/tradeAdapter'
 import { useQuote } from '../store/marketStore'
 import { useChartLayoutStore } from '../store/chartLayoutStore'
-import { useTradeStore } from '../store/tradeStore'
 import { useBrokerStore, resolveQty } from '@/store/brokerStore'
+import { lotSizeFor } from '@/services/orders/lotSize'
 import { TF_MINUTES, type Candle } from '../types/market'
 
 const isDark = () => document.documentElement.classList.contains('dark')
@@ -75,34 +75,18 @@ export function ChartPanel({ panelId }: { panelId: string }) {
     have.forEach((n) => { if (!want.has(n)) engine.toggleIndicator(n) })
   }, [config?.indicators])
 
-  // ── Order / position lines (from-chart trading) ──
-  const positions = useTradeStore((s) => s.positions)
+  // ── From-chart trading ──
   const accounts = useBrokerStore((s) => s.accounts)
   const selectedIds = useBrokerStore((s) => s.selectedIds)
-  const orderLines = useMemo<OrderLine[]>(() => {
-    const key = config?.symbol?.key
-    if (!key) return []
-    const ltp = quote?.ltp ?? 0
-    const out: OrderLine[] = []
-    for (const p of Object.values(positions)) {
-      if (p.symbolKey !== key) continue
-      const pnl = ltp ? (ltp - p.avgPrice) * p.netQty : 0
-      const long = p.netQty > 0
-      out.push({ lineId: `${p.id}-pos`, price: p.avgPrice, editable: false, data: { lineId: `${p.id}-pos`, kind: 'position', color: '#2563eb', label: `${long ? 'LONG' : 'SHORT'} ${Math.abs(p.netQty)} · ${pnl >= 0 ? '+' : ''}₹${pnl.toFixed(0)}`, positionId: p.id } })
-      if (p.stopLoss != null) out.push({ lineId: `${p.id}-sl`, price: p.stopLoss, editable: true, data: { lineId: `${p.id}-sl`, kind: 'sl', color: '#dc2626', label: `SL ${p.stopLoss.toFixed(1)}`, positionId: p.id } })
-      if (p.target != null) out.push({ lineId: `${p.id}-tgt`, price: p.target, editable: true, data: { lineId: `${p.id}-tgt`, kind: 'target', color: '#16a34a', label: `TGT ${p.target.toFixed(1)}`, positionId: p.id } })
-    }
-    return out
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [positions, quote?.ltp, config?.symbol?.key])
-
-  useEffect(() => { engineRef.current?.syncOrderLines(orderLines) }, [orderLines])
 
   const trade = (side: 'BUY' | 'SELL') => {
     const b = accounts.find((a) => selectedIds.includes(a.id))
     const sym = config?.symbol
     if (!b || !sym) return
-    placeMarket(sym.key, sym.display, side, resolveQty(b, sym.key), b.id, { slPct: 0.08, tgtPct: 0.12 })
+    // Quantity = lots × index lot size (e.g. 1 lot NIFTY = 65), same as the order service.
+    const size = lotSizeFor(sym.key.split('_')[0])
+    const lots = Math.max(1, Math.round(resolveQty(b, sym.key) / size))
+    placeMarket(sym.key, sym.display, side, lots * size, b.id) // no auto SL/TP
   }
 
   const up = (quote?.chg ?? 0) >= 0
@@ -128,6 +112,7 @@ export function ChartPanel({ panelId }: { panelId: string }) {
         </div>
       )}
       <div ref={elRef} className="h-full w-full" />
+      {config?.symbol && <ChartOrderLayer engineRef={engineRef} symbolKey={config.symbol.key} ltp={quote?.ltp ?? 0} />}
       {loading && config?.symbol && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <svg className="animate-spin h-5 w-5 text-brand-600" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
