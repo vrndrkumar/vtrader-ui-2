@@ -2,10 +2,20 @@
 
 import { create } from 'zustand'
 import type { OptType, Side, StrategyLeg } from '../types/options'
-import { LOT_SIZE } from '../types/options'
+import { lotSizeFor } from '@/services/orders/lotSize'
+import { useBrokerStore, resolveQty } from '@/store/brokerStore'
 
 let seq = 0
 const uid = () => `leg_${Date.now()}_${seq++}`
+
+/** Real lot size (index master) + the selected broker's default quantity for it. */
+export function defaultLegQty(index: string): { qty: number; lot: number } {
+  const lot = lotSizeFor(index)
+  const { accounts, selectedIds } = useBrokerStore.getState()
+  const b = accounts.find((a) => selectedIds.includes(a.id))
+  const qty = b ? Math.max(1, Math.round(resolveQty(b, index) / lot)) * lot : lot
+  return { qty, lot }
+}
 
 export interface AddLegInput {
   symbolCode: string
@@ -36,14 +46,14 @@ export const useStrategyStore = create<StrategyState>((set) => ({
   sameQty: false,
   addFromChain: (input) =>
     set((s) => {
-      const lot = LOT_SIZE[input.symbolCode] ?? 1
+      const { qty, lot } = defaultLegQty(input.symbolCode)
       const leg: StrategyLeg = {
         id: uid(),
         side: input.side,
         expiry: input.expiry,
         strike: input.strike,
         optType: input.optType,
-        qty: lot,
+        qty,
         lot,
         priceType: 'Market',
         price: input.ltp,

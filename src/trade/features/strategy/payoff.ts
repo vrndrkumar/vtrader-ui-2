@@ -54,6 +54,34 @@ export interface PayoffResult {
   hasLegs: boolean
 }
 
+/** Strategy P&L at price S with a fraction of time remaining (1 = today, 0 = expiry). */
+export function strategyPnlAt(legs: StrategyLeg[], S: number, timeFraction: number): number {
+  let v = 0
+  for (const l of legs) {
+    const entry = l.priceType === 'Limit' ? l.price : l.ltp
+    const signed = (l.side === 'BUY' ? 1 : -1) * l.qty
+    if (timeFraction <= 0) {
+      const intrinsic = l.optType === 'CE' ? Math.max(S - l.strike, 0) : Math.max(l.strike - S, 0)
+      v += signed * (intrinsic - entry)
+    } else {
+      const T = (daysToExpiry(l.expiry) / 365) * timeFraction
+      v += signed * (bsPrice(S, l.strike, T, l.iv, l.optType) - entry)
+    }
+  }
+  return Math.round(v)
+}
+
+/** Largest days-to-expiry across legs (drives the date slider range). */
+export function maxDte(legs: StrategyLeg[]): number {
+  return legs.reduce((m, l) => Math.max(m, daysToExpiry(l.expiry)), 1)
+}
+
+/** Mean implied vol across legs (for SD bands / POP). */
+export function avgIv(legs: StrategyLeg[]): number {
+  if (!legs.length) return 0
+  return legs.reduce((a, l) => a + l.iv, 0) / legs.length
+}
+
 export function computePayoff(legs: StrategyLeg[], spot: number): PayoffResult {
   const empty: PayoffResult = {
     points: [], maxProfit: 0, maxLoss: 0, breakevens: [], marginEst: 0,

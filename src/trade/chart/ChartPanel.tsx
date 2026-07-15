@@ -5,6 +5,7 @@ import type { ChartEngine } from './ChartEngine'
 import { ChartOrderLayer } from './ChartOrderLayer'
 import { engineRegistry } from './engineRegistry'
 import { dataSource } from '../data/dataSource'
+import { marksFromCandles, setDailyMarks } from '../data/realtime/dailyMarks'
 import { placeMarket } from '../data/trade/tradeAdapter'
 import { useQuote } from '../store/marketStore'
 import { useChartLayoutStore } from '../store/chartLayoutStore'
@@ -52,6 +53,10 @@ export function ChartPanel({ panelId }: { panelId: string }) {
       setLoading(false)
       if (!candles.length) { setEmpty(true); return }
       engine.setData(candles)
+      // Seed prev-close/change% from these candles so the tick subscription
+      // below doesn't fire a second (15m) candle request for this symbol.
+      const marks = marksFromCandles(candles)
+      if (marks) setDailyMarks(symbol.key, marks)
       const bucketMs = TF_MINUTES[config.timeframe] * 60_000
       let last: Candle = { ...candles[candles.length - 1] }
       unsub = dataSource.subscribeQuote(symbol, (q) => {

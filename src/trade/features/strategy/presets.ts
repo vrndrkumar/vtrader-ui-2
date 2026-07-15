@@ -1,25 +1,25 @@
 // ── Strategy presets ─────────────────────────────────────────────────────────
 
 import type { OcRow, OptionChain, OptType, Side, StrategyLeg } from '../../types/options'
-import { LOT_SIZE } from '../../types/options'
+import { defaultLegQty } from '../../store/strategyStore'
 
 export const PRESETS = ['Short Straddle', 'Short Strangle', 'Iron Condor', 'Iron Fly', 'Bull Call Spread', 'Bear Put Spread'] as const
 export type PresetName = typeof PRESETS[number]
 
 let seq = 0
-function leg(row: OcRow, optType: OptType, side: Side, expiry: string, lot: number): StrategyLeg | null {
+function leg(row: OcRow, optType: OptType, side: Side, expiry: string, qty: number, lot: number): StrategyLeg | null {
   const d = optType === 'CE' ? row.call : row.put
   if (!d) return null // side not present in the live chain yet
-  return { id: `p_${Date.now()}_${seq++}`, side, expiry, strike: row.strike, optType, qty: lot, lot, priceType: 'Market', price: d.ltp, ltp: d.ltp, iv: d.iv ?? 0 }
+  return { id: `p_${Date.now()}_${seq++}`, side, expiry, strike: row.strike, optType, qty, lot, priceType: 'Market', price: d.ltp, ltp: d.ltp, iv: d.iv ?? 0 }
 }
 
 export function buildPreset(name: PresetName, chain: OptionChain): StrategyLeg[] {
-  const lot = LOT_SIZE[chain.symbolCode] ?? 1
+  const { qty, lot } = defaultLegQty(chain.symbolCode)
   const step = chain.symbolCode === 'SENSEX' ? 100 : 50
   const at = (offset: number) => chain.rows.find((r) => r.strike === chain.atm + offset * step)
   const L = (r: OcRow | undefined, t: OptType, s: Side): StrategyLeg[] => {
     if (!r) return []
-    const lg = leg(r, t, s, chain.expiry, lot)
+    const lg = leg(r, t, s, chain.expiry, qty, lot)
     return lg ? [lg] : []
   }
 

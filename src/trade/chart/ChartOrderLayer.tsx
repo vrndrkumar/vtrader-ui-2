@@ -10,6 +10,7 @@ import { clsx } from 'clsx'
 import toast from 'react-hot-toast'
 import type { ChartEngine } from './ChartEngine'
 import { useTradeStore, type Position } from '../store/tradeStore'
+import { useTradebookStore } from '../features/tradebook/tradebookStore'
 import { clearStop, clearTarget, exitPosition, modifyStop, modifyStopQty, modifyTarget, modifyTargetQty } from '../data/trade/tradeAdapter'
 
 type Leg = 'sl' | 'tp'
@@ -38,6 +39,32 @@ export function ChartOrderLayer({ engineRef, symbolKey, ltp }: {
 }) {
   const positions = useTradeStore((s) => s.positions)
   const rows = useMemo(() => Object.values(positions).filter((p) => p.symbolKey === symbolKey), [positions, symbolKey])
+
+  // Mirror real running positions (from /trade/positions) for THIS strike into
+  // the chart store so they render with the same line UI. SL/Target set here are
+  // chart-local annotations; exiting a mirrored position squares off for real.
+  const tbPositions = useTradebookStore((s) => s.positions)
+  useEffect(() => {
+    const st = useTradeStore.getState()
+    const want = new Set<string>()
+    for (const p of tbPositions) {
+      if (p.symbol !== symbolKey || p.status !== 'OPEN') continue
+      const id = `tb:${p.id}`
+      want.add(id)
+      const net = p.buyQty - p.sellQty
+      const ex = st.positions[id]
+      if (!ex) st.upsertPosition({ id, brokerId: p.brokerId, symbolKey, display: p.display, netQty: net, avgPrice: p.avgPrice })
+      else if (ex.netQty !== net || ex.avgPrice !== p.avgPrice) st.updatePosition(id, { netQty: net, avgPrice: p.avgPrice })
+    }
+    for (const id of Object.keys(st.positions)) {
+      if (id.startsWith('tb:') && st.positions[id].symbolKey === symbolKey && !want.has(id)) st.removePosition(id)
+    }
+  }, [tbPositions, symbolKey])
+
+  const onExit = (p: Position) => {
+    if (p.id.startsWith('tb:')) useTradebookStore.getState().squareOff(p.id.slice(3))
+    else exitPosition(p.id)
+  }
 
   const wrapRef = useRef<HTMLDivElement>(null)
   const elMap = useRef(new Map<string, HTMLDivElement>())
@@ -100,9 +127,9 @@ export function ChartOrderLayer({ engineRef, symbolKey, ltp }: {
     for (const p of rows) {
       const long = p.netQty > 0
       if (p.stopLoss != null && ((long && ltp <= p.stopLoss) || (!long && ltp >= p.stopLoss))) {
-        exitPosition(p.id); toast(`Stop-loss hit · ${p.display}`, { icon: '🛑' })
+        onExit(p); toast(`Stop-loss hit · ${p.display}`, { icon: '🛑' })
       } else if (p.target != null && ((long && ltp >= p.target) || (!long && ltp <= p.target))) {
-        exitPosition(p.id); toast.success(`Target hit · ${p.display}`)
+        onExit(p); toast.success(`Target hit · ${p.display}`)
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -143,7 +170,7 @@ export function ChartOrderLayer({ engineRef, symbolKey, ltp }: {
                       : 'opacity-0 -translate-x-1 pointer-events-none group-hover:opacity-100 group-hover:translate-x-0 group-hover:pointer-events-auto')}>
                     {p.stopLoss == null && <Chip tone="sl" label="Set SL" onClick={() => addStop(p)} />}
                     {p.target == null && <Chip tone="tp" label="Set Target" onClick={() => addTarget(p)} />}
-                    <IconChip title="Exit position" danger onClick={() => exitPosition(p.id)}><path d="M6 6l12 12M18 6L6 18" /></IconChip>
+                    <IconChip title="Exit position" danger onClick={() => onExit(p)}><path d="M6 6l12 12M18 6L6 18" /></IconChip>
                   </div>
                 </div>
                 <div className="flex-1 ml-1 border-t border-dashed" style={{ borderColor: long ? COLORS.long : COLORS.short }} />

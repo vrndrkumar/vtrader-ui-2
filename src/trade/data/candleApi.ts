@@ -12,19 +12,12 @@
 //      once. The live/forming candle comes from the WS tick stream, so we never
 //      re-poll history for updates.
 
-import { axiosPrivate } from '@/api/axios'
+import { axiosCandle } from '@/api/axios'
 import type { Candle, Timeframe, TradeSymbol } from '../types/market'
-
-const CANDLE_USER_ID = 32       // hardcoded per direction (Phase 0)
-const CANDLE_BROKER = 'FYERS'
 
 const FREQUENCY: Record<Timeframe, string> = {
   '1': '1', '3': '3', '5': '5', '15': '15', '30': '30', '60': '60', D: 'D',
 }
-
-// Known-good demo window (from the sample) — used only if the recent range is empty.
-const DEMO_FROM = '2026-05-01'
-const DEMO_TO = '2026-05-31'
 
 export type CandleKind = 'INDEX' | 'OPTION'
 
@@ -120,10 +113,12 @@ const cache = new Map<string, Candle[]>()
 const inFlight = new Map<string, Promise<Candle[]>>()
 
 function fetchRange(candleSymbol: string, tf: Timeframe, from: string, to: string): Promise<Candle[]> {
+  // New host: GET https://data.vtrader.in/data/candle?symbol=&from=&to=&frequency=
+  // (no userId / brokerName). Also returns OI for option strikes.
   return schedule(() =>
-    axiosPrivate
+    axiosCandle
       .get('/data/candle', {
-        params: { userId: CANDLE_USER_ID, brokerName: CANDLE_BROKER, symbol: candleSymbol, from, to, frequency: FREQUENCY[tf] },
+        params: { symbol: candleSymbol, from, to, frequency: FREQUENCY[tf] },
       })
       .then((res) => parse(res.data)),
   )
@@ -131,9 +126,7 @@ function fetchRange(candleSymbol: string, tf: Timeframe, from: string, to: strin
 
 async function load(candleSymbol: string, tf: Timeframe, kind: CandleKind, key: string): Promise<Candle[]> {
   const { from, to } = defaultRange(tf, kind)
-  let candles = await fetchRange(candleSymbol, tf, from, to).catch(() => [] as Candle[])
-  // Demo fallback only for indices (options have recent-only data).
-  if (!candles.length && kind === 'INDEX') candles = await fetchRange(candleSymbol, tf, DEMO_FROM, DEMO_TO).catch(() => [] as Candle[])
+  const candles = await fetchRange(candleSymbol, tf, from, to).catch(() => [] as Candle[])
   if (candles.length) cache.set(key, candles)
   return candles
 }

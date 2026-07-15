@@ -43,7 +43,8 @@ export function TradebookPanel() {
   useEffect(() => {
     if (!symKey) return
     realtime.start()
-    const unsubs = symKey.split(',').map((s) => realtime.subscribeSymbolTick(s))
+    // Positions only need the live LTP — skip candle-history priming per symbol.
+    const unsubs = symKey.split(',').map((s) => realtime.subscribeSymbolTick(s, { prime: false }))
     return () => unsubs.forEach((u) => u())
   }, [symKey])
   // Merge live LTP + day-change (prevClose) from the tick feed onto a position.

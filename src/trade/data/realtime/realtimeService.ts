@@ -142,9 +142,12 @@ export const realtime = {
   },
 
   /** Ref-counted server subscription for a single symbol's tick stream
-   * (equities, option strikes, …). Reusable by any module. */
-  subscribeSymbolTick(symbol: string): () => void {
-    void primeSymbol(symbol)
+   * (equities, option strikes, …). Reusable by any module.
+   * `prime` (default true) fetches candle history to seed prev-close/last price;
+   * pass { prime: false } when you only need the live LTP (e.g. positions),
+   * to avoid a candle-history request per symbol. */
+  subscribeSymbolTick(symbol: string, opts?: { prime?: boolean }): () => void {
+    if (opts?.prime !== false) void primeSymbol(symbol)
     return wsManager.subscribeChannel(symbolTickChannel(symbol))
   },
 

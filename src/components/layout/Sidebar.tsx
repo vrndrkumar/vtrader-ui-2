@@ -56,6 +56,17 @@ const navItems: NavItem[] = [
     ),
   },
   {
+    to: '/insight',
+    label: 'Stock Insight',
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <circle cx="11" cy="11" r="7" />
+        <line x1="21" y1="21" x2="16.5" y2="16.5" />
+        <path d="M8 13l2-2 1.5 1.5L14 9" />
+      </svg>
+    ),
+  },
+  {
     to: '/strategies',
     label: 'Strategies',
     icon: (

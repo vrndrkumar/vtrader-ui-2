@@ -17,7 +17,7 @@ import { placeOrderApi } from '@/api/trade'
 import { buildPlaceOrderRequest, validateIntent } from './buildPayload'
 import { ensureLotSizes, lotSizeFor } from './lotSize'
 import { interpretOrderResponse } from './parseResponse'
-import type { BrokerOrderResult, OrderIntent, PlaceOrderOutcome } from './types'
+import type { BrokerOrderResult, OrderIntent, PlaceOrderOutcome, PriceType, TxnType } from './types'
 
 /** A broker leg expressed in LOTS (quantity = lots × index lot size). */
 export interface BrokerLeg { broker: BrokerAccount; lots: number }
@@ -40,6 +40,46 @@ function errMessage(e: unknown): string {
 function selectedBrokers(): BrokerAccount[] {
   const { accounts, selectedIds } = useBrokerStore.getState()
   return accounts.filter((a) => selectedIds.includes(a.id))
+}
+
+export interface StrategyLegOrder {
+  side: TxnType
+  symbolName: string
+  indexName: string
+  priceType: PriceType
+  price: number
+  qty: number
+}
+
+/** Place a multi-leg strategy — each leg × each selected broker → place-order. */
+export async function submitStrategy(legs: StrategyLegOrder[]): Promise<PlaceOrderOutcome> {
+  const brokers = selectedBrokers()
+  if (!brokers.length) { toast.error('Select a broker first'); return { ok: false, results: [] } }
+  if (!legs.length) { toast.error('Add at least one leg'); return { ok: false, results: [] } }
+  await ensureLotSizes()
+
+  const jobs = brokers.flatMap((b) => legs.map((l) => ({ b, l })))
+  const results = await Promise.all(jobs.map<Promise<BrokerOrderResult>>(async ({ b, l }) => {
+    const base = { brokerId: b.id, brokerName: b.brokerName, displayName: b.displayName, qty: l.qty }
+    try {
+      const raw = await placeOrderApi({
+        txnType: l.side, quantity: l.qty, priceType: l.priceType,
+        price: l.priceType === 'MKT' ? 0 : l.price, triggerPrice: 0,
+        symbolName: l.symbolName, lot: Math.max(1, Math.round(l.qty / lotSizeFor(l.indexName))),
+        brokerName: b.brokerName, indexName: l.indexName,
+      })
+      const v = interpretOrderResponse(raw)
+      return { ...base, ok: v.ok, message: v.message, data: raw }
+    } catch (e) {
+      return { ...base, ok: false, message: errMessage(e) }
+    }
+  }))
+
+  const ok = results.filter((r) => r.ok).length
+  if (ok === results.length) toast.success(`Strategy placed · ${legs.length} legs × ${brokers.length} broker${brokers.length > 1 ? 's' : ''}`)
+  else if (ok === 0) toast.error(`Strategy failed · ${results.find((r) => !r.ok)?.message ?? ''}`)
+  else toast(`Placed ${ok}/${results.length} legs`, { icon: '⚠️' })
+  return { ok: ok === results.length, results }
 }
 
 /**

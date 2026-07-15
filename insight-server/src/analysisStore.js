@@ -1,0 +1,447 @@
+// ── Persistent analysis storage + market ranking context (MySQL) ─────────────
+import { getPool } from './db.js'
+import { conviction as convictionOf } from './engines.js'
+
+export async function ensureSchema() {
+  const pool = getPool()
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS stock_analysis_reports (
+      id BIGINT NOT NULL AUTO_INCREMENT,
+      stock_id BIGINT NULL,
+      symbol_code VARCHAR(50) NOT NULL,
+      analysis_date DATE NOT NULL,
+      price DECIMAL(14,2) NULL,
+      discovery_score INT NULL,
+      transition_score INT NULL,
+      momentum_score INT NULL,
+      risk_score INT NULL,
+      risk_level VARCHAR(10) NULL,
+      current_phase VARCHAR(20) NULL,
+      badge VARCHAR(40) NULL,
+      feature_evidence JSON NULL,
+      risk_factors JSON NULL,
+      summary VARCHAR(1200) NULL,
+      engine_version VARCHAR(24) NULL,
+      is_latest TINYINT(1) NOT NULL DEFAULT 1,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      KEY idx_symbol_latest (symbol_code, is_latest),
+      KEY idx_scores (is_latest, discovery_score),
+      KEY idx_created (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `)
+  // v3 columns (rank + conviction snapshots for future performance studies)
+  const v3Cols = [
+    ['conviction', 'INT NULL'],
+    ['conviction_label', 'VARCHAR(16) NULL'],
+    ['market_rank', 'INT NULL'],
+    ['market_total', 'INT NULL'],
+    ['sector_rank', 'INT NULL'],
+    ['sector_total', 'INT NULL'],
+    ['industry_rank', 'INT NULL'],
+    ['industry_total', 'INT NULL'],
+  ]
+  const [existing] = await pool.query(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'stock_analysis_reports'`,
+  )
+  const have = new Set(existing.map((r) => r.COLUMN_NAME))
+  for (const [name, def] of v3Cols) {
+    if (!have.has(name)) await pool.query(`ALTER TABLE stock_analysis_reports ADD COLUMN ${name} ${def}`)
+  }
+  // widen summary if it was created at 600 in v2
+  await pool.query('ALTER TABLE stock_analysis_reports MODIFY summary VARCHAR(1200) NULL').catch(() => {})
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS stock_analysis_failures (
+      id BIGINT NOT NULL AUTO_INCREMENT,
+      run_label VARCHAR(80) NULL,
+      symbol_code VARCHAR(50) NOT NULL,
+      reason VARCHAR(400) NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      KEY idx_run (run_label),
+      KEY idx_created (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `)
+}
+
+// ── Failure tracking ─────────────────────────────────────────────────────────
+
+export async function saveFailure(runLabel, symbolCode, reason) {
+  await getPool().query(
+    'INSERT INTO stock_analysis_failures (run_label, symbol_code, reason) VALUES (?, ?, ?)',
+    [runLabel, symbolCode, String(reason).slice(0, 390)],
+  ).catch((e) => console.error('saveFailure:', e.message))
+}
+
+/** ALL failed symbols of the most recent run (for retry — no display truncation). */
+export async function getFailureSymbols(runLabel = null) {
+  const pool = getPool()
+  let label = runLabel
+  if (!label) {
+    const [[latest]] = await pool.query(
+      'SELECT run_label FROM stock_analysis_failures ORDER BY created_at DESC LIMIT 1',
+    )
+    label = latest?.run_label ?? null
+  }
+  if (!label) return []
+  const [rows] = await pool.query(
+    'SELECT DISTINCT symbol_code FROM stock_analysis_failures WHERE run_label = ?',
+    [label],
+  )
+  return rows.map((r) => r.symbol_code)
+}
+
+/** Failures of the most recent run (or a given run_label), grouped by reason. */
+export async function getFailures(runLabel = null) {
+  const pool = getPool()
+  let label = runLabel
+  if (!label) {
+    const [[latest]] = await pool.query(
+      'SELECT run_label FROM stock_analysis_failures ORDER BY created_at DESC LIMIT 1',
+    )
+    label = latest?.run_label ?? null
+  }
+  if (!label) return { runLabel: null, total: 0, groups: [] }
+  const [rows] = await pool.query(
+    'SELECT symbol_code, reason FROM stock_analysis_failures WHERE run_label = ? ORDER BY id',
+    [label],
+  )
+  const groups = new Map()
+  for (const r of rows) {
+    if (!groups.has(r.reason)) groups.set(r.reason, [])
+    groups.get(r.reason).push(r.symbol_code)
+  }
+  return {
+    runLabel: label,
+    total: rows.length,
+    groups: [...groups.entries()]
+      .map(([reason, symbols]) => ({ reason, count: symbols.length, symbols: symbols.slice(0, 100) }))
+      .sort((a, b) => b.count - a.count),
+  }
+}
+
+// ── Latest-score universe cache (for ranks/percentiles) ──────────────────────
+
+let latestCache = { at: 0, rows: null }
+const LATEST_TTL_MS = 60 * 1000
+
+export async function getAllLatestScores(force = false) {
+  if (!force && latestCache.rows && Date.now() - latestCache.at < LATEST_TTL_MS) return latestCache.rows
+  const [rows] = await getPool().query(
+    `SELECT a.symbol_code, s.sector, s.industry,
+            a.discovery_score AS discovery, a.transition_score AS transition, a.momentum_score AS momentum
+       FROM stock_analysis_reports a
+       JOIN stock_mstr s ON s.symbol_code = a.symbol_code AND s.is_active = 1
+      WHERE a.is_latest = 1`,
+  )
+  latestCache = { at: Date.now(), rows }
+  return rows
+}
+
+function rankWithin(rows, symbol, engine) {
+  const mine = rows.find((r) => r.symbol_code === symbol)
+  if (!mine || mine[engine] == null) return null
+  const scored = rows.filter((r) => r[engine] != null)
+  const better = scored.filter((r) => r[engine] > mine[engine]).length
+  const rank = better + 1
+  const total = scored.length
+  return { rank, total, topPct: total ? +(((rank / total) * 100).toFixed(1)) : null }
+}
+
+/** Market/sector/industry rank + percentile for every engine score. */
+export async function getRankContext(symbolCode) {
+  const rows = await getAllLatestScores()
+  if (!rows.length) return null
+  const mine = rows.find((r) => r.symbol_code === symbolCode)
+  if (!mine) return null
+  const ctx = {}
+  for (const engine of ['discovery', 'transition', 'momentum']) {
+    const market = rankWithin(rows, symbolCode, engine)
+    const sector = mine.sector ? rankWithin(rows.filter((r) => r.sector === mine.sector), symbolCode, engine) : null
+    const industry = mine.industry ? rankWithin(rows.filter((r) => r.industry === mine.industry), symbolCode, engine) : null
+    ctx[engine] = { market, sector, industry }
+  }
+  ctx.sectorName = mine.sector
+  ctx.industryName = mine.industry
+  return ctx
+}
+
+export async function saveAnalysis(stockRow, analysis) {
+  const pool = getPool()
+
+  // conviction snapshot vs the current latest universe (best-effort)
+  let conv = null
+  let ranks = {}
+  try {
+    const rows = await getAllLatestScores()
+    const engine = analysis.family ?? 'discovery'
+    const scored = rows.filter((r) => r.symbol_code !== stockRow.symbol_code && r[engine] != null)
+    const myScore = analysis.scores[engine] ?? 0
+    const better = scored.filter((r) => r[engine] > myScore).length
+    const total = scored.length + 1
+    const pctile = total > 1 ? (1 - better / total) * 100 : 50
+    conv = convictionOf(analysis.scores, pctile, analysis.scores.risk)
+    ranks = { market_rank: better + 1, market_total: total }
+  } catch { /* ranks optional at save time */ }
+
+  await pool.query('UPDATE stock_analysis_reports SET is_latest = 0 WHERE symbol_code = ? AND is_latest = 1', [stockRow.symbol_code])
+  await pool.query(
+    `INSERT INTO stock_analysis_reports
+      (stock_id, symbol_code, analysis_date, price, discovery_score, transition_score, momentum_score,
+       risk_score, risk_level, current_phase, badge, feature_evidence, risk_factors, summary, engine_version,
+       conviction, conviction_label, market_rank, market_total, is_latest)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+    [
+      stockRow.id ?? null,
+      stockRow.symbol_code,
+      analysis.features.date,
+      analysis.features.price,
+      analysis.scores.discovery,
+      analysis.scores.transition,
+      analysis.scores.momentum,
+      analysis.scores.risk,
+      analysis.riskLevel,
+      analysis.phase,
+      analysis.badge,
+      JSON.stringify({ evidence: analysis.evidence, features: analysis.features, tags: analysis.tags, family: analysis.family, earliness: analysis.earliness }),
+      JSON.stringify(analysis.riskFactors),
+      analysis.summary,
+      analysis.engineVersion,
+      conv?.score ?? null,
+      conv?.label ?? null,
+      ranks.market_rank ?? null,
+      ranks.market_total ?? null,
+    ],
+  )
+  latestCache.at = 0 // invalidate
+}
+
+export async function getLatestAnalysis(symbolCode) {
+  const [rows] = await getPool().query(
+    'SELECT * FROM stock_analysis_reports WHERE symbol_code = ? AND is_latest = 1 LIMIT 1',
+    [symbolCode],
+  )
+  return rows[0] ?? null
+}
+
+export async function getHistory(symbolCode, limit = 30) {
+  const [rows] = await getPool().query(
+    `SELECT id, analysis_date, price, discovery_score, transition_score, momentum_score,
+            risk_score, risk_level, badge, conviction, conviction_label, market_rank, market_total,
+            engine_version, created_at
+       FROM stock_analysis_reports
+      WHERE symbol_code = ?
+      ORDER BY created_at DESC
+      LIMIT ?`,
+    [symbolCode, Number(limit)],
+  )
+  return rows
+}
+
+// ── Universe query ───────────────────────────────────────────────────────────
+
+const SORTS = {
+  discovery: 'a.discovery_score IS NULL, a.discovery_score DESC',
+  transition: 'a.transition_score IS NULL, a.transition_score DESC',
+  momentum: 'a.momentum_score IS NULL, a.momentum_score DESC',
+  conviction: 'a.conviction IS NULL, a.conviction DESC',
+  recent: 'a.created_at IS NULL, a.created_at DESC',
+  name: 's.symbol_name ASC',
+}
+
+export async function queryUniverse(q) {
+  const page = Math.max(1, Number(q.page) || 1)
+  const pageSize = Math.min(100, Math.max(5, Number(q.pageSize) || 25))
+  const where = ['s.is_active = 1']
+  const params = []
+  if (q.q) {
+    where.push('(s.symbol_code LIKE ? OR s.symbol_name LIKE ?)')
+    params.push(`%${q.q}%`, `%${q.q}%`)
+  }
+  if (q.sector) { where.push('s.sector = ?'); params.push(q.sector) }
+  if (q.industry) { where.push('s.industry = ?'); params.push(q.industry) }
+  if (q.category) { where.push('s.category = ?'); params.push(q.category) }
+  if (q.badge) { where.push('a.badge = ?'); params.push(q.badge) }
+  if (q.riskLevel) { where.push('a.risk_level = ?'); params.push(q.riskLevel) }
+  if (q.minDiscovery) { where.push('a.discovery_score >= ?'); params.push(Number(q.minDiscovery)) }
+  if (q.analyzed === '1') where.push('a.id IS NOT NULL')
+
+  const base = `
+    FROM stock_mstr s
+    LEFT JOIN stock_analysis_reports a ON a.symbol_code = s.symbol_code AND a.is_latest = 1
+    WHERE ${where.join(' AND ')}`
+
+  const orderBy = SORTS[q.sort] ?? SORTS.discovery
+  const [[{ total }]] = await getPool().query(`SELECT COUNT(*) AS total ${base}`, params)
+  const [rows] = await getPool().query(
+    `SELECT s.id, s.symbol_code, s.symbol_name, s.sector, s.industry, s.category,
+            a.analysis_date, a.price, a.discovery_score, a.transition_score, a.momentum_score,
+            a.risk_score, a.risk_level, a.badge, a.conviction, a.conviction_label,
+            a.summary, a.created_at AS analyzed_at
+       ${base}
+      ORDER BY ${orderBy}
+      LIMIT ? OFFSET ?`,
+    [...params, pageSize, (page - 1) * pageSize],
+  )
+  return { rows, total, page, pageSize }
+}
+
+export async function getFacets() {
+  const pool = getPool()
+  const [sectors] = await pool.query(
+    "SELECT DISTINCT sector FROM stock_mstr WHERE is_active = 1 AND sector IS NOT NULL AND sector != '' ORDER BY sector",
+  )
+  const [industries] = await pool.query(
+    "SELECT DISTINCT industry FROM stock_mstr WHERE is_active = 1 AND industry IS NOT NULL AND industry != '' ORDER BY industry LIMIT 300",
+  )
+  const [badges] = await pool.query(
+    'SELECT DISTINCT badge FROM stock_analysis_reports WHERE is_latest = 1 AND badge IS NOT NULL',
+  )
+  return {
+    sectors: sectors.map((r) => r.sector),
+    industries: industries.map((r) => r.industry),
+    badges: badges.map((r) => r.badge),
+  }
+}
+
+// ── Market intelligence dashboard ────────────────────────────────────────────
+
+const BADGE_ORDER = {
+  QUIET: 0, WATCHLIST: 1, 'QUIET ACCUMULATION': 2, 'EARLY DISCOVERY': 3,
+  'HIDDEN GEM CANDIDATE': 4, 'TRANSITION STARTED': 5, 'BUILDING STRENGTH': 5,
+  'LEADERSHIP EMERGING': 6, 'MOMENTUM ESTABLISHED': 7,
+}
+
+/** Latest + previous snapshot per symbol, joined with names. */
+async function latestVsPrevious() {
+  const [rows] = await getPool().query(`
+    WITH ranked AS (
+      SELECT r.*, ROW_NUMBER() OVER (PARTITION BY symbol_code ORDER BY created_at DESC) AS rn
+        FROM stock_analysis_reports r
+    )
+    SELECT cur.symbol_code, s.symbol_name, s.sector,
+           cur.price, cur.discovery_score, cur.transition_score, cur.momentum_score,
+           cur.risk_score, cur.risk_level, cur.badge, cur.conviction, cur.conviction_label,
+           cur.summary, cur.created_at,
+           prev.discovery_score AS prev_discovery, prev.transition_score AS prev_transition,
+           prev.momentum_score AS prev_momentum, prev.badge AS prev_badge
+      FROM ranked cur
+      JOIN stock_mstr s ON s.symbol_code = cur.symbol_code AND s.is_active = 1
+      LEFT JOIN ranked prev ON prev.symbol_code = cur.symbol_code AND prev.rn = 2
+     WHERE cur.rn = 1
+  `)
+  return rows
+}
+
+export async function getDashboard(limit = 6) {
+  const rows = await latestVsPrevious()
+  const entry = (r, extra = {}) => ({
+    symbol_code: r.symbol_code,
+    symbol_name: r.symbol_name,
+    sector: r.sector,
+    price: r.price,
+    discovery_score: r.discovery_score,
+    transition_score: r.transition_score,
+    momentum_score: r.momentum_score,
+    risk_level: r.risk_level,
+    badge: r.badge,
+    conviction: r.conviction,
+    conviction_label: r.conviction_label,
+    summary: r.summary,
+    ...extra,
+  })
+  const by = (key, filter = () => true) =>
+    rows.filter((r) => r[key] != null && filter(r)).sort((a, b) => b[key] - a[key]).slice(0, limit).map((r) => entry(r))
+
+  const gems = rows
+    .filter((r) => ['HIDDEN GEM CANDIDATE', 'EARLY DISCOVERY', 'QUIET ACCUMULATION'].includes(r.badge))
+    .sort((a, b) => (b.discovery_score ?? 0) - (a.discovery_score ?? 0))
+    .slice(0, limit).map((r) => entry(r))
+
+  const improvers = rows
+    .filter((r) => r.prev_discovery != null && r.discovery_score != null)
+    .map((r) => ({ r, delta: r.discovery_score - r.prev_discovery }))
+    .filter((x) => x.delta > 0)
+    .sort((a, b) => b.delta - a.delta)
+    .slice(0, limit).map(({ r, delta }) => entry(r, { delta }))
+
+  const newSignals = rows
+    .filter((r) => (r.discovery_score ?? 0) >= 55 && (r.prev_discovery == null || r.prev_discovery < 55))
+    .sort((a, b) => (b.discovery_score ?? 0) - (a.discovery_score ?? 0))
+    .slice(0, limit).map((r) => entry(r, { isNew: r.prev_discovery == null }))
+
+  const badgeMoves = rows
+    .filter((r) => r.prev_badge && r.badge && r.prev_badge !== r.badge)
+    .map((r) => ({ r, move: (BADGE_ORDER[r.badge] ?? 0) - (BADGE_ORDER[r.prev_badge] ?? 0) }))
+  const upgraded = badgeMoves.filter((x) => x.move > 0).sort((a, b) => b.move - a.move)
+    .slice(0, limit).map(({ r }) => entry(r, { fromBadge: r.prev_badge }))
+  const downgraded = badgeMoves.filter((x) => x.move < 0).sort((a, b) => a.move - b.move)
+    .slice(0, limit).map(({ r }) => entry(r, { fromBadge: r.prev_badge }))
+
+  // sector leaders: best discovery per sector, ranked by that score
+  const bySector = new Map()
+  for (const r of rows) {
+    if (!r.sector || r.discovery_score == null) continue
+    const cur = bySector.get(r.sector)
+    if (!cur || r.discovery_score > cur.discovery_score) bySector.set(r.sector, r)
+  }
+  const sectorLeaders = [...bySector.values()]
+    .sort((a, b) => (b.discovery_score ?? 0) - (a.discovery_score ?? 0))
+    .slice(0, limit + 2).map((r) => entry(r))
+
+  // Top Picks: most convincing across the WHOLE analysed universe.
+  // conviction (0-100) when stored; fallback = best engine score minus risk drag.
+  const pickScore = (r) => r.conviction ?? Math.max(r.discovery_score ?? 0, r.transition_score ?? 0, r.momentum_score ?? 0) - (r.risk_score ?? 50) * 0.2
+  const topPicks = rows
+    .filter((r) => Math.max(r.discovery_score ?? 0, r.transition_score ?? 0, r.momentum_score ?? 0) >= 40)
+    .sort((a, b) => pickScore(b) - pickScore(a))
+    .slice(0, 8).map((r) => entry(r))
+
+  return {
+    analyzedCount: rows.length,
+    topPicks,
+    topHiddenGems: gems,
+    topDiscovery: by('discovery_score'),
+    biggestImprovers: improvers,
+    newSignals,
+    momentumLeaders: by('momentum_score'),
+    highestRisk: by('risk_score'),
+    sectorLeaders,
+    upgraded,
+    downgraded,
+  }
+}
+
+/** Standout bullets for one stock: rank context + history trends. */
+export async function getStandout(symbolCode, rankCtx, history) {
+  const lines = []
+  if (rankCtx?.discovery?.market?.topPct != null && rankCtx.discovery.market.topPct <= 10) {
+    lines.push(`Top ${rankCtx.discovery.market.topPct}% of the analysed market on Discovery (#${rankCtx.discovery.market.rank} of ${rankCtx.discovery.market.total})`)
+  }
+  if (rankCtx?.discovery?.sector?.rank != null && rankCtx.discovery.sector.rank <= 3 && rankCtx.sectorName) {
+    lines.push(`#${rankCtx.discovery.sector.rank} Discovery score in ${rankCtx.sectorName} (${rankCtx.discovery.sector.total} peers)`)
+  }
+  if (rankCtx?.momentum?.market?.topPct != null && rankCtx.momentum.market.topPct <= 5) {
+    lines.push(`Top ${rankCtx.momentum.market.topPct}% on Momentum — already among recognised leaders`)
+  }
+  // rising streak from history (oldest → newest)
+  if (history?.length >= 3) {
+    const asc = [...history].reverse()
+    let streak = 0
+    for (let i = 1; i < asc.length; i++) {
+      if ((asc[i].discovery_score ?? 0) > (asc[i - 1].discovery_score ?? 0)) streak++
+      else streak = 0
+    }
+    if (streak >= 2) lines.push(`Discovery score rising for ${streak + 1} consecutive analyses`)
+    const first = asc[0]
+    const lastRow = asc[asc.length - 1]
+    if ((first.discovery_score ?? 0) < 40 && (lastRow.discovery_score ?? 0) >= 55) {
+      lines.push('First strong discovery signal after a quiet period')
+    }
+  } else if (history?.length === 1) {
+    lines.push('First analysis snapshot — no trend history yet')
+  }
+  return lines
+}

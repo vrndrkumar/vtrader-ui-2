@@ -14,6 +14,9 @@ const ReportsPage     = lazy(() => import('@/pages/ReportsPage'))
 const AnalyticsPage   = lazy(() => import('@/pages/AnalyticsPage'))
 const StrategiesPage      = lazy(() => import('@/pages/StrategiesPage'))
 const SignalGeneratorPage = lazy(() => import('@/pages/SignalGeneratorPage'))
+const InsightUniversePage = lazy(() => import('@/insight/UniversePage'))
+const InsightReportPage   = lazy(() => import('@/insight/StockReportPage'))
+const InsightGuidePage    = lazy(() => import('@/insight/GuidePage'))
 
 function GuestRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth()
@@ -53,6 +56,9 @@ export function AppRouter() {
             <Route path="/analytics"   element={<AnalyticsPage />} />
             <Route path="/reports"     element={<ReportsPage />} />
             <Route path="/signals"     element={<SignalGeneratorPage />} />
+            <Route path="/insight"         element={<InsightUniversePage />} />
+            <Route path="/insight/guide"   element={<InsightGuidePage />} />
+            <Route path="/insight/:symbol" element={<InsightReportPage />} />
           </Route>
 
           <Route path="*" element={<Navigate to="/login" replace />} />

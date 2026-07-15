@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="description" content="Stock Insight — System Design & Methodology. How the market research intelligence platform discovers hidden gems before major moves." />
+<title>Stock Insight — Methodology & System Design</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+/* ─────────────────────────── Design tokens ─────────────────────────── */
+:root{
+  --bg:#f8f9fb; --panel:#ffffff; --panel2:#f2f4f8; --border:#e6e9ef;
+  --text:#0f172a; --text2:#475569; --text3:#94a3b8;
+  --accent:#6d5ae0; --accent2:#4f46e5; --accent-soft:#efedfd;
+  --violet:#7c3aed; --blue:#2563eb; --green:#059669; --amber:#d97706; --red:#dc2626;
+  --violet-soft:#f3eefe; --blue-soft:#eaf1fe; --green-soft:#e8f7f0; --amber-soft:#fdf3e3; --red-soft:#fdecec;
+  --shadow:0 1px 2px rgba(15,23,42,.05),0 8px 24px -12px rgba(15,23,42,.12);
+  --radius:14px; --mono:'JetBrains Mono',monospace;
+}
+[data-theme="dark"]{
+  --bg:#0b0e14; --panel:#12161f; --panel2:#181d29; --border:#232a38;
+  --text:#e8ecf4; --text2:#a3aec2; --text3:#5d6b82;
+  --accent:#8b7cf0; --accent2:#a5b4fc; --accent-soft:#1d1b33;
+  --violet:#a78bfa; --blue:#60a5fa; --green:#34d399; --amber:#fbbf24; --red:#f87171;
+  --violet-soft:#221a38; --blue-soft:#14213a; --green-soft:#0d2b22; --amber-soft:#2d2410; --red-soft:#331616;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 12px 32px -12px rgba(0,0,0,.5);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--text);line-height:1.65;font-size:15.5px;transition:background .25s,color .25s}
+::selection{background:var(--accent);color:#fff}
+
+/* ─────────────────────────── Progress bar ─────────────────────────── */
+#progress{position:fixed;top:0;left:0;height:3px;background:linear-gradient(90deg,var(--violet),var(--blue),var(--green));width:0;z-index:100;transition:width .1s}
+
+/* ─────────────────────────── Header ─────────────────────────── */
+header.top{position:sticky;top:0;z-index:90;background:color-mix(in srgb,var(--bg) 82%,transparent);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+.top-inner{max-width:1440px;margin:0 auto;display:flex;align-items:center;gap:16px;padding:12px 24px}
+.logo{display:flex;align-items:center;gap:10px;font-weight:800;font-size:16px;letter-spacing:-.02em;white-space:nowrap}
+.logo-mark{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--violet),var(--blue));display:flex;align-items:center;justify-content:center;color:#fff}
+.logo small{font-weight:500;color:var(--text3);font-size:11px;margin-left:2px}
+.searchbox{flex:1;max-width:420px;position:relative}
+.searchbox input{width:100%;padding:8px 12px 8px 34px;border-radius:10px;border:1px solid var(--border);background:var(--panel);color:var(--text);font:inherit;font-size:13px;outline:none;transition:border .15s}
+.searchbox input:focus{border-color:var(--accent)}
+.searchbox .icon{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--text3);width:15px;height:15px}
+#search-results{position:absolute;top:calc(100% + 6px);left:0;right:0;background:var(--panel);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow);max-height:280px;overflow:auto;display:none;z-index:95}
+#search-results a{display:block;padding:9px 14px;font-size:13px;color:var(--text2);text-decoration:none;border-bottom:1px solid var(--border)}
+#search-results a:last-child{border-bottom:none}
+#search-results a:hover,#search-results a.active{background:var(--accent-soft);color:var(--accent)}
+.top-actions{display:flex;align-items:center;gap:8px;margin-left:auto}
+.btn-icon{width:34px;height:34px;border-radius:10px;border:1px solid var(--border);background:var(--panel);color:var(--text2);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .15s}
+.btn-icon:hover{color:var(--accent);border-color:var(--accent)}
+.chip{font-size:11px;font-weight:700;padding:4px 10px;border-radius:999px;background:var(--accent-soft);color:var(--accent);white-space:nowrap}
+
+/* ─────────────────────────── Layout ─────────────────────────── */
+.layout{max-width:1440px;margin:0 auto;display:grid;grid-template-columns:260px 1fr;gap:0}
+nav.side{position:sticky;top:59px;height:calc(100vh - 59px);overflow-y:auto;padding:24px 12px 60px 24px;border-right:1px solid var(--border)}
+nav.side::-webkit-scrollbar{width:4px}
+nav.side::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+.nav-group{margin-bottom:18px}
+.nav-title{font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);padding:0 10px;margin-bottom:6px}
+nav.side a{display:block;padding:6px 10px;border-radius:8px;font-size:13px;color:var(--text2);text-decoration:none;transition:all .12s;border-left:2px solid transparent}
+nav.side a:hover{color:var(--text);background:var(--panel2)}
+nav.side a.active{color:var(--accent);background:var(--accent-soft);font-weight:600}
+main{padding:0 48px 120px;min-width:0}
+.content-width{max-width:880px}
+
+/* ─────────────────────────── Hero ─────────────────────────── */
+.hero{padding:64px 0 48px;position:relative}
+.hero::before{content:'';position:absolute;inset:-60px -48px auto;height:340px;background:
+ radial-gradient(600px 200px at 20% 20%,color-mix(in srgb,var(--violet) 14%,transparent),transparent),
+ radial-gradient(500px 220px at 75% 10%,color-mix(in srgb,var(--blue) 12%,transparent),transparent);pointer-events:none}
+.hero>*{position:relative}
+.hero .eyebrow{display:inline-flex;align-items:center;gap:8px;font-size:12px;font-weight:700;color:var(--accent);background:var(--accent-soft);padding:6px 14px;border-radius:999px;margin-bottom:20px}
+.hero h1{font-size:clamp(30px,4.5vw,46px);font-weight:800;letter-spacing:-.03em;line-height:1.12;margin-bottom:16px}
+.hero h1 span{background:linear-gradient(90deg,var(--violet),var(--blue));-webkit-background-clip:text;background-clip:text;color:transparent}
+.hero p.lead{font-size:17px;color:var(--text2);max-width:640px;margin-bottom:28px}
+.stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin-top:8px}
+.stat{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:18px;box-shadow:var(--shadow)}
+.stat .num{font-size:24px;font-weight:800;letter-spacing:-.02em}
+.stat .lbl{font-size:12px;color:var(--text3);margin-top:2px}
+
+/* ─────────────────────────── Sections & typography ─────────────────── */
+section.doc{padding-top:56px}
+h2.sec{font-size:26px;font-weight:800;letter-spacing:-.02em;display:flex;align-items:center;gap:12px;scroll-margin-top:80px;margin-bottom:6px}
+h2.sec .n{font-size:12px;font-weight:800;color:var(--accent);background:var(--accent-soft);border-radius:8px;padding:4px 9px}
+h3{font-size:17px;font-weight:700;margin:34px 0 12px;scroll-margin-top:80px;display:flex;align-items:center;gap:8px}
+h2 .anchor,h3 .anchor{opacity:0;color:var(--text3);text-decoration:none;font-weight:400;transition:opacity .15s}
+h2:hover .anchor,h3:hover .anchor{opacity:1}
+p.sub{color:var(--text2);margin-bottom:22px;max-width:760px}
+section.doc p{color:var(--text2);margin-bottom:12px;max-width:760px}
+section.doc strong{color:var(--text)}
+hr.sep{border:none;border-top:1px solid var(--border);margin:56px 0 0}
+
+/* ─────────────────────────── Cards & grids ─────────────────────────── */
+.grid{display:grid;gap:14px;margin:18px 0}
+.g2{grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+.g3{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:20px;box-shadow:var(--shadow)}
+.card .icon-badge{width:38px;height:38px;border-radius:11px;display:flex;align-items:center;justify-content:center;margin-bottom:12px}
+.card h4{font-size:14.5px;font-weight:700;margin-bottom:6px}
+.card p{font-size:13px;color:var(--text2);margin:0}
+.tint-violet{background:var(--violet-soft);color:var(--violet)}
+.tint-blue{background:var(--blue-soft);color:var(--blue)}
+.tint-green{background:var(--green-soft);color:var(--green)}
+.tint-amber{background:var(--amber-soft);color:var(--amber)}
+.tint-red{background:var(--red-soft);color:var(--red)}
+
+/* ─────────────────────────── Callouts ─────────────────────────── */
+.callout{display:flex;gap:14px;border-radius:var(--radius);padding:16px 18px;margin:18px 0;border:1px solid;font-size:14px}
+.callout .ci{flex-shrink:0;margin-top:2px}
+.callout p{margin:0;font-size:13.5px}
+.callout b{display:block;margin-bottom:2px;font-size:13.5px}
+.co-info{background:var(--blue-soft);border-color:color-mix(in srgb,var(--blue) 25%,transparent);color:var(--text)}
+.co-info .ci{color:var(--blue)}
+.co-warn{background:var(--amber-soft);border-color:color-mix(in srgb,var(--amber) 30%,transparent)}
+.co-warn .ci{color:var(--amber)}
+.co-danger{background:var(--red-soft);border-color:color-mix(in srgb,var(--red) 25%,transparent)}
+.co-danger .ci{color:var(--red)}
+.co-success{background:var(--green-soft);border-color:color-mix(in srgb,var(--green) 25%,transparent)}
+.co-success .ci{color:var(--green)}
+
+/* ─────────────────────────── Tables ─────────────────────────── */
+.tbl-wrap{overflow-x:auto;margin:18px 0;border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow)}
+table{width:100%;border-collapse:collapse;font-size:13.5px;background:var(--panel)}
+th{background:var(--panel2);text-align:left;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--text3);padding:11px 16px;white-space:nowrap}
+td{padding:12px 16px;border-top:1px solid var(--border);color:var(--text2);vertical-align:top}
+td b,td strong{color:var(--text)}
+tr:hover td{background:color-mix(in srgb,var(--panel2) 55%,transparent)}
+.pts{font-family:var(--mono);font-weight:600;color:var(--accent);white-space:nowrap}
+
+/* ─────────────────────────── Badges ─────────────────────────── */
+.badge{display:inline-flex;align-items:center;gap:6px;font-size:10.5px;font-weight:800;letter-spacing:.02em;padding:4px 10px;border-radius:999px;white-space:nowrap}
+.badge .dot{width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.7}
+.b-violet{background:var(--violet-soft);color:var(--violet)}
+.b-blue{background:var(--blue-soft);color:var(--blue)}
+.b-green{background:var(--green-soft);color:var(--green)}
+.b-amber{background:var(--amber-soft);color:var(--amber)}
+.b-red{background:var(--red-soft);color:var(--red)}
+.b-gray{background:var(--panel2);color:var(--text3)}
+
+/* ─────────────────────────── Timeline ─────────────────────────── */
+.timeline{position:relative;margin:24px 0;padding-left:30px}
+.timeline::before{content:'';position:absolute;left:9px;top:6px;bottom:6px;width:2px;background:linear-gradient(var(--violet),var(--blue),var(--green))}
+.t-item{position:relative;padding-bottom:26px}
+.t-item:last-child{padding-bottom:0}
+.t-item::before{content:'';position:absolute;left:-27px;top:5px;width:12px;height:12px;border-radius:50%;background:var(--panel);border:3px solid var(--accent)}
+.t-item h4{font-size:14.5px;font-weight:700;margin-bottom:4px}
+.t-item p{font-size:13px;color:var(--text2);max-width:700px;margin:0}
+.t-item .t-tag{font-size:10.5px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:.06em}
+
+/* ─────────────────────────── Flow steps ─────────────────────────── */
+.flow{display:flex;flex-wrap:wrap;gap:10px;align-items:stretch;margin:20px 0}
+.flow .step{flex:1;min-width:150px;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:14px;position:relative;box-shadow:var(--shadow)}
+.flow .step .sn{font-size:10px;font-weight:800;color:var(--accent)}
+.flow .step h5{font-size:13px;font-weight:700;margin:3px 0 4px}
+.flow .step p{font-size:11.5px;color:var(--text3);margin:0;line-height:1.5}
+.flow .arr{display:flex;align-items:center;color:var(--text3)}
+
+/* ─────────────────────────── Mermaid / code ────────────────────────── */
+.diagram{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:22px;margin:18px 0;overflow-x:auto;box-shadow:var(--shadow)}
+.diagram .mermaid{display:flex;justify-content:center}
+.codeblock{position:relative;background:#0d1220;border-radius:var(--radius);margin:18px 0;border:1px solid #1e2740}
+.codeblock pre{padding:18px 20px;overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.7;color:#c8d3ea}
+.codeblock .k{color:#8b7cf0}.codeblock .v{color:#5eead4}.codeblock .c{color:#5d6b82}
+.copy-btn{position:absolute;top:10px;right:10px;font-size:11px;font-weight:600;padding:5px 10px;border-radius:8px;border:1px solid #2a3350;background:#151b2e;color:#a3aec2;cursor:pointer;font-family:'Inter'}
+.copy-btn:hover{color:#fff;border-color:var(--accent)}
+
+/* ─────────────────────────── Details ─────────────────────────── */
+details{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);margin:12px 0;box-shadow:var(--shadow)}
+details summary{cursor:pointer;padding:16px 20px;font-weight:700;font-size:14px;list-style:none;display:flex;align-items:center;gap:10px}
+details summary::-webkit-details-marker{display:none}
+details summary::after{content:'+';margin-left:auto;color:var(--text3);font-size:18px;font-weight:400}
+details[open] summary::after{content:'–'}
+details .d-body{padding:0 20px 18px;font-size:13.5px;color:var(--text2)}
+
+/* ─────────────────────────── Back to top / footer ───────────────────── */
+#toTop{position:fixed;bottom:26px;right:26px;width:42px;height:42px;border-radius:12px;background:var(--accent);color:#fff;border:none;cursor:pointer;display:none;align-items:center;justify-content:center;box-shadow:var(--shadow);z-index:80}
+footer{border-top:1px solid var(--border);margin-top:80px;padding:28px 0;font-size:12px;color:var(--text3);max-width:880px}
+
+/* ─────────────────────────── Responsive & print ─────────────────────── */
+@media(max-width:1000px){
+  .layout{grid-template-columns:1fr}
+  nav.side{display:none}
+  main{padding:0 20px 80px}
+  .hero::before{inset:-40px -20px auto}
+}
+@media print{
+  header.top,nav.side,#toTop,#progress,.copy-btn{display:none!important}
+  .layout{display:block}
+  main{padding:0}
+  body{background:#fff;color:#111}
+  .card,.stat,.tbl-wrap,.diagram,details{box-shadow:none;break-inside:avoid}
+  details{border:1px solid #ddd}
+  details:not([open]) .d-body{display:block}
+  section.doc{padding-top:28px}
+}
+</style>
+</head>
+<body>
+<div id="progress"></div>
+
+<!-- ══════════════════ Sticky header ══════════════════ -->
+<header class="top">
+  <div class="top-inner">
+    <div class="logo">
+      <div class="logo-mark"><i data-lucide="radar" style="width:16px;height:16px"></i></div>
+      Stock Insight <small>Methodology</small>
+    </div>
+    <div class="searchbox">
+      <i data-lucide="search" class="icon"></i>
+      <input id="search" type="text" placeholder="Search sections…  (press /)" autocomplete="off" />
+      <div id="search-results"></div>
+    </div>
+    <div class="top-actions">
+      <span class="chip">engine v2-2026.07</span>
+      <button class="btn-icon" id="themeToggle" title="Toggle dark mode"><i data-lucide="moon" id="themeIcon"></i></button>
+      <button class="btn-icon" onclick="window.print()" title="Print / save as PDF"><i data-lucide="printer"></i></button>
+    </div>
+  </div>
+</header>
+
+<div class="layout">
+<!-- ══════════════════ Sidebar ══════════════════ -->
+<nav class="side" id="sidenav">
+  <div class="nav-group"><div class="nav-title">Getting started</div>
+    <a href="#overview">1 · System Overview</a>
+    <a href="#methodology">2 · Analysis Methodology</a>
+    <a href="#timeframes">3 · Timeframes</a>
+  </div>
+  <div class="nav-group"><div class="nav-title">The engine</div>
+    <a href="#indicators">4 · Indicators</a>
+    <a href="#price-action">5 · Price Action Concepts</a>
+    <a href="#decision">6 · Decision Logic</a>
+  </div>
+  <div class="nav-group"><div class="nav-title">System</div>
+    <a href="#architecture">7 · Architecture</a>
+    <a href="#workflow">8 · Workflow</a>
+    <a href="#examples">9 · Worked Examples</a>
+  </div>
+  <div class="nav-group"><div class="nav-title">Appendix</div>
+    <a href="#research">Research Provenance</a>
+    <a href="#limitations">Limitations & Disclaimer</a>
+  </div>
+</nav>
+
+<!-- ══════════════════ Main ══════════════════ -->
+<main>
+<!-- Hero -->
+<div class="hero">
+  <span class="eyebrow"><i data-lucide="sparkles" style="width:13px;height:13px"></i> Official System Documentation</span>
+  <h1>How Stock Insight finds<br/><span>hidden gems before the move</span></h1>
+  <p class="lead">A complete, honest explanation of the research methodology behind Stock Insight — every data source, indicator, rule, threshold and decision, validated on six years of market history. Written for readers with basic market knowledge.</p>
+  <div class="stat-row">
+    <div class="stat"><div class="num">25,000+</div><div class="lbl">historical observations validated (2020–2026)</div></div>
+    <div class="stat"><div class="num">~7 months</div><div class="lbl">median early-detection lead before +50% moves</div></div>
+    <div class="stat"><div class="num">3 + 1</div><div class="lbl">independent engines + separate risk layer</div></div>
+    <div class="stat"><div class="num">0</div><div class="lbl">buy/sell signals — research only, never advice</div></div>
+  </div>
+</div>
+
+<!-- ═════════ 1. OVERVIEW ═════════ -->
+<section class="doc content-width" id="overview">
+  <h2 class="sec"><span class="n">01</span> System Overview <a class="anchor" href="#overview">#</a></h2>
+  <p class="sub">Stock Insight is a <b>market research intelligence platform</b>. Every analysis run scans the entire stock universe and answers one question per stock: <b>"does this stock deserve investigation, because it may be early in a big move?"</b></p>
+
+  <div class="callout co-danger">
+    <i data-lucide="shield-alert" class="ci"></i>
+    <p><b>What Stock Insight is NOT</b> It is not a tip service and not a trading system. It produces no buy/sell/hold signals, no entry prices, no stop losses, no targets. It ranks stocks by research interest and explains its evidence. Every decision — and all homework on the company's business, results and news — belongs to the user.</p>
+  </div>
+
+  <h3>Design principles</h3>
+  <div class="grid g2">
+    <div class="card"><div class="icon-badge tint-violet"><i data-lucide="flask-conical"></i></div><h4>Evidence, not opinion</h4><p>Every score comes from rules whose predictive value was measured on 2020–2026 history, walk-forward validated. Rules that failed testing were removed — even popular ones.</p></div>
+    <div class="card"><div class="icon-badge tint-blue"><i data-lucide="eye"></i></div><h4>Explainability</h4><p>Every point of every score maps to a visible, human-readable evidence line. No black boxes anywhere in the pipeline.</p></div>
+    <div class="card"><div class="icon-badge tint-green"><i data-lucide="binoculars"></i></div><h4>Early over obvious</h4><p>Optimised to flag stocks before recognition, accepting a lower hit rate in exchange for earliness — that trade-off is the whole product.</p></div>
+    <div class="card"><div class="icon-badge tint-amber"><i data-lucide="scale"></i></div><h4>Risk shown, never a veto</h4><p>Many past big winners were small, volatile and illiquid. A "safety filter" would delete exactly the stocks the product exists to find — so risk is displayed prominently but never silently removes a stock.</p></div>
+  </div>
+
+  <h3>End-to-end pipeline</h3>
+  <div class="diagram"><pre class="mermaid">
+flowchart LR
+    A["Stock master<br/>MySQL"] --> C["Batch runner"]
+    B["Candle API<br/>daily OHLCV"] --> C
+    C --> D["Feature snapshot<br/>~30 measurements"]
+    D --> E["3 Analysis engines"]
+    D --> F["Risk layer"]
+    E --> G["Classification<br/>badge · lifecycle · conviction"]
+    F --> G
+    G --> H[("Snapshot storage")]
+    H --> I["Dashboard & reports"]
+  </pre></div>
+</section>
+<hr class="sep"/>
+
+<!-- ═════════ 2. METHODOLOGY ═════════ -->
+<section class="doc content-width" id="methodology">
+  <h2 class="sec"><span class="n">02</span> Analysis Methodology <a class="anchor" href="#methodology">#</a></h2>
+
+  <h3><i data-lucide="database" style="width:16px;color:var(--accent)"></i> Data collected</h3>
+  <div class="tbl-wrap"><table>
+    <tr><th>Data</th><th>Source</th><th>Depth</th><th>Used for</th></tr>
+    <tr><td><b>Daily OHLCV candles</b></td><td>Candle API</td><td>from 2022 (~900 days)</td><td>All signal computation</td></tr>
+    <tr><td><b>NIFTY daily candles</b></td><td>Candle API</td><td>same</td><td>Relative strength · market regime</td></tr>
+    <tr><td><b>Stock metadata</b></td><td>MySQL <code>stock_mstr</code></td><td>—</td><td>Universe, filters, sector ranks</td></tr>
+    <tr><td><b>Weekly candles</b></td><td><i>derived</i> — resampled from daily</td><td>—</td><td>Weekly trend & weekly turn</td></tr>
+  </table></div>
+  <div class="callout co-info"><i data-lucide="info" class="ci"></i><p><b>That is the complete input.</b> Fundamentals, news, sentiment, options and intraday data are <u>not used</u>. Fundamentals/news are honestly reported as "not evaluated" rather than guessed; intraday was tested and removed (see §3).</p></div>
+
+  <h3><i data-lucide="cpu" style="width:16px;color:var(--accent)"></i> Processing — the feature snapshot</h3>
+  <p>Each stock's candles are reduced to a single <b>feature snapshot</b>: ~30 measurements describing its current condition. Every measurement uses only past data (no look-ahead). Long-horizon features degrade gracefully — a stock with 60 days of history gets short-term features computed and the rest marked <i>unavailable</i>, never faked.</p>
+  <div class="grid g3">
+    <div class="card"><div class="icon-badge tint-violet"><i data-lucide="git-branch"></i></div><h4>Structure</h4><p>Swing pivots, trend, higher lows, change of character</p></div>
+    <div class="card"><div class="icon-badge tint-blue"><i data-lucide="activity"></i></div><h4>Momentum</h4><p>RSI, ADX, moving-average posture</p></div>
+    <div class="card"><div class="icon-badge tint-green"><i data-lucide="bar-chart-3"></i></div><h4>Volume behaviour</h4><p>Dry-up ratio, OBV slope, volume ratio</p></div>
+    <div class="card"><div class="icon-badge tint-amber"><i data-lucide="shrink"></i></div><h4>Compression</h4><p>Bollinger width percentile, base length, tightness</p></div>
+    <div class="card"><div class="icon-badge tint-red"><i data-lucide="map-pin"></i></div><h4>Location</h4><p>52-week high/low distance, decline duration</p></div>
+    <div class="card"><div class="icon-badge tint-violet"><i data-lucide="trending-up"></i></div><h4>Prior advance & RS</h4><p>120-day change; strength vs NIFTY; weekly layer</p></div>
+  </div>
+
+  <h3><i data-lucide="filter" style="width:16px;color:var(--accent)"></i> Filtering — deliberately minimal</h3>
+  <p>Only two filters exist: <b>active stocks</b> and <b>≥ 30 daily bars</b> (the mathematical minimum for the short-term indicators). No market-cap floor, no liquidity floor — liquidity becomes a <i>risk flag</i>, not an exclusion, because aggressive filters delete hidden gems. Stocks below 30 bars are recorded as visible failures with reasons, never silently skipped.</p>
+
+  <h3><i data-lucide="badge-check" style="width:16px;color:var(--accent)"></i> From signals to the final output</h3>
+  <div class="flow">
+    <div class="step"><div class="sn">STEP 1</div><h5>Evidence checks</h5><p>Boolean rules with fixed thresholds. Passing checks become evidence lines with points; failing checks join the "missing evidence" list.</p></div>
+    <div class="arr"><i data-lucide="chevron-right"></i></div>
+    <div class="step"><div class="sn">STEP 2</div><h5>Three scores + risk</h5><p>Discovery, Transition, Momentum scored independently 0–100. Risk scored separately — never blended in.</p></div>
+    <div class="arr"><i data-lucide="chevron-right"></i></div>
+    <div class="step"><div class="sn">STEP 3</div><h5>Market context</h5><p>Each score ranked vs every analysed stock (market / sector / industry) → percentiles; conviction stars computed.</p></div>
+    <div class="arr"><i data-lucide="chevron-right"></i></div>
+    <div class="step"><div class="sn">STEP 4</div><h5>Classification</h5><p>Badge, lifecycle stage, warning tags, executive summary. Snapshot stored for history & trend tracking.</p></div>
+  </div>
+
+  <p><b>Conviction formula</b> (1–5 ★):</p>
+  <div class="codeblock"><button class="copy-btn">Copy</button><pre><span class="c">// combined confidence — separate from the engine scores</span>
+conviction = <span class="v">0.45</span> × bestEngineScore
+           + <span class="v">0.35</span> × marketPercentile
+           + <span class="v">0.20</span> × (100 − riskScore)
+
+<span class="c">// stars: ≥78 → ★★★★★ · ≥64 → ★★★★ · ≥50 → ★★★ · ≥36 → ★★ · else ★</span></pre></div>
+</section>
+<hr class="sep"/>
+
+<!-- ═════════ 3. TIMEFRAMES ═════════ -->
+<section class="doc content-width" id="timeframes">
+  <h2 class="sec"><span class="n">03</span> Timeframes <a class="anchor" href="#timeframes">#</a></h2>
+  <p class="sub">Daily data for evidence · weekly for regime and confirmation · monthly context via long windows · <b>intraday deliberately excluded.</b></p>
+  <div class="tbl-wrap"><table>
+    <tr><th>Timeframe</th><th>Role</th><th>Why</th></tr>
+    <tr><td><b>Daily</b></td><td><b>Computation core.</b> All indicators, structure, volume, location.</td><td>Deep reliable history; matches the product's weeks-to-months horizon.</td></tr>
+    <tr><td><b>Weekly</b> <span class="badge b-gray">derived</span></td><td><b>Regime lens.</b> Weekly trend state and the weekly <b>turn</b>.</td><td>The single strongest validated predictor in every test; the fresh <i>turn</i> is early information, the established state is confirmation.</td></tr>
+    <tr><td><b>Long windows</b></td><td>120-day prior advance · 250-day location · 200-day average</td><td>Monthly-scale context without a separate monthly series.</td></tr>
+  </table></div>
+  <div class="callout co-warn"><i data-lucide="clock-alert" class="ci"></i><p><b>Why no intraday (1m–4H)?</b> An earlier engine version analysed 15m/30m/1H/4H with a "multi-timeframe alignment" score. Research removed it: intraday history isn't deep enough to validate over 2020–2026, and the daily+weekly version of alignment showed <u>no measurable predictive value</u> for this horizon. Stock Insight answers "is a multi-week/multi-month move being prepared?" — a question intraday data cannot improve.</p></div>
+
+  <h3>How daily and weekly combine</h3>
+  <div class="diagram"><pre class="mermaid">
+flowchart LR
+    D["Daily evidence<br/>accumulation · compression · structure"] --> S{"Weekly context"}
+    S -- "just TURNED up" --> E1["Strong early evidence<br/>+20 / +25 points"]
+    S -- "already up" --> E2["Confirmation only<br/>smaller credit"]
+    S -- "not up" --> E3["Noted as missing<br/>stock can still rank on daily evidence"]
+  </pre></div>
+  <div class="callout co-success"><i data-lucide="lightbulb" class="ci"></i><p><b>The key validated interaction</b> Compression only earns points <u>after a prior advance</u>. A daily squeeze in a stock that already demonstrated strength tested at <b>1.3×</b> the base rate; the identical squeeze without prior strength tested <b>below</b> base rate and scores nothing.</p></div>
+</section>
+<hr class="sep"/>
+
+<!-- ═════════ 4. INDICATORS ═════════ -->
+<section class="doc content-width" id="indicators">
+  <h2 class="sec"><span class="n">04</span> Indicators <a class="anchor" href="#indicators">#</a></h2>
+  <p class="sub">Every indicator in production with its exact configuration. Indicators not listed here — MACD, Ichimoku, Stochastic, Fibonacci, VWAP — are <b>not used</b>: they failed validation or were never needed.</p>
+  <div class="tbl-wrap"><table>
+    <tr><th>Indicator</th><th>Settings</th><th>Purpose</th><th>Bullish reading</th><th>Caution reading</th></tr>
+    <tr><td><b>RSI</b></td><td>14-day Wilder</td><td>Momentum thermometer</td><td>45–65 mid-zone = healthy trend; recovery from &lt;35 to &gt;50 = reversal hint</td><td>Never penalises "overbought" — extended stocks kept rising more often than they reversed</td></tr>
+    <tr><td><b>ATR</b></td><td>14-day, % of price</td><td>Volatility measure</td><td>—</td><td>&gt;4% = HIGH VOLATILITY flag; &gt;2.5% elevated</td></tr>
+    <tr><td><b>EMA 20 / 50</b></td><td>daily closes</td><td>Trend posture</td><td>Price above = supportive</td><td>Below = weak posture</td></tr>
+    <tr><td><b>SMA 200</b></td><td>daily closes</td><td>Long-term health line</td><td><b>Reclaim after time below = strongest validated recovery signal (+30, 1.38×)</b></td><td>Below = damage not repaired</td></tr>
+    <tr><td><b>Bollinger width percentile</b></td><td>20-day 2σ, ranked vs trailing 120d</td><td>Squeeze detection</td><td>Tightest 30% + base ≥10 bars + <b>prior advance</b> = quality compression</td><td>Squeeze without prior strength = no edge (0.95×)</td></tr>
+    <tr><td><b>OBV + slope</b></td><td>20-day slope</td><td>Accumulation footprint</td><td>Rising while price flat = quiet buying</td><td>Falling with high volume = DISTRIBUTION RISK</td></tr>
+    <tr><td><b>Volume averages</b></td><td>10d/50d · latest/20d · 5d/20d</td><td>Supply–demand behaviour</td><td>10d &lt; 75% of 50d = dry-up (positive in <i>every</i> model tested)</td><td>High volume + falling OBV = selling into strength</td></tr>
+    <tr><td><b>ADX</b></td><td>14-day Wilder</td><td>Trend-energy gauge</td><td><b>Low</b> ADX (&lt;20) in an uptrend = quiet pullback (1.10×)</td><td>—</td></tr>
+    <tr><td><b>Weekly EMA 20</b></td><td>weekly closes</td><td>Weekly trend definition</td><td>Fresh <b>turn</b> up = +20/+25 (1.25× in early-stage names)</td><td>Near highs with weekly down = trap (7.5% win rate)</td></tr>
+  </table></div>
+  <div class="callout co-info"><i data-lucide="lock" class="ci"></i><p><b>Frozen weights</b> Point values come from measured historical lift and change only through a re-run of the research protocol — never by hand, never because a chart "looks better".</p></div>
+</section>
+<hr class="sep"/>
+
+<!-- ═════════ 5. PRICE ACTION ═════════ -->
+<section class="doc content-width" id="price-action">
+  <h2 class="sec"><span class="n">05</span> Price Action Concepts <a class="anchor" href="#price-action">#</a></h2>
+  <p class="sub">Only concepts that survived validation are in production. <b>Not used:</b> candlestick patterns, classical chart patterns, liquidity sweeps, order blocks, fair-value gaps. CHOCH is the one SMC-adjacent concept that survived, in one specific context.</p>
+
+  <div class="grid g2">
+    <div class="card"><div class="icon-badge tint-violet"><i data-lucide="git-commit-horizontal"></i></div><h4>Market structure</h4><p>Swing pivots (3-bar confirmation, no repainting) → trend (HH+HL / LH+LL / range), <b>higher lows</b> (+10 Transition), and <b>change of character</b> — first close above the last lower-high in a downtrend (+10, kept small: early but noisy).</p></div>
+    <div class="card"><div class="icon-badge tint-green"><i data-lucide="rocket"></i></div><h4>Prior advance — the core concept</h4><p>Has the stock already risen ≥30% in ~6 months? Strength that rests tends to continue (<b>1.28×</b>; every combination tested <i>without</i> it fell below base rate). Classic stage analysis, now with evidence.</p></div>
+    <div class="card"><div class="icon-badge tint-amber"><i data-lucide="shrink"></i></div><h4>Bases & compression</h4><p>Base = price within ±8% of its 20-day average. Compression = Bollinger width in the tightest 30% with a base ≥10 bars. The coiled spring is real — <b>only</b> for springs already shown to be strong.</p></div>
+    <div class="card"><div class="icon-badge tint-blue"><i data-lucide="waves"></i></div><h4>Volume (supply & demand)</h4><p>Dry-up = supply exhausted. OBV rising quietly = accumulation. High volume + falling OBV = distribution warning. Volume <i>expansion</i> as a bullish signal was tested and <b>removed</b> — it flags moves already underway.</p></div>
+    <div class="card"><div class="icon-badge tint-red"><i data-lucide="map-pin"></i></div><h4>52-week location</h4><p>≥15% below the high = "under-followed territory" (+10 — future big winners sat <i>deeper</i> below highs than peers, months early). Near the high with a weekly downtrend = validated trap → warning.</p></div>
+    <div class="card"><div class="icon-badge tint-gray tint-blue"><i data-lucide="layout-panel-top"></i></div><h4>Support/resistance & regime</h4><p>Pivot-cluster zones annotate the weekly chart only — <b>zero score weight</b> (no entries/exits exist to anchor). NIFTY vs its 200-day average is shown as risk context; deliberately not a scoring input (2020-23 artifact rejected).</p></div>
+  </div>
+</section>
+<hr class="sep"/>
+
+<!-- ═════════ 6. DECISION LOGIC ═════════ -->
+<section class="doc content-width" id="decision">
+  <h2 class="sec"><span class="n">06</span> Decision Logic <a class="anchor" href="#decision">#</a></h2>
+  <p class="sub">Scores are simple additive sums, capped at 100 — no hidden weights, no netting between engines. There is <b>no Buy/Sell/Hold</b>: the "decision" is a classification.</p>
+
+  <h3><span class="badge b-violet"><span class="dot"></span>DISCOVERY</span> — "Could this be early?"</h3>
+  <div class="tbl-wrap"><table>
+    <tr><th>Evidence</th><th>Points</th></tr>
+    <tr><td>Prior advance ≥30% / 120 days</td><td class="pts">+30</td></tr>
+    <tr><td>Weekly trend just turned up</td><td class="pts">+20</td></tr>
+    <tr><td>Compression (BB ≤30th pct + base ≥10 bars) <b>and</b> prior advance</td><td class="pts">+15</td></tr>
+    <tr><td>Volume dry-up (10d &lt; 75% of 50d)</td><td class="pts">+15</td></tr>
+    <tr><td>OBV rising (20-day slope &gt; 0)</td><td class="pts">+10</td></tr>
+    <tr><td>≥15% below 52-week high</td><td class="pts">+10</td></tr>
+  </table></div>
+
+  <h3><span class="badge b-blue"><span class="dot"></span>TRANSITION</span> — "Is it waking up?"</h3>
+  <div class="tbl-wrap"><table>
+    <tr><th>Evidence</th><th>Points</th></tr>
+    <tr><td>200-day SMA reclaimed (above now, below ~20 days ago)</td><td class="pts">+30</td></tr>
+    <tr><td>Weekly trend just turned up</td><td class="pts">+25</td></tr>
+    <tr><td>Weekly trend up (established state)</td><td class="pts">+12</td></tr>
+    <tr><td>Volume dry-up</td><td class="pts">+15</td></tr>
+    <tr><td>Higher low formed</td><td class="pts">+10</td></tr>
+    <tr><td>OBV rising</td><td class="pts">+10</td></tr>
+    <tr><td>Change of character</td><td class="pts">+10</td></tr>
+    <tr><td>Relative strength vs NIFTY improving</td><td class="pts">+5</td></tr>
+  </table></div>
+
+  <h3><span class="badge b-green"><span class="dot"></span>MOMENTUM</span> — "Already recognised?" <span class="badge b-gray">gate: weekly up + above 200-SMA, else 0</span></h3>
+  <div class="tbl-wrap"><table>
+    <tr><th>Evidence</th><th>Points</th></tr>
+    <tr><td>Established trend (the gate itself)</td><td class="pts">+30</td></tr>
+    <tr><td>Prior advance ≥30%</td><td class="pts">+20</td></tr>
+    <tr><td>Quiet pullback (ADX &lt; 20)</td><td class="pts">+15</td></tr>
+    <tr><td>Volume dry-up in rest</td><td class="pts">+10</td></tr>
+    <tr><td>Strongly extended (&gt;80% off 52w low, RSI &gt; 72)</td><td class="pts">+10</td></tr>
+    <tr><td>RSI 45–65 mid-zone</td><td class="pts">+10</td></tr>
+  </table></div>
+
+  <h3><span class="badge b-red"><span class="dot"></span>RISK</span> — separate layer <span class="badge b-gray">LOW &lt;35 · MEDIUM 35–59 · HIGH ≥60</span></h3>
+  <div class="tbl-wrap"><table>
+    <tr><th>Factor</th><th>Points</th><th>Warning tag</th></tr>
+    <tr><td>ATR &gt; 4% of price (&gt;2.5% half)</td><td class="pts">+20 / +10</td><td><span class="badge b-amber">HIGH VOLATILITY</span></td></tr>
+    <tr><td>Avg turnover &lt; ₹2cr (&lt;₹5cr half)</td><td class="pts">+20 / +10</td><td><span class="badge b-amber">THIN LIQUIDITY</span></td></tr>
+    <tr><td>&gt;40% below 52-week high</td><td class="pts">+15</td><td>—</td></tr>
+    <tr><td>Downtrend, no higher low</td><td class="pts">+15</td><td><span class="badge b-amber">WEAK STRUCTURE</span></td></tr>
+    <tr><td>Volume quiet but OBV falling</td><td class="pts">+10</td><td>—</td></tr>
+    <tr><td>NIFTY below its 200-day average</td><td class="pts">+10</td><td>—</td></tr>
+    <tr><td>Limited price history (&lt;260 bars)</td><td class="pts">+10</td><td>—</td></tr>
+  </table></div>
+
+  <h3>Badge classification — exact rules</h3>
+  <div class="diagram"><pre class="mermaid">
+flowchart TD
+    S["Three scores"] --> F{"Highest engine?"}
+    F -- "Momentum" --> M{"score"}
+    M -- "≥ 65" --> MB["🟢 MOMENTUM ESTABLISHED"]
+    M -- "50–64" --> LE["🟠 LEADERSHIP EMERGING"]
+    F -- "Transition" --> T{"score ≥ 55?"}
+    T -- "yes + fresh turn/reclaim" --> TS["🔵 TRANSITION STARTED"]
+    T -- "yes, no fresh trigger" --> BS["🔵 BUILDING STRENGTH"]
+    F -- "Discovery" --> D{"score"}
+    D -- "≥55 and ≥20 over Momentum" --> HG["🟣 HIDDEN GEM CANDIDATE"]
+    D -- "≥ 55" --> ED["🟣 EARLY DISCOVERY"]
+    D -- "≥40 + dry-up + OBV up" --> QA["🟣 QUIET ACCUMULATION"]
+    S -- "best 35–54" --> W["⚪ WATCHLIST"]
+    S -- "best &lt; 35" --> Q["⚪ QUIET"]
+  </pre></div>
+
+  <div class="grid g2">
+    <div class="callout co-success" style="margin:0"><i data-lucide="gem" class="ci"></i><p><b>The hidden-gem gap rule</b> Discovery ≥50 and ≥20 points above Momentum → the report states: <i>"the market has NOT yet recognised this stock."</i> The reverse gap → <i>"already recognised — later-stage opportunity."</i></p></div>
+    <div class="callout co-warn" style="margin:0"><i data-lucide="git-merge" class="ci"></i><p><b>Conflicts are never netted</b> A stock can be Discovery 85 / Momentum 20 / Risk HIGH at once — all shown. Warning tags coexist with any badge. Risk never vetoes (no risk condition appeared ≥1.5× more often in failures than successes).</p></div>
+  </div>
+</section>
+<hr class="sep"/>
+
+<!-- ═════════ 7. ARCHITECTURE ═════════ -->
+<section class="doc content-width" id="architecture">
+  <h2 class="sec"><span class="n">07</span> Architecture <a class="anchor" href="#architecture">#</a></h2>
+  <div class="diagram"><pre class="mermaid">
+flowchart TB
+    subgraph FE["React UI — /insight"]
+        U["Universe page"] --- DB2["Intelligence dashboard"] --- R["Stock report"] --- G["Reading guide"]
+    end
+    subgraph SV["insight-server · Node/Express :3600"]
+        API["REST API"] --> BR["Batch runner<br/>3 concurrent · throttled · retry"]
+        BR --> FS["featureSnapshot.js"]
+        FS --> EN["engines.js<br/>3 engines + risk + badges"]
+        EN --> AS["analysisStore.js<br/>snapshots · ranks · movers"]
+    end
+    subgraph DL["Data layer"]
+        CA[("Candle API")]
+        MY[("MySQL<br/>stock_mstr · analysis reports · failures")]
+    end
+    FE --> API
+    CA --> FS
+    AS --> MY
+    MY --> API
+  </pre></div>
+  <div class="grid g3">
+    <div class="card"><div class="icon-badge tint-violet"><i data-lucide="camera"></i></div><h4>Immutable snapshots</h4><p>Every analysis is a stored row (<code>is_latest</code> flags the current one) → instant universe reads, full score history, upgrade/downgrade detection.</p></div>
+    <div class="card"><div class="icon-badge tint-blue"><i data-lucide="list-checks"></i></div><h4>Transparent failures</h4><p>Unanalysable stocks are stored with per-symbol reasons and retried once for transient errors. A "Retry all failed" action re-runs only those.</p></div>
+    <div class="card"><div class="icon-badge tint-green"><i data-lucide="gauge"></i></div><h4>Non-blocking batches</h4><p>Full-universe analysis runs as a background job with live progress; single-stock refresh is synchronous (~1–2s).</p></div>
+  </div>
+</section>
+<hr class="sep"/>
+
+<!-- ═════════ 8. WORKFLOW ═════════ -->
+<section class="doc content-width" id="workflow">
+  <h2 class="sec"><span class="n">08</span> Workflow — End to End <a class="anchor" href="#workflow">#</a></h2>
+  <div class="flow">
+    <div class="step"><div class="sn">1 · INPUT</div><h5>Universe + candles</h5><p>All active stocks queued; one candle request per stock + NIFTY.</p></div>
+    <div class="arr"><i data-lucide="chevron-right"></i></div>
+    <div class="step"><div class="sn">2 · PROCESSING</div><h5>Feature snapshot</h5><p>Trailing-only measurements; graceful degradation under 260 bars; &lt;30 bars → explained failure.</p></div>
+    <div class="arr"><i data-lucide="chevron-right"></i></div>
+    <div class="step"><div class="sn">3 · ANALYSIS</div><h5>Engines + risk</h5><p>Evidence and missing-evidence lines with fixed points.</p></div>
+    <div class="arr"><i data-lucide="chevron-right"></i></div>
+    <div class="step"><div class="sn">4 · VALIDATION</div><h5>Market context</h5><p>Ranks vs market/sector/industry; conviction stars.</p></div>
+    <div class="arr"><i data-lucide="chevron-right"></i></div>
+    <div class="step"><div class="sn">5 · CLASSIFY</div><h5>Badge + summary</h5><p>Badge rules, lifecycle stage, warning tags, executive note.</p></div>
+    <div class="arr"><i data-lucide="chevron-right"></i></div>
+    <div class="step"><div class="sn">6 · OUTPUT</div><h5>Store & serve</h5><p>Snapshot saved → dashboard, report, history, movers.</p></div>
+  </div>
+</section>
+<hr class="sep"/>
+
+<!-- ═════════ 9. EXAMPLES ═════════ -->
+<section class="doc content-width" id="examples">
+  <h2 class="sec"><span class="n">09</span> Worked Examples <a class="anchor" href="#examples">#</a></h2>
+
+  <h3>Example A — strong evidence, honestly classified</h3>
+  <p><b>ABC-EQ</b>, a small industrial stock: +47% in 120 days ✓ · Bollinger width 22nd percentile with a 34-bar base ✓ · volume 10d/50d = 0.62 ✓ · OBV rising ✓ · 24% below its 52-week high ✓ · weekly up (turned 7 weeks ago — not fresh) · above 200-SMA · ADX 17, RSI 54 · ATR 3.1% ⚠ · turnover ₹3.4cr ⚠.</p>
+  <div class="tbl-wrap"><table>
+    <tr><th>Engine</th><th>Calculation</th><th>Score</th></tr>
+    <tr><td><span class="badge b-violet"><span class="dot"></span>DISCOVERY</span></td><td>30 + 15 + 15 + 10 + 10</td><td class="pts">80</td></tr>
+    <tr><td><span class="badge b-blue"><span class="dot"></span>TRANSITION</span></td><td>12 + 15 + 10</td><td class="pts">37</td></tr>
+    <tr><td><span class="badge b-green"><span class="dot"></span>MOMENTUM</span></td><td>30 (gate) + 20 + 15 + 10 + 10</td><td class="pts">85</td></tr>
+    <tr><td><span class="badge b-red"><span class="dot"></span>RISK</span></td><td>20 + 10 (ATR) + 10 (liquidity)</td><td class="pts">40 · MEDIUM</td></tr>
+  </table></div>
+  <p>Highest engine = Momentum → badge <span class="badge b-green"><span class="dot"></span>MOMENTUM ESTABLISHED</span>. The system refuses to over-sell: strong Discovery evidence alone doesn't make a hidden gem when the market clearly already participates. Conviction ≈ 4★ High.</p>
+  <div class="callout co-success"><i data-lucide="gem" class="ci"></i><p><b>The counterfactual that makes it a gem</b> The same stock caught <u>before</u> its weekly trend established: Momentum gates to 0, Discovery 80 stands alone, the gap rule fires → <b>HIDDEN GEM CANDIDATE</b> with <i>"early evidence is much stronger than current momentum."</i> Catching that earlier window is what the platform is optimised for.</p></div>
+
+  <h3>Example B — a recovery just starting</h3>
+  <p><b>XYZ-EQ</b> fell 55% over 18 months. This month: 200-SMA reclaimed (+30) · weekly turn (+25) · dry-up (+15) · higher low (+10) → <b>Transition 80</b> → badge <span class="badge b-blue"><span class="dot"></span>TRANSITION STARTED</span>. Discovery stays modest (~25 — no prior advance; it was falling). The missing-evidence list tells the user exactly what hasn't happened yet, and Risk honestly shows the −55% drawdown factor.</p>
+
+  <h3>Example C — nothing happening</h3>
+  <p><b>PQR-EQ</b>: no prior advance, wide bands, normal volume, weekly down, no higher low → all engines &lt; 25 → <span class="badge b-gray">QUIET</span> + <span class="badge b-amber">WEAK STRUCTURE</span>. The report says so plainly and wastes nobody's time.</p>
+</section>
+<hr class="sep"/>
+
+<!-- ═════════ APPENDIX ═════════ -->
+<section class="doc content-width" id="research">
+  <h2 class="sec"><span class="n">A</span> Research Provenance <a class="anchor" href="#research">#</a></h2>
+  <p class="sub">The rule set is the survivor of a four-phase research programme on 2020–2026 NSE history (119-stock validated sample, ~25,000 observations, outcome labels from +10%/20 days to +100%/250 days).</p>
+  <div class="timeline">
+    <div class="t-item"><span class="t-tag">Phase 1 · Baseline audit</span><h4>The indicator-rich original scored AUC 0.502 on unseen data — a coin flip</h4><p>A fitted model found the weekly trend dominant; volume expansion, CMF, BOS-points and the "overbought penalty" were flat or inverted → removed.</p></div>
+    <div class="t-item"><span class="t-tag">Phase 2 · Multi-horizon validation</span><h4>Surviving evidence beat base rates at every horizon, 4/4 walk-forward folds</h4><p>Ranking simulations showed the system is a screener, not a top-5 autopilot; big-winner capture 15–16% vs 10% random.</p></div>
+    <div class="t-item"><span class="t-tag">Phase 3 · Architecture discovery</span><h4>One universal score cannot serve momentum and reversal simultaneously</h4><p>Specialisation won in the reversal context (+10pp); coefficient sign-flips proved the point → the three-engine design. Risk separation validated.</p></div>
+    <div class="t-item"><span class="t-tag">Phase 4 · Early-discovery timing</span><h4>54% of future +50% movers flagged at a median lead of ~7 months</h4><p>Prior advance proven the core driver (combos without it fell below base rate); no failure-based veto cleared the evidence bar → no hard filters.</p></div>
+  </div>
+</section>
+
+<section class="doc content-width" id="limitations">
+  <h2 class="sec"><span class="n">B</span> Limitations & Disclaimer <a class="anchor" href="#limitations">#</a></h2>
+  <details open>
+    <summary><i data-lucide="alert-triangle" style="width:16px;color:var(--amber)"></i> Known limitations — stated plainly</summary>
+    <div class="d-body">
+      <p style="margin-bottom:8px">• Absolute hit rates are inflated by <b>survivorship bias</b> (delisted losers are absent from history). Comparisons between rules remain valid; absolute numbers flatter.</p>
+      <p style="margin-bottom:8px">• The validated hit rate is <b>~32% of top-decile Discovery names reaching +50% within ~6 months</b> — most candidates do not move. Ranking, not prediction.</p>
+      <p style="margin-bottom:8px">• Sector relative strength is currently inactive (sector-index symbol mapping pending).</p>
+      <p style="margin-bottom:8px">• Fundamentals and news are not evaluated — the platform says so instead of guessing.</p>
+      <p>• Weights change only through a re-run of the research protocol, never by hand.</p>
+    </div>
+  </details>
+  <div class="callout co-danger"><i data-lucide="shield-alert" class="ci"></i><p><b>Disclaimer</b> Stock Insight is a research and education tool. Nothing it produces is investment advice or a recommendation to buy or sell any security. Verify fundamentals and news independently and consult a registered investment adviser before making decisions.</p></div>
+</section>
+
+<footer>
+  Stock Insight — System Design &amp; Methodology · engine v2-2026.07 · presentation v3 · This document describes only what the system actually does.
+</footer>
+</main>
+</div>
+
+<button id="toTop" title="Back to top"><i data-lucide="arrow-up"></i></button>
+
+<script>
+/* ───────── Theme (with mermaid re-render) ───────── */
+const mermaidSources = [];
+function initMermaid(){
+  const dark = document.documentElement.dataset.theme === 'dark';
+  document.querySelectorAll('.mermaid').forEach((el, i) => {
+    if (mermaidSources[i] === undefined) mermaidSources[i] = el.textContent;
+    el.removeAttribute('data-processed');
+    el.textContent = mermaidSources[i];
+  });
+  mermaid.initialize({
+    startOnLoad: false, securityLevel: 'loose',
+    theme: dark ? 'dark' : 'neutral',
+    themeVariables: dark
+      ? { primaryColor:'#1d1b33', primaryBorderColor:'#8b7cf0', primaryTextColor:'#e8ecf4', lineColor:'#5d6b82', fontSize:'13px' }
+      : { primaryColor:'#efedfd', primaryBorderColor:'#6d5ae0', primaryTextColor:'#0f172a', lineColor:'#94a3b8', fontSize:'13px' },
+  });
+  mermaid.run({ querySelector: '.mermaid' });
+}
+const saved = localStorage.getItem('si-theme');
+if (saved) document.documentElement.dataset.theme = saved;
+else if (matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.dataset.theme = 'dark';
+
+document.getElementById('themeToggle').addEventListener('click', () => {
+  const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem('si-theme', next);
+  setThemeIcon(); initMermaid();
+});
+function setThemeIcon(){
+  const dark = document.documentElement.dataset.theme === 'dark';
+  const btn = document.getElementById('themeToggle');
+  btn.innerHTML = `<i data-lucide="${dark ? 'sun' : 'moon'}"></i>`;
+  lucide.createIcons();
+}
+
+/* ───────── Scroll: progress bar, back-to-top, scrollspy ───────── */
+const sections = [...document.querySelectorAll('section.doc')];
+const navLinks = [...document.querySelectorAll('nav.side a')];
+addEventListener('scroll', () => {
+  const h = document.documentElement;
+  document.getElementById('progress').style.width = (h.scrollTop / (h.scrollHeight - h.clientHeight) * 100) + '%';
+  document.getElementById('toTop').style.display = h.scrollTop > 600 ? 'flex' : 'none';
+}, { passive: true });
+document.getElementById('toTop').addEventListener('click', () => scrollTo({ top: 0, behavior: 'smooth' }));
+
+const spy = new IntersectionObserver((entries) => {
+  entries.forEach((e) => {
+    if (e.isIntersecting) {
+      navLinks.forEach((a) => a.classList.toggle('active', a.getAttribute('href') === '#' + e.target.id));
+    }
+  });
+}, { rootMargin: '-20% 0px -70% 0px' });
+sections.forEach((s) => spy.observe(s));
+
+/* ───────── Search ───────── */
+const searchIndex = sections.map((s) => ({
+  id: s.id,
+  title: s.querySelector('h2')?.textContent.replace('#', '').trim() ?? s.id,
+  text: s.textContent.toLowerCase(),
+}));
+const input = document.getElementById('search');
+const results = document.getElementById('search-results');
+input.addEventListener('input', () => {
+  const q = input.value.trim().toLowerCase();
+  if (q.length < 2) { results.style.display = 'none'; return; }
+  const hits = searchIndex.filter((s) => s.title.toLowerCase().includes(q) || s.text.includes(q));
+  results.innerHTML = hits.length
+    ? hits.map((h) => `<a href="#${h.id}">${h.title}</a>`).join('')
+    : '<a>No matches</a>';
+  results.style.display = 'block';
+});
+results.addEventListener('click', () => { results.style.display = 'none'; input.value = ''; });
+document.addEventListener('click', (e) => { if (!e.target.closest('.searchbox')) results.style.display = 'none'; });
+document.addEventListener('keydown', (e) => {
+  if (e.key === '/' && document.activeElement !== input) { e.preventDefault(); input.focus(); }
+  if (e.key === 'Escape') { results.style.display = 'none'; input.blur(); }
+});
+
+/* ───────── Copy buttons ───────── */
+document.querySelectorAll('.copy-btn').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    navigator.clipboard.writeText(btn.parentElement.querySelector('pre').textContent).then(() => {
+      btn.textContent = 'Copied ✓';
+      setTimeout(() => (btn.textContent = 'Copy'), 1600);
+    });
+  });
+});
+
+/* ───────── Init ───────── */
+lucide.createIcons();
+setThemeIcon();
+initMermaid();
+</script>
+</body>
+</html>
