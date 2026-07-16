@@ -16,9 +16,19 @@ export interface RegisterRequest {
   }
 }
 
+/** Shape returned by the server in the `user` field of the login response. */
+export interface LoginResponseUser {
+  id: number
+  firstName: string
+  lastName: string
+  emailId: string
+  mobileNumber: string | null
+  roles: string
+}
+
 export interface LoginResponse {
   token: string
-  user?: UserProfile
+  user?: LoginResponseUser
   message?: string
   preferences?: {
     WEB?: { id: number; theme: string; language: string }[]
@@ -39,6 +49,8 @@ export interface JwtPayload {
   userId: number
   username: string
   role: string
+  firstName?: string
+  lastName?: string
   iat: number
   exp: number
 }

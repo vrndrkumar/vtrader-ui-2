@@ -32,8 +32,9 @@ function styles(dark: boolean) {
         high: { color: text }, low: { color: text },
         last: { line: { style: 'dashed' }, text: { color: '#ffffff' } },
       },
-      // Push the OHLC legend below our own symbol overlay (avoids overlap).
-      tooltip: { offsetLeft: 8, offsetTop: 26, offsetRight: 8, text: { color: text, size: 11 }, rect: { color: 'transparent' } },
+      // Built-in OHLC legend disabled — we render our own compact strip beside
+      // the symbol (short labels, no time) and follow the crosshair ourselves.
+      tooltip: { showRule: 'none', offsetLeft: 8, offsetTop: 26, offsetRight: 8, text: { color: text, size: 11 }, rect: { color: 'transparent' } },
     },
     indicator: { tooltip: { offsetLeft: 8, offsetTop: 26, text: { color: text, size: 11 } } },
     xAxis: { axisLine: { color: axis }, tickText: { color: text }, tickLine: { color: axis } },
@@ -137,6 +138,19 @@ export class KLineChartEngine implements ChartEngine {
       const v = Array.isArray(r) ? (r[0] as { value?: number })?.value : (r as { value?: number })?.value
       return typeof v === 'number' && Number.isFinite(v) ? v : null
     } catch { return null }
+  }
+
+  subscribeCrosshair(cb: (c: Candle | null) => void): () => void {
+    const chart = this.chart
+    if (!chart) return () => {}
+    const handler = (data: unknown) => {
+      const k = (data as { kLineData?: KLineData } | undefined)?.kLineData
+      cb(k ? { timestamp: Number(k.timestamp), open: k.open, high: k.high, low: k.low, close: k.close, volume: k.volume } : null)
+    }
+    try {
+      (chart as unknown as { subscribeAction: (a: string, h: (d: unknown) => void) => void }).subscribeAction('onCrosshairChange', handler)
+      return () => { try { (chart as unknown as { unsubscribeAction: (a: string, h: (d: unknown) => void) => void }).unsubscribeAction('onCrosshairChange', handler) } catch { /* */ } }
+    } catch { return () => {} }
   }
 
   resize(): void {

@@ -11,7 +11,7 @@ import { create } from 'zustand'
 import toast from 'react-hot-toast'
 import { AxiosError } from 'axios'
 import type { BrokerAccount } from '@/store/brokerStore'
-import { placeOrderApi, updateOrderApi } from '@/api/trade'
+import { cancelOrderApi, placeOrderApi, updateOrderApi } from '@/api/trade'
 import { lotSizeFor } from '@/services/orders/lotSize'
 import { derivePrices } from '@/services/orders/buildPayload'
 import { interpretOrderResponse } from '@/services/orders/parseResponse'
@@ -33,11 +33,19 @@ interface TradebookState {
   brokerFilter: string
   search: string
   orderStatus: OrderStatusFilter
+  posStatus: 'ALL' | 'OPEN' | 'CLOSED'
+  indexF: string
+  optType: 'ALL' | 'CE' | 'PE'
+  sideF: 'ALL' | 'BUY' | 'SELL'
 
   setTab: (t: Tab) => void
   setBrokerFilter: (b: string) => void
   setSearch: (s: string) => void
   setOrderStatus: (s: OrderStatusFilter) => void
+  setPosStatus: (s: 'ALL' | 'OPEN' | 'CLOSED') => void
+  setIndexF: (i: string) => void
+  setOptType: (t: 'ALL' | 'CE' | 'PE') => void
+  setSideF: (s: 'ALL' | 'BUY' | 'SELL') => void
 
   load: (brokers: BrokerAccount[]) => Promise<void>
   reload: () => Promise<void>
@@ -97,11 +105,19 @@ export const useTradebookStore = create<TradebookState>((set, get) => {
     brokerFilter: 'ALL',
     search: '',
     orderStatus: 'ALL',
+    posStatus: 'ALL',
+    indexF: 'ALL',
+    optType: 'ALL',
+    sideF: 'ALL',
 
     setTab: (tab) => set({ tab }),
     setBrokerFilter: (brokerFilter) => set({ brokerFilter }),
     setSearch: (search) => set({ search }),
     setOrderStatus: (orderStatus) => set({ orderStatus }),
+    setPosStatus: (posStatus) => set({ posStatus }),
+    setIndexF: (indexF) => set({ indexF }),
+    setOptType: (optType) => set({ optType }),
+    setSideF: (sideF) => set({ sideF }),
 
     load: async (brokers) => {
       set({ loading: true, brokers })
@@ -150,10 +166,17 @@ export const useTradebookStore = create<TradebookState>((set, get) => {
         symbolName: o.symbol, lot: lotsFor(o.indexName, o.qty), brokerName: o.brokerName, indexName: o.indexName,
       }, 'Order cloned')
     },
-    // No dedicated cancel endpoint provided yet — optimistic local update.
     cancelOrder: (id) => {
-      set((s) => ({ orders: s.orders.map((o) => o.id === id ? { ...o, status: 'CANCELLED' } : o) }))
-      toast('Cancel requested', { icon: '⏳' })
+      const o = get().orders.find((x) => x.id === id); if (!o) return
+      // Optimistic, then confirm with the broker and reconcile.
+      set((s) => ({ orders: s.orders.map((x) => x.id === id ? { ...x, status: 'CANCELLED' } : x) }))
+      cancelOrderApi({ brokerName: o.brokerName, orderId: o.orderId })
+        .then((raw) => {
+          const v = interpretOrderResponse(raw)
+          if (v.ok) toast.success('Order cancelled'); else toast.error(v.message ?? 'Cancel failed')
+        })
+        .catch((e) => toast.error(errMsg(e)))
+        .finally(() => { void get().reload() })
     },
   }
 })

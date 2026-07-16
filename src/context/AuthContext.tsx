@@ -1,6 +1,6 @@
 import { createContext, useCallback, useEffect, useMemo, useState } from 'react'
 import { jwtDecode } from 'jwt-decode'
-import type { JwtPayload, UserProfile } from '@/types/auth'
+import type { JwtPayload, LoginResponseUser, UserProfile } from '@/types/auth'
 import { clearIndexMasterCache } from '@/services/indexMasterCache'
 import { useBrokerStore } from '@/store/brokerStore'
 
@@ -9,7 +9,7 @@ interface AuthContextValue {
   token: string | null
   isAuthenticated: boolean
   isLoading: boolean
-  login: (token: string) => void
+  login: (token: string, profile?: LoginResponseUser) => void
   logout: () => void
 }
 
@@ -26,6 +26,8 @@ function decodeUser(token: string): UserProfile | null {
       userId: payload.userId,
       username: payload.username,
       role: payload.role,
+      firstName: payload.firstName,
+      lastName: payload.lastName,
     }
   } catch {
     return null
@@ -52,12 +54,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setIsLoading(false)
   }, [])
 
-  const login = useCallback((newToken: string) => {
+  const login = useCallback((newToken: string, profile?: LoginResponseUser) => {
     const decoded = decodeUser(newToken)
     if (!decoded) return
     localStorage.setItem(TOKEN_KEY, newToken)
     setToken(newToken)
-    setUser(decoded)
+    // Merge firstName/lastName from the login response body (not in JWT payload)
+    setUser({
+      ...decoded,
+      firstName: profile?.firstName ?? decoded.firstName,
+      lastName:  profile?.lastName  ?? decoded.lastName,
+    })
   }, [])
 
   const logout = useCallback(() => {

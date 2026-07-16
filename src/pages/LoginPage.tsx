@@ -26,7 +26,7 @@ export default function LoginPage() {
       const res = await loginApi(data)
       const token = res.token ?? (res as unknown as string)
       if (!token) throw new Error('No token received')
-      login(token)
+      login(token, res.user)
       // Broker preferences are the single source of truth — hydrate the global store.
       if (res.preferences?.BROKER?.length) useBrokerStore.getState().hydrate(res.preferences.BROKER)
       toast.success('Welcome back!')

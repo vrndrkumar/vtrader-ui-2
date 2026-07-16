@@ -23,6 +23,9 @@ export interface ChartEngine {
   startDrawing(name: string): void
   clearDrawings(): void
 
+  /** Follow the crosshair — emits the hovered candle, or null when not hovering. */
+  subscribeCrosshair(cb: (c: Candle | null) => void): () => void
+
   /** Convert a price to a y pixel within the price pane (null if unavailable). */
   priceToY(price: number): number | null
   /** Convert a y pixel back to a price within the price pane. */

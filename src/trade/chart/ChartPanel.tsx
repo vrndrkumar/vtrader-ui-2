@@ -7,6 +7,7 @@ import { engineRegistry } from './engineRegistry'
 import { dataSource } from '../data/dataSource'
 import { marksFromCandles, setDailyMarks } from '../data/realtime/dailyMarks'
 import { placeMarket } from '../data/trade/tradeAdapter'
+import { ChartPlusOrder } from './ChartPlusOrder'
 import { useQuote } from '../store/marketStore'
 import { useChartLayoutStore } from '../store/chartLayoutStore'
 import { useBrokerStore, resolveQty } from '@/store/brokerStore'
@@ -14,12 +15,16 @@ import { lotSizeFor } from '@/services/orders/lotSize'
 import { TF_MINUTES, type Candle } from '../types/market'
 
 const isDark = () => document.documentElement.classList.contains('dark')
+const fmtVol = (v: number) => (v >= 1e7 ? `${(v / 1e7).toFixed(2)}Cr` : v >= 1e5 ? `${(v / 1e5).toFixed(2)}L` : v >= 1e3 ? `${(v / 1e3).toFixed(1)}K` : String(Math.round(v)))
 
 export function ChartPanel({ panelId }: { panelId: string }) {
   const elRef = useRef<HTMLDivElement>(null)
+  const rootRef = useRef<HTMLDivElement>(null)
   const engineRef = useRef<ChartEngine | null>(null)
   const [loading, setLoading] = useState(true)
   const [empty, setEmpty] = useState(false)
+  const [lastC, setLastC] = useState<Candle | null>(null)
+  const [hoverC, setHoverC] = useState<Candle | null>(null)
 
   const config = useChartLayoutStore((s) => s.panels[panelId])
   const active = useChartLayoutStore((s) => s.activePanelId === panelId)
@@ -36,7 +41,8 @@ export function ChartPanel({ panelId }: { panelId: string }) {
     ro.observe(elRef.current)
     const mo = new MutationObserver(() => engine.setTheme(isDark()))
     mo.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
-    return () => { ro.disconnect(); mo.disconnect(); engineRegistry.delete(panelId); engine.dispose(); engineRef.current = null }
+    const unsubCross = engine.subscribeCrosshair(setHoverC)
+    return () => { unsubCross(); ro.disconnect(); mo.disconnect(); engineRegistry.delete(panelId); engine.dispose(); engineRef.current = null }
   }, [panelId])
 
   // Load data + live feed when the assigned symbol / timeframe changes.
@@ -59,12 +65,14 @@ export function ChartPanel({ panelId }: { panelId: string }) {
       if (marks) setDailyMarks(symbol.key, marks)
       const bucketMs = TF_MINUTES[config.timeframe] * 60_000
       let last: Candle = { ...candles[candles.length - 1] }
+      setLastC(last)
       unsub = dataSource.subscribeQuote(symbol, (q) => {
         const b = Math.floor(q.ts / bucketMs) * bucketMs
         if (b > last.timestamp) last = { timestamp: b, open: q.ltp, high: q.ltp, low: q.ltp, close: q.ltp, volume: 0 }
         else if (b === last.timestamp) last = { ...last, close: q.ltp, high: Math.max(last.high, q.ltp), low: Math.min(last.low, q.ltp) }
         else return
         engineRef.current?.updateLast(last)
+        setLastC(last)
       })
     })
     return () => { cancelled = true; unsub?.() }
@@ -94,30 +102,61 @@ export function ChartPanel({ panelId }: { panelId: string }) {
     placeMarket(sym.key, sym.display, side, lots * size, b.id) // no auto SL/TP
   }
 
+  // Default order quantity (lots × lot size) for the chart "+" trade menu.
+  const orderQty = (() => {
+    const b = accounts.find((a) => selectedIds.includes(a.id)); const sym = config?.symbol
+    if (!b || !sym) return 0
+    const size = lotSizeFor(sym.key.split('_')[0])
+    return Math.max(1, Math.round(resolveQty(b, sym.key) / size)) * size
+  })()
+
   const up = (quote?.chg ?? 0) >= 0
+  const ohlc = hoverC ?? lastC
 
   return (
     <div
+      ref={rootRef}
       onMouseDown={() => setActive(panelId)}
       className={clsx('relative h-full w-full bg-white dark:bg-surface-dark', active ? 'ring-2 ring-inset ring-brand-500 z-10' : 'ring-1 ring-inset ring-slate-200 dark:ring-slate-800')}
     >
-      {/* From-chart Buy/Sell (tradable strikes) */}
-      {config?.symbol?.kind === 'OPTION' && (
-        <div className="absolute top-1.5 right-2 z-20 flex gap-1">
-          <button onClick={(e) => { e.stopPropagation(); trade('BUY') }} className="h-6 px-2.5 rounded-md bg-brand-600 hover:bg-brand-700 text-white text-[10px] font-bold shadow">B</button>
-          <button onClick={(e) => { e.stopPropagation(); trade('SELL') }} className="h-6 px-2.5 rounded-md bg-red-600 hover:bg-red-700 text-white text-[10px] font-bold shadow">S</button>
+      {/* From-chart SELL / BUY (bid–ask) — left-anchored so it never overlaps the price axis */}
+      {config?.symbol?.kind === 'OPTION' && quote && (
+        <div className="absolute top-[38px] left-1.5 z-20 flex items-stretch rounded-lg overflow-hidden shadow-md ring-1 ring-black/10 dark:ring-white/10 select-none">
+          <button onClick={(e) => { e.stopPropagation(); trade('SELL') }} className="flex flex-col items-center justify-center leading-none gap-0.5 px-2 py-1 bg-red-500 hover:bg-red-600 transition-colors text-white">
+            <span className="text-[11px] font-bold tabular-nums">{(quote.bid ?? quote.ltp).toFixed(2)}</span>
+            <span className="text-[8px] font-semibold tracking-widest opacity-90">SELL</span>
+          </button>
+          <span className="grid place-items-center px-1 bg-white dark:bg-slate-800 text-[9px] font-semibold text-slate-500 tabular-nums">{Math.max(0, (quote.ask ?? quote.ltp) - (quote.bid ?? quote.ltp)).toFixed(2)}</span>
+          <button onClick={(e) => { e.stopPropagation(); trade('BUY') }} className="flex flex-col items-center justify-center leading-none gap-0.5 px-2 py-1 bg-blue-600 hover:bg-blue-700 transition-colors text-white">
+            <span className="text-[11px] font-bold tabular-nums">{(quote.ask ?? quote.ltp).toFixed(2)}</span>
+            <span className="text-[8px] font-semibold tracking-widest opacity-90">BUY</span>
+          </button>
         </div>
       )}
 
-      {/* Symbol label (top-left overlay, row 1 — KLineCharts legend sits below it) */}
+      {/* Symbol + compact OHLC strip (inline, short labels, follows crosshair) */}
       {config?.symbol && (
-        <div className="absolute top-1 left-1.5 z-10 flex items-center gap-1.5 px-1.5 py-0.5 rounded-md bg-white/75 dark:bg-surface-dark/75 backdrop-blur-sm pointer-events-none">
-          <span className="text-xs font-semibold text-slate-800 dark:text-slate-100">{config.symbol.display}</span>
-          {quote && <span className={clsx('text-[11px] font-medium tabular-nums', up ? 'text-green-600' : 'text-red-600')}>{quote.ltp.toFixed(2)} {up ? '+' : ''}{quote.chgPct?.toFixed(2)}%</span>}
+        <div className="absolute top-1 left-1.5 z-10 flex items-center gap-2 px-1.5 py-0.5 rounded-md bg-white/75 dark:bg-surface-dark/75 backdrop-blur-sm pointer-events-none max-w-[calc(100%-16px)] overflow-hidden">
+          <span className="text-xs font-semibold text-slate-800 dark:text-slate-100 shrink-0">{config.symbol.display}</span>
+          {ohlc && (() => {
+            const cu = ohlc.close >= ohlc.open
+            const cc = cu ? 'text-green-600' : 'text-red-600'
+            return (
+              <span className="flex items-center gap-1.5 text-[10px] tabular-nums whitespace-nowrap">
+                <span><span className="text-slate-400">O</span> <span className={cc}>{ohlc.open.toFixed(2)}</span></span>
+                <span><span className="text-slate-400">H</span> <span className={cc}>{ohlc.high.toFixed(2)}</span></span>
+                <span><span className="text-slate-400">L</span> <span className={cc}>{ohlc.low.toFixed(2)}</span></span>
+                <span><span className="text-slate-400">C</span> <span className={cc}>{ohlc.close.toFixed(2)}</span></span>
+                {ohlc.volume != null && <span className="hidden sm:inline"><span className="text-slate-400">V</span> <span className="text-slate-500 dark:text-slate-300">{fmtVol(ohlc.volume)}</span></span>}
+              </span>
+            )
+          })()}
+          {quote && <span className={clsx('text-[10px] font-semibold tabular-nums shrink-0', up ? 'text-green-600' : 'text-red-600')}>{up ? '+' : ''}{quote.chgPct?.toFixed(2)}%</span>}
         </div>
       )}
       <div ref={elRef} className="h-full w-full" />
       {config?.symbol && <ChartOrderLayer engineRef={engineRef} symbolKey={config.symbol.key} ltp={quote?.ltp ?? 0} />}
+      {config?.symbol?.kind === 'OPTION' && quote && <ChartPlusOrder engineRef={engineRef} containerRef={rootRef} symbol={config.symbol} ltp={quote.ltp} qty={orderQty} />}
       {loading && config?.symbol && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <svg className="animate-spin h-5 w-5 text-brand-600" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>

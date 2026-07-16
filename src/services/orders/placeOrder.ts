@@ -14,7 +14,7 @@ import toast from 'react-hot-toast'
 import { resolveQty, useBrokerStore, type BrokerAccount } from '@/store/brokerStore'
 import { useOrderStore, type BrokerExecResult } from '@/store/orderStore'
 import { placeOrderApi } from '@/api/trade'
-import { buildPlaceOrderRequest, validateIntent } from './buildPayload'
+import { buildPlaceOrderRequest, derivePrices, validateIntent } from './buildPayload'
 import { ensureLotSizes, lotSizeFor } from './lotSize'
 import { interpretOrderResponse } from './parseResponse'
 import type { BrokerOrderResult, OrderIntent, PlaceOrderOutcome, PriceType, TxnType } from './types'
@@ -49,6 +49,32 @@ export interface StrategyLegOrder {
   priceType: PriceType
   price: number
   qty: number
+}
+
+/**
+ * One-click order at a specific price (from the chart "+" menu).
+ * `stop` → SL-LMT with the trigger at that price; otherwise a plain LMT.
+ */
+export async function quickPlace(o: { symbolName: string; indexName: string; side: TxnType; stop: boolean; price: number; qty: number }): Promise<PlaceOrderOutcome> {
+  const brokers = selectedBrokers()
+  if (!brokers.length) { toast.error('Select a broker first'); return { ok: false, results: [] } }
+  await ensureLotSizes()
+  const lot = Math.max(1, Math.round(o.qty / lotSizeFor(o.indexName)))
+  const priceType: PriceType = o.stop ? 'SL-LMT' : 'LMT'
+  const d = o.stop ? derivePrices(o.side, 'SL-LMT', o.price) : { price: o.price, triggerPrice: 0 }
+  const results = await Promise.all(brokers.map<Promise<BrokerOrderResult>>(async (b) => {
+    const base = { brokerId: b.id, brokerName: b.brokerName, displayName: b.displayName, qty: o.qty }
+    try {
+      const raw = await placeOrderApi({ txnType: o.side, quantity: o.qty, priceType, price: d.price, triggerPrice: d.triggerPrice, symbolName: o.symbolName, lot, brokerName: b.brokerName, indexName: o.indexName })
+      const v = interpretOrderResponse(raw)
+      return { ...base, ok: v.ok, message: v.message, data: raw }
+    } catch (e) { return { ...base, ok: false, message: errMessage(e) } }
+  }))
+  const ok = results.filter((r) => r.ok).length
+  if (ok === results.length) toast.success(`${o.side} ${o.qty} @ ${o.price} ${o.stop ? 'stop' : 'limit'} placed`)
+  else if (ok === 0) toast.error(`Order failed · ${results.find((r) => !r.ok)?.message ?? ''}`)
+  else toast(`Placed ${ok}/${results.length}`, { icon: '⚠️' })
+  return { ok: ok === results.length, results }
 }
 
 /** Place a multi-leg strategy — each leg × each selected broker → place-order. */

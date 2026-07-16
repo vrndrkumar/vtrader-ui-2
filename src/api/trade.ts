@@ -62,3 +62,11 @@ export async function updateOrderApi(payload: UpdateOrderRequest): Promise<unkno
   const { data } = await axiosPrivate.put('/trade/update-order', payload)
   return data
 }
+
+// ── Cancel order ─────────────────────────────────────────────────────────────
+// PUT /trade/cancel-order
+
+export async function cancelOrderApi(payload: { brokerName: string; orderId: string }): Promise<unknown> {
+  const { data } = await axiosPrivate.put('/trade/cancel-order', payload)
+  return data
+}
