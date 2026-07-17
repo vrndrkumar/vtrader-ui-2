@@ -12,6 +12,7 @@ import type { ChartEngine } from './ChartEngine'
 import { useTradeStore, type Position } from '../store/tradeStore'
 import { useTradebookStore } from '../features/tradebook/tradebookStore'
 import { isLiveStatus } from '../features/tradebook/types'
+import { lotSizeFor } from '@/services/orders/lotSize'
 import { clearStop, clearTarget, exitPosition, modifyStop, modifyStopQty, modifyTarget, modifyTargetQty } from '../data/trade/tradeAdapter'
 
 type Leg = 'sl' | 'tp'
@@ -70,7 +71,10 @@ export function ChartOrderLayer({ engineRef, symbolKey, ltp }: {
   // Pending (not-yet-executed) orders for THIS strike — shown as draggable lines.
   const tbOrders = useTradebookStore((s) => s.orders)
   const pending = useMemo(() => tbOrders.filter((o) => o.symbol === symbolKey && isLiveStatus(o.status)), [tbOrders, symbolKey])
-  const orderLinePrice = (o: (typeof pending)[number]) => (o.priceType === 'SL-LMT' ? o.triggerPrice : o.price)
+  // Some brokers return the SL trigger in `price` (no separate triggerPrice) —
+  // fall back to `price` when triggerPrice is absent.
+  const orderLinePrice = (o: (typeof pending)[number]) => (o.priceType === 'SL-LMT' && o.triggerPrice > 0 ? o.triggerPrice : o.price)
+  const orderDragField = (o: (typeof pending)[number]): 'price' | 'triggerPrice' => (o.priceType === 'SL-LMT' && o.triggerPrice > 0 ? 'triggerPrice' : 'price')
 
   // Mirror real running positions (from /trade/positions) for THIS strike into
   // the chart store so they render with the same line UI. SL/Target set here are
@@ -190,7 +194,7 @@ export function ChartOrderLayer({ engineRef, symbolKey, ltp }: {
   })
   const store = useTradebookStore.getState
   const startOrderDrag = (o: (typeof pending)[number]) => {
-    dragRef.current = { kind: 'order', id: o.id, field: o.priceType === 'SL-LMT' ? 'triggerPrice' : 'price', last: orderLinePrice(o) }
+    dragRef.current = { kind: 'order', id: o.id, field: orderDragField(o), last: orderLinePrice(o) }
     draggingRef.current = true; setDragging(`ord:${o.id}`)
   }
 
@@ -201,6 +205,7 @@ export function ChartOrderLayer({ engineRef, symbolKey, ltp }: {
         const qty = Math.abs(p.netQty)
         const pnl = ltp ? (ltp - p.avgPrice) * p.netQty : 0
         const open = sel === p.id
+        const legStep = lotSizeFor(p.symbolKey.split('_')[0]) // qty steps by index lot size
         return (
           <div key={p.id}>
             {/* ── Entry / position line (full-width line + tag on top) ── */}
@@ -232,14 +237,14 @@ export function ChartOrderLayer({ engineRef, symbolKey, ltp }: {
             {/* ── Stop-loss (editable qty) ── */}
             {p.stopLoss != null && (() => {
               const slQty = p.stopQty ?? qty
-              return <LegTag refCb={refCb(`${p.id}:sl`)} kind="sl" color={COLORS.sl} label="SL" price={p.stopLoss} qty={slQty}
+              return <LegTag refCb={refCb(`${p.id}:sl`)} kind="sl" color={COLORS.sl} label="SL" price={p.stopLoss} qty={slQty} step={legStep}
                 pnl={(p.stopLoss - p.avgPrice) * (long ? 1 : -1) * slQty}
                 onSetQty={(q) => modifyStopQty(p.id, q)} onRemove={() => clearStop(p.id)} {...legDrag(p, 'sl')} />
             })()}
             {/* ── Target (editable qty) ── */}
             {p.target != null && (() => {
               const tpQty = p.targetQty ?? qty
-              return <LegTag refCb={refCb(`${p.id}:tp`)} kind="tp" color={COLORS.tp} label="Target" price={p.target} qty={tpQty}
+              return <LegTag refCb={refCb(`${p.id}:tp`)} kind="tp" color={COLORS.tp} label="Target" price={p.target} qty={tpQty} step={legStep}
                 pnl={(p.target - p.avgPrice) * (long ? 1 : -1) * tpQty}
                 onSetQty={(q) => modifyTargetQty(p.id, q)} onRemove={() => clearTarget(p.id)} {...legDrag(p, 'tp')} />
             })()}
@@ -249,7 +254,7 @@ export function ChartOrderLayer({ engineRef, symbolKey, ltp }: {
 
       {/* ── Pending orders (limit / SL) — draggable, cancel, edit qty ── */}
       {pending.map((o) => (
-        <OrderTag key={`ord:${o.id}`} refCb={refCb(`ord:${o.id}`)} side={o.side} qty={o.qty}
+        <OrderTag key={`ord:${o.id}`} refCb={refCb(`ord:${o.id}`)} side={o.side} qty={o.qty} step={lotSizeFor(o.indexName)}
           price={orderLinePrice(o)} priceType={o.priceType} dragging={dragging === `ord:${o.id}`}
           onStart={() => startOrderDrag(o)}
           onSetQty={(q) => store().modifyOrder(o.id, { qty: q })}
@@ -259,14 +264,16 @@ export function ChartOrderLayer({ engineRef, symbolKey, ltp }: {
   )
 }
 
-function OrderTag({ refCb, dragging, onStart, side, qty, price, priceType, onSetQty, onCancel }: {
+function OrderTag({ refCb, dragging, onStart, side, qty, step, price, priceType, onSetQty, onCancel }: {
   refCb: (el: HTMLDivElement | null) => void
   dragging: boolean; onStart: () => void
-  side: 'BUY' | 'SELL'; qty: number; price: number; priceType: 'MKT' | 'LMT' | 'SL-LMT'
+  side: 'BUY' | 'SELL'; qty: number; step: number; price: number; priceType: 'MKT' | 'LMT' | 'SL-LMT'
   onSetQty: (qty: number) => void; onCancel: () => void
 }) {
   const [editing, setEditing] = useState(false)
   const [val, setVal] = useState(String(qty))
+  const dec = () => setVal(String(Math.max(step, (Number(val) || step) - step)))
+  const inc = () => setVal(String((Number(val) || 0) + step))
   const kind: 'buy' | 'sell' = side === 'BUY' ? 'buy' : 'sell'
   const color = ORDER_LINE[kind]
   const commit = () => { onSetQty(Number(val) || 1); setEditing(false) }
@@ -283,9 +290,9 @@ function OrderTag({ refCb, dragging, onStart, side, qty, price, priceType, onSet
         {editing ? (
           <div className={clsx('relative ml-2 flex items-center gap-1 h-8 pl-2 pr-1 rounded-r-xl rounded-l-md pointer-events-auto', CARD)}>
             <span className={clsx('px-1.5 py-0.5 rounded-md border text-[10px] font-bold', TYPE[kind].badge)}>{side}</span>
-            <button onClick={() => setVal(String(Math.max(1, (Number(val) || 1) - 1)))} className={clsx('h-5 w-5 grid place-items-center rounded hover:bg-black/5 dark:hover:bg-white/10', AT)}>−</button>
+            <button onClick={dec} className={clsx('h-5 w-5 grid place-items-center rounded hover:bg-black/5 dark:hover:bg-white/10', AT)}>−</button>
             <input autoFocus value={val} onChange={(e) => setVal(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(false) }} className={clsx('w-10 h-5 text-center text-[11px] font-bold tabular-nums bg-transparent outline-none', PRICE)} />
-            <button onClick={() => setVal(String((Number(val) || 0) + 1))} className={clsx('h-5 w-5 grid place-items-center rounded hover:bg-black/5 dark:hover:bg-white/10', AT)}>＋</button>
+            <button onClick={inc} className={clsx('h-5 w-5 grid place-items-center rounded hover:bg-black/5 dark:hover:bg-white/10', AT)}>＋</button>
             <button onClick={commit} className="h-5 px-2 rounded-md text-white text-[10px] font-bold" style={{ background: color }}>Set</button>
           </div>
         ) : (
@@ -333,14 +340,16 @@ function IconChip({ title, danger, onClick, children }: { title: string; danger?
   )
 }
 
-function LegTag({ refCb, dragging, onStart, kind, color, label, price, qty, pnl, onSetQty, onRemove }: {
+function LegTag({ refCb, dragging, onStart, kind, color, label, price, qty, step, pnl, onSetQty, onRemove }: {
   refCb: (el: HTMLDivElement | null) => void
   dragging: boolean; onStart: () => void
-  kind: 'sl' | 'tp'; color: string; label: string; price: number; qty: number; pnl: number
+  kind: 'sl' | 'tp'; color: string; label: string; price: number; qty: number; step: number; pnl: number
   onSetQty: (qty: number) => void; onRemove: () => void
 }) {
   const [editing, setEditing] = useState(false)
   const [val, setVal] = useState(String(qty))
+  const dec = () => setVal(String(Math.max(step, (Number(val) || step) - step)))
+  const inc = () => setVal(String((Number(val) || 0) + step))
   const down = (e: React.PointerEvent) => {
     if (editing) return
     e.preventDefault(); e.stopPropagation()
@@ -358,9 +367,9 @@ function LegTag({ refCb, dragging, onStart, kind, color, label, price, qty, pnl,
         {editing ? (
           <div className={clsx('relative ml-2 flex items-center gap-1 h-8 pl-2 pr-1 rounded-r-xl rounded-l-md pointer-events-auto', CARD)}>
             <span className={clsx('px-1.5 py-0.5 rounded-md border text-[10px] font-bold', TYPE[kind].badge)}>{label}</span>
-            <button onClick={() => setVal(String(Math.max(1, (Number(val) || 1) - 1)))} className={clsx('h-5 w-5 grid place-items-center rounded hover:bg-black/5 dark:hover:bg-white/10', AT)}>−</button>
+            <button onClick={dec} className={clsx('h-5 w-5 grid place-items-center rounded hover:bg-black/5 dark:hover:bg-white/10', AT)}>−</button>
             <input autoFocus value={val} onChange={(e) => setVal(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(false) }} className={clsx('w-10 h-5 text-center text-[11px] font-bold tabular-nums bg-transparent outline-none', PRICE)} />
-            <button onClick={() => setVal(String((Number(val) || 0) + 1))} className={clsx('h-5 w-5 grid place-items-center rounded hover:bg-black/5 dark:hover:bg-white/10', AT)}>＋</button>
+            <button onClick={inc} className={clsx('h-5 w-5 grid place-items-center rounded hover:bg-black/5 dark:hover:bg-white/10', AT)}>＋</button>
             <button onClick={commit} className="h-5 px-2 rounded-md text-white text-[10px] font-bold" style={{ background: color }}>Set</button>
           </div>
         ) : (

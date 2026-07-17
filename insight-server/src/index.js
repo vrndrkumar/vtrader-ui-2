@@ -10,7 +10,7 @@ import {
 import { conviction as convictionOf } from './engines.js'
 import { analyseSymbol, startBatch, stopBatch, jobStatus } from './batch.js'
 import { fetchDaily } from './candles.js'
-import { toWeekly } from './featureSnapshot.js'
+import { toWeekly, toMonthly } from './featureSnapshot.js'
 import { srZones } from './structure.js'
 
 const app = express()
@@ -84,12 +84,19 @@ app.get('/stock/:symbol/insight', async (req, res) => {
       analysis = await analyseSymbol(master ?? { symbol_code: symbol })
       stored = await getLatestAnalysis(symbol).catch(() => null)
     }
-    // chart context (cached candle fetch; cheap)
+    // chart context (cached candle fetch; daily/weekly/monthly from one series)
     let weeklyChart = null
+    let charts = null
     try {
       const daily = await fetchDaily(symbol, '2022-01-01')
       const weekly = toWeekly(daily)
-      weeklyChart = { candles: weekly.slice(-110), keyZones: srZones(weekly.slice(-160), 3) }
+      const monthly = toMonthly(daily)
+      charts = {
+        daily: { candles: daily.slice(-130), keyZones: srZones(daily.slice(-260), 3) },
+        weekly: { candles: weekly.slice(-110), keyZones: srZones(weekly.slice(-160), 3) },
+        monthly: { candles: monthly.slice(-60), keyZones: srZones(monthly, 3) },
+      }
+      weeklyChart = charts.weekly // backward compatibility
     } catch { /* chart optional */ }
     const history = await getHistory(symbol, 30).catch(() => [])
     const rankContext = await getRankContext(symbol).catch(() => null)
@@ -108,6 +115,7 @@ app.get('/stock/:symbol/insight', async (req, res) => {
       storedAt: stored?.created_at ?? null,
       history,
       weeklyChart,
+      charts,
       rankContext,
       conviction,
       standout,

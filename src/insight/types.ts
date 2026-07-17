@@ -197,6 +197,7 @@ export interface StockInsightResponse {
   storedAt: string | null
   history: HistoryRow[]
   weeklyChart: { candles: InsightCandle[]; keyZones: Zone[] } | null
+  charts: Record<'daily' | 'weekly' | 'monthly', { candles: InsightCandle[]; keyZones: Zone[] }> | null
   rankContext: RankContext | null
   conviction: Conviction | null
   standout: string[]

@@ -145,9 +145,12 @@ function rankWithin(rows, symbol, engine) {
   if (!mine || mine[engine] == null) return null
   const scored = rows.filter((r) => r[engine] != null)
   const better = scored.filter((r) => r[engine] > mine[engine]).length
+  const tied = scored.filter((r) => r[engine] === mine[engine]).length // includes self
   const rank = better + 1
   const total = scored.length
-  return { rank, total, topPct: total ? +(((rank / total) * 100).toFixed(1)) : null }
+  // floor at 0.1 so "#1 of 2350" never renders as a meaningless "Top 0%"
+  const topPct = total ? Math.max(0.1, +(((rank / total) * 100).toFixed(1))) : null
+  return { rank, total, topPct, tied }
 }
 
 /** Market/sector/industry rank + percentile for every engine score. */
@@ -417,11 +420,19 @@ export async function getDashboard(limit = 6) {
 /** Standout bullets for one stock: rank context + history trends. */
 export async function getStandout(symbolCode, rankCtx, history) {
   const lines = []
-  if (rankCtx?.discovery?.market?.topPct != null && rankCtx.discovery.market.topPct <= 10) {
-    lines.push(`Top ${rankCtx.discovery.market.topPct}% of the analysed market on Discovery (#${rankCtx.discovery.market.rank} of ${rankCtx.discovery.market.total})`)
+  const m = rankCtx?.discovery?.market
+  if (m?.rank === 1) {
+    lines.push(m.tied > 1
+      ? `Joint-highest Discovery score in the analysed market (tied with ${m.tied - 1} others of ${m.total})`
+      : `Highest Discovery score in the entire analysed market (#1 of ${m.total})`)
+  } else if (m?.topPct != null && m.topPct <= 10) {
+    lines.push(`Top ${m.topPct}% of the analysed market on Discovery (#${m.rank} of ${m.total})`)
   }
-  if (rankCtx?.discovery?.sector?.rank != null && rankCtx.discovery.sector.rank <= 3 && rankCtx.sectorName) {
-    lines.push(`#${rankCtx.discovery.sector.rank} Discovery score in ${rankCtx.sectorName} (${rankCtx.discovery.sector.total} peers)`)
+  const sec = rankCtx?.discovery?.sector
+  if (sec?.rank != null && sec.rank <= 3 && rankCtx.sectorName) {
+    lines.push(sec.rank === 1 && sec.tied > 1
+      ? `Joint-top Discovery score in ${rankCtx.sectorName} (tied with ${sec.tied - 1} of ${sec.total} peers)`
+      : `#${sec.rank} Discovery score in ${rankCtx.sectorName} (${sec.total} peers)`)
   }
   if (rankCtx?.momentum?.market?.topPct != null && rankCtx.momentum.market.topPct <= 5) {
     lines.push(`Top ${rankCtx.momentum.market.topPct}% on Momentum — already among recognised leaders`)

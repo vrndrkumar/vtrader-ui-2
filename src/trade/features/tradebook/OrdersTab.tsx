@@ -4,6 +4,7 @@ import { useTradebookStore, type OrderStatusFilter } from './tradebookStore'
 import { ORDER_STATUS_META, isLiveStatus, type Order, type OrderStatus } from './types'
 import { px, timeShort } from './format'
 import { Stepper, ManageButton } from './Act'
+import { lotSizeFor } from '@/services/orders/lotSize'
 
 const STATUS_TABS: { v: OrderStatusFilter; l: string }[] = [
   { v: 'ALL', l: 'All' }, { v: 'OPEN', l: 'Open' }, { v: 'PENDING', l: 'Pending' },
@@ -141,7 +142,7 @@ function OrderDrawer({ order, onClose }: { order: Order; onClose: () => void }) 
           <div className="rounded-2xl border border-brand-300 bg-brand-50/60 dark:border-brand-700/50 dark:bg-brand-900/15 p-3 animate-slide-up">
             <p className="text-xs font-bold text-slate-700 dark:text-slate-200 mb-2">Modify order</p>
             <div className="space-y-2">
-              <label className="flex items-center justify-between gap-2"><span className="text-[11px] text-slate-500">Quantity</span><Stepper value={qty} step={1} onChange={setQty} /></label>
+              <label className="flex items-center justify-between gap-2"><span className="text-[11px] text-slate-500">Quantity</span><Stepper value={qty} step={lotSizeFor(order.indexName)} onChange={setQty} /></label>
               {order.priceType !== 'MKT' && <label className="flex items-center justify-between gap-2"><span className="text-[11px] text-slate-500">Price</span><Stepper value={price} step={0.05} onChange={setPrice} /></label>}
               {order.priceType === 'SL-LMT' && <label className="flex items-center justify-between gap-2"><span className="text-[11px] text-slate-500">Trigger</span><Stepper value={trigger} step={0.05} onChange={setTrigger} /></label>}
               <button onClick={save} className="w-full h-9 rounded-xl bg-brand-600 hover:bg-brand-700 text-white text-xs font-bold transition-all active:scale-[0.98]">Save changes</button>

@@ -32,6 +32,26 @@ export function toWeekly(daily) {
   return weeks
 }
 
+/** Monthly resample (calendar-month keyed) — for chart display. */
+export function toMonthly(daily) {
+  const months = []
+  let cur = null
+  for (const c of daily) {
+    const key = new Date(c.time * 1000).toISOString().slice(0, 7)
+    if (!cur || cur.key !== key) {
+      if (cur) months.push(cur)
+      cur = { key, time: c.time, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }
+    } else {
+      cur.high = Math.max(cur.high, c.high)
+      cur.low = Math.min(cur.low, c.low)
+      cur.close = c.close
+      cur.volume += c.volume
+    }
+  }
+  if (cur) months.push(cur)
+  return months
+}
+
 /** weeklyUp proxy validated in research: close > weekly EMA20 AND EMA20 rising. */
 function weeklyUpAt(weekly, idx) {
   const wc = weekly.map((w) => w.close)

@@ -76,7 +76,7 @@ function mapOrderStatus(raw: string): OrderStatus {
   if (/reject/.test(s)) return 'REJECTED'
   if (/cancel/.test(s)) return 'CANCELLED'
   if (/complete|filled|traded|executed|success/.test(s)) return 'COMPLETE'
-  if (/trigger.?pending|pending/.test(s)) return 'PENDING'
+  if (/trigger.?pending|pending|transit/.test(s)) return 'PENDING' // IN_TRANSIT → awaiting
   return 'OPEN' // open / working / modified / etc.
 }
 
@@ -117,7 +117,8 @@ export async function fetchOrders(brokers: BrokerAccount[]): Promise<Order[]> {
   const perBroker = await Promise.all(brokers.map(async (b) => {
     try {
       const rows = await getOrderBook(b.brokerName)
-      return rows.map((r, i) => mapOrder(r, b, i))
+      // Drop junk/placeholder rows (empty symbol or a blank "##" order id).
+      return rows.map((r, i) => mapOrder(r, b, i)).filter((o) => o.symbol && !/^#*$/.test(o.orderId))
     } catch { return [] as Order[] }
   }))
   return perBroker.flat()

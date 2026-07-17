@@ -4,6 +4,7 @@ import { useTradebookStore } from './tradebookStore'
 import { netQty, dayPnl, totalPnl, type Position } from './types'
 import { inr, pnlCls, px } from './format'
 import { Stepper, ManageButton } from './Act'
+import { lotSizeFor } from '@/services/orders/lotSize'
 
 export function PositionsTab({ rows }: { rows: Position[] }) {
   const [selId, setSelId] = useState<string | null>(null)
@@ -148,9 +149,10 @@ function PositionDrawer({ pos, onClose }: { pos: Position; onClose: () => void }
     else store.partialExit(pos.id, v)
     setMode(null)
   }
+  const lot = lotSizeFor(pos.indexName) // qty steps/chips are lot-size multiples
   const chips = mode === 'sl' ? [0.05, 0.1, 0.15].map((p) => ({ l: `${p * 100}%`, v: +(pos.ltp * (1 - dir * p)).toFixed(2) }))
     : mode === 'target' ? [0.05, 0.1, 0.15].map((p) => ({ l: `${p * 100}%`, v: +(pos.ltp * (1 + dir * p)).toFixed(2) }))
-      : [0.25, 0.5, 1].map((p) => ({ l: `${p * 100}%`, v: Math.max(1, Math.round(q * p)) }))
+      : [0.25, 0.5, 1].map((p) => ({ l: `${p * 100}%`, v: Math.max(lot, Math.round((q * p) / lot) * lot) }))
 
   return (
     <div className="w-80 h-full flex flex-col bg-white dark:bg-card-dark animate-fade-in">
@@ -206,7 +208,7 @@ function PositionDrawer({ pos, onClose }: { pos: Position; onClose: () => void }
               ))}
             </div>
             <div className="flex items-center gap-2">
-              <Stepper autoFocus value={val} step={mode === 'sl' || mode === 'target' ? 0.05 : 1} onChange={setVal} />
+              <Stepper autoFocus value={val} step={mode === 'sl' || mode === 'target' ? 0.05 : lot} onChange={setVal} />
               <button onClick={confirm} className={clsx('flex-1 h-8 rounded-lg text-white text-xs font-bold transition-all active:scale-95', ACCENT[mode].btn)}>{CTA[mode]}</button>
             </div>
           </div>

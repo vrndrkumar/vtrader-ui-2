@@ -6,6 +6,8 @@ import type { InsightCandle, Zone } from '../types'
 interface Props {
   candles: InsightCandle[]
   keyZones: Zone[]
+  /** Controls x-axis tick labels: daily/weekly → "MMM", monthly → "MMM yy" */
+  timeframe?: 'daily' | 'weekly' | 'monthly'
 }
 
 function computeRsi(closes: number[], period = 14): (number | null)[] {
@@ -33,7 +35,7 @@ function computeRsi(closes: number[], period = 14): (number | null)[] {
 const UP = '#10b981'
 const DOWN = '#ef4444'
 
-export function WeeklyChart({ candles, keyZones }: Props) {
+export function WeeklyChart({ candles, keyZones, timeframe = 'weekly' }: Props) {
   const W = 760
   const PRICE_H = 260
   const VOL_H = 70
@@ -76,13 +78,15 @@ export function WeeklyChart({ candles, keyZones }: Props) {
     .join(' ')
   const lastRsi = [...rsiArr].reverse().find((v) => v != null)
 
-  const fmtMonth = (t: number) => {
+  const fmtTick = (t: number) => {
     const d = new Date(t * 1000)
-    return d.toLocaleString('en-IN', { month: 'short' })
+    // long spans (monthly view) need the year to stay readable
+    return timeframe === 'monthly'
+      ? d.toLocaleString('en-IN', { month: 'short', year: '2-digit' })
+      : d.toLocaleString('en-IN', { month: 'short' })
   }
-  // month tick every ~10 bars
   const ticks: { i: number; label: string }[] = []
-  for (let i = 0; i < n; i += Math.max(1, Math.floor(n / 8))) ticks.push({ i, label: fmtMonth(candles[i].time) })
+  for (let i = 0; i < n; i += Math.max(1, Math.floor(n / 8))) ticks.push({ i, label: fmtTick(candles[i].time) })
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto select-none" role="img" aria-label="Weekly chart">

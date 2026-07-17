@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { clsx } from 'clsx'
 import { useReportStore } from './reportStore'
@@ -133,9 +133,13 @@ function HistoryTable({ history }: { history: HistoryRow[] }) {
   )
 }
 
+const TF_LABELS = { daily: 'D', weekly: 'W', monthly: 'M' } as const
+type ChartTf = keyof typeof TF_LABELS
+
 export default function StockReportPage() {
   const { symbol } = useParams<{ symbol: string }>()
   const { data, loading, refreshing, error, load, refresh } = useReportStore()
+  const [chartTf, setChartTf] = useState<ChartTf>('weekly')
 
   useEffect(() => {
     if (symbol) void load(symbol)
@@ -269,12 +273,40 @@ export default function StockReportPage() {
                   <p className="text-xs text-slate-400">No cross-engine signals — see engine-specific evidence below.</p>
                 )}
               </SectionCard>
-              <SectionCard title="Weekly chart" className="lg:col-span-3" right={<span className="text-[10px] text-slate-400">context only — no signals</span>}>
-                {data.weeklyChart ? (
-                  <WeeklyChart candles={data.weeklyChart.candles} keyZones={data.weeklyChart.keyZones} />
-                ) : (
-                  <p className="text-xs text-slate-400">Chart unavailable.</p>
-                )}
+              <SectionCard
+                title="Price chart"
+                className="lg:col-span-3"
+                right={
+                  <span className="flex items-center gap-2.5">
+                    <span className="text-[10px] text-slate-400 hidden sm:inline">context only — no signals</span>
+                    <span className="flex rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
+                      {(Object.keys(TF_LABELS) as ChartTf[]).map((tf) => (
+                        <button
+                          key={tf}
+                          onClick={() => setChartTf(tf)}
+                          title={tf}
+                          className={clsx(
+                            'px-2.5 py-1 text-[11px] font-bold transition-colors',
+                            chartTf === tf
+                              ? 'bg-brand-600 text-white'
+                              : 'bg-white dark:bg-card-dark text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-white/5',
+                          )}
+                        >
+                          {TF_LABELS[tf]}
+                        </button>
+                      ))}
+                    </span>
+                  </span>
+                }
+              >
+                {(() => {
+                  const chart = data.charts?.[chartTf] ?? (chartTf === 'weekly' ? data.weeklyChart : null)
+                  return chart && chart.candles.length ? (
+                    <WeeklyChart candles={chart.candles} keyZones={chart.keyZones} timeframe={chartTf} />
+                  ) : (
+                    <p className="text-xs text-slate-400">Chart unavailable for this timeframe.</p>
+                  )
+                })()}
               </SectionCard>
             </div>
 
