@@ -85,6 +85,8 @@ export interface UniverseRow {
   badge: Badge | null
   conviction: number | null
   conviction_label: string | null
+  fundamental_outlook: string | null
+  fundamental_valuation: string | null
   summary: string | null
   analyzed_at: string | null
 }
@@ -215,6 +217,7 @@ export interface RankingEntry {
   badge: Badge | null
   conviction: number | null
   conviction_label: string | null
+  fundamental_outlook?: string | null
   summary: string | null
   delta?: number
   isNew?: boolean
@@ -236,6 +239,7 @@ export interface FailureReport {
 export interface DashboardData {
   analyzedCount: number
   topPicks: RankingEntry[]
+  gemsWithFundamentals: RankingEntry[]
   topHiddenGems: RankingEntry[]
   topDiscovery: RankingEntry[]
   biggestImprovers: RankingEntry[]
@@ -260,6 +264,36 @@ export interface JobStatus {
   errors: Array<{ symbol: string; error: string }>
 }
 
+// ── Fundamentals (display-only; never affects scores) ────────────────────────
+
+export interface FundamentalRow {
+  label: string
+  value: string // server-formatted; 'N/A' when missing
+}
+
+export interface FundamentalSection {
+  title: string
+  rows: FundamentalRow[]
+}
+
+export interface OutlookGrade {
+  label: string
+  level: string
+  tone: 'good' | 'mid' | 'bad' | 'na'
+}
+
+export interface FundamentalsResponse {
+  available: boolean
+  yahooSymbol?: string
+  currency?: string | null
+  name?: string | null
+  sections?: FundamentalSection[]
+  outlook?: OutlookGrade[]
+  fetchedAt?: string
+  cached?: boolean
+  error?: string
+}
+
 export interface UniverseFilters {
   q: string
   sector: string
@@ -268,5 +302,6 @@ export interface UniverseFilters {
   riskLevel: string
   minDiscovery: string
   analyzed: boolean
+  fundamentals: '' | 'positive' | 'quality' | 'undervalued' | 'highgrowth' | 'dividend' | 'strongbalance' | 'covered'
   sort: 'discovery' | 'transition' | 'momentum' | 'conviction' | 'recent' | 'name'
 }

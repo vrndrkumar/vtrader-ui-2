@@ -6,6 +6,7 @@ import { useJournalStore } from './journalStore'
 import { useStrategyLabel } from './useStrategies'
 import { JournalFilters } from './JournalFilters'
 import { TradeReviewDrawer } from './TradeReviewDrawer'
+import { AddStandaloneOrderModal } from './OrderModals'
 import { applyFilters, defaultFilters, type Filters } from './filters'
 import { fmtPnl, fmtDate, fmtDuration, parseInstrument, INSTRUMENT_META, REVIEW_META, isManual } from './utils'
 
@@ -56,6 +57,7 @@ export default function JournalPage() {
   const [page, setPage] = useState(1)
   const [size, setSize] = useState(25)
   const [syncedAt, setSyncedAt] = useState<Date | null>(null)
+  const [addingOrder, setAddingOrder] = useState(false)
 
   const entries = useJournalStore((s) => s.entries)
   const strategyLabel = useStrategyLabel()
@@ -117,6 +119,10 @@ export default function JournalPage() {
               <svg viewBox="0 0 24 24" className={clsx('h-4 w-4', loading && 'animate-spin')} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 11-2.64-6.36M21 3v6h-6" /></svg>
               {loading ? 'Syncing…' : 'Sync'}
             </button>
+            <button onClick={() => setAddingOrder(true)} className="flex items-center gap-1.5 h-9 px-3 rounded-lg text-sm font-medium bg-brand-600 hover:bg-brand-700 text-white">
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14" /></svg>
+              Add order
+            </button>
           </div>
         </div>
 
@@ -153,7 +159,27 @@ export default function JournalPage() {
                 {loading ? (
                   <tr><td colSpan={10} className="px-4 py-12 text-center text-slate-400">Loading trades…</td></tr>
                 ) : slice.length === 0 ? (
-                  <tr><td colSpan={10} className="px-4 py-12 text-center text-slate-400">No trades match these filters.</td></tr>
+                  <tr>
+                    <td colSpan={10} className="px-4 py-16 text-center">
+                      {trades.length === 0 ? (
+                        /* True empty — no trades at all */
+                        <div className="flex flex-col items-center gap-3 max-w-xs mx-auto">
+                          <div className="h-14 w-14 rounded-2xl bg-brand-50 dark:bg-brand-900/20 grid place-items-center">
+                            <svg viewBox="0 0 24 24" className="h-7 w-7 text-brand-500" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"><path d="M4 6h16M4 12h16M4 18h10" /></svg>
+                          </div>
+                          <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">No trades yet</p>
+                          <p className="text-xs text-slate-400 text-center">Your journal is empty. Add a manual order or sync your broker trades to get started.</p>
+                          <button onClick={() => setAddingOrder(true)} className="flex items-center gap-1.5 h-9 px-4 rounded-lg text-sm font-medium bg-brand-600 hover:bg-brand-700 text-white mt-1">
+                            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14" /></svg>
+                            Add your first order
+                          </button>
+                        </div>
+                      ) : (
+                        /* Filters active — no matches */
+                        <p className="text-sm text-slate-400">No trades match these filters.</p>
+                      )}
+                    </td>
+                  </tr>
                 ) : slice.map((t) => {
                   const pnl = pnlOf(t)
                   const win = pnl >= 0
@@ -199,6 +225,7 @@ export default function JournalPage() {
       </div>
 
       {selected && <TradeReviewDrawer trade={selected} onClose={() => setSelected(null)} onChanged={fetchTrades} />}
+      {addingOrder && <AddStandaloneOrderModal onClose={() => setAddingOrder(false)} onSaved={() => { setAddingOrder(false); fetchTrades() }} />}
     </div>
   )
 }

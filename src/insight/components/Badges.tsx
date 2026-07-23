@@ -106,6 +106,20 @@ export function RankCaption({ slot, context }: { slot: RankSlot | null | undefin
   )
 }
 
+/** Fundamental outlook chip (display-only dimension; independent of scores). */
+export function FundamentalChip({ outlook }: { outlook: string | null | undefined }) {
+  if (!outlook) return <span className="text-[10px] text-slate-300 dark:text-slate-600">—</span>
+  const cls =
+    outlook === 'Positive' ? 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800'
+    : outlook === 'Weak' ? 'bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-400 border-red-200 dark:border-red-800'
+    : 'bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700'
+  return (
+    <span className={clsx('inline-flex items-center rounded-md border px-2 py-0.5 text-[10px] font-bold', cls)}>
+      {outlook.toUpperCase()}
+    </span>
+  )
+}
+
 /** Opportunity lifecycle stepper: Discovery → Transition → Momentum. */
 export function LifecycleStepper({ stage, earliness }: { stage: string; earliness?: string | null }) {
   const steps = [

@@ -74,6 +74,26 @@ export function computeGroupPnl(trades: Trade[]): GroupedPnl[] {
     .sort((a, b) => b.pnl - a.pnl)
 }
 
+const STANDARD_INDICES = new Set(['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'SENSEX', 'BANKEX', 'MIDCPNIFTY'])
+
+/** P&L grouped by index (NIFTY, BANKNIFTY, …, EQ/Other). Closed trades only. */
+export function computeIndexPnl(trades: Trade[]): GroupedPnl[] {
+  const closed = trades.filter((t) => !isOpen(t))
+  const map: Record<string, { pnl: number; trades: number }> = {}
+
+  for (const t of closed) {
+    const base = t.symbol_name.split('_')[0]
+    const key = STANDARD_INDICES.has(base) ? base : 'EQ/Other'
+    if (!map[key]) map[key] = { pnl: 0, trades: 0 }
+    map[key].pnl    += t.realized_pnl
+    map[key].trades += 1
+  }
+
+  return Object.entries(map)
+    .map(([name, { pnl, trades }]) => ({ name, pnl, trades }))
+    .sort((a, b) => b.pnl - a.pnl)
+}
+
 export function computeSymbolPnl(trades: Trade[]): GroupedPnl[] {
   const closed = trades.filter((t) => !isOpen(t))
   const map: Record<string, { pnl: number; trades: number }> = {}

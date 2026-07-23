@@ -7,6 +7,7 @@ import { fmtPnl, fmtDate, fmtTime, fmtDuration, parseInstrument, INSTRUMENT_META
 import { useJournalEntry } from './journalStore'
 import { StrategySelect } from './StrategySelect'
 import { useStrategyLabel } from './useStrategies'
+import { useHasRegisteredBrokers } from '@/hooks/useHasRegisteredBrokers'
 import { AddOrderModal, EditOrderModal } from './OrderModals'
 import { JournalMeta } from './JournalMeta'
 
@@ -38,6 +39,7 @@ export function TradeReviewDrawer({ trade, onClose, onChanged }: { trade: Trade;
   const [assigning, setAssigning] = useState(false)
   const entry = useJournalEntry(trade.trade_id)
   const strategyLabel = useStrategyLabel()
+  const hasRegisteredBrokers = useHasRegisteredBrokers()
 
   const load = useCallback(() => {
     setLoading(true)
@@ -156,7 +158,7 @@ export function TradeReviewDrawer({ trade, onClose, onChanged }: { trade: Trade;
             <div className="mb-4">
               <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-2">Strategy</p>
               <div className="flex items-center gap-2">
-                <StrategySelect value={group} onChange={setGroup} className="flex-1 h-9 px-2.5 rounded-lg bg-white dark:bg-white/5 border border-slate-200 dark:border-slate-700 text-sm outline-none" />
+                <StrategySelect value={group} onChange={setGroup} disabled={!hasRegisteredBrokers} className="flex-1 h-9 px-2.5 rounded-lg bg-white dark:bg-white/5 border border-slate-200 dark:border-slate-700 text-sm outline-none" />
                 <button onClick={applyStrategy} disabled={assigning} className="h-9 px-3 rounded-lg bg-slate-800 dark:bg-white/10 text-white text-xs font-semibold disabled:opacity-50">Apply</button>
               </div>
               <p className="mt-1 text-[10px] text-slate-400">Current: {strategyLabel(trade.group_name)}{isManual(trade.group_name) ? ' (manual)' : ''}</p>

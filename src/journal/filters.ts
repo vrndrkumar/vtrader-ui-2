@@ -16,6 +16,7 @@ export interface Filters {
   broker: string
   strategy: string
   symbol: string
+  index: string           // '' = all; 'NIFTY' / 'BANKNIFTY' / …; 'EQ' = non-index
   instrument: InstrumentF
   outcome: Outcome
   status: StatusF
@@ -55,7 +56,7 @@ export function presetRange(p: DatePreset): { from: string; to: string } | null 
 export function defaultFilters(): Filters {
   const r = presetRange('month')!
   return {
-    datePreset: 'month', from: r.from, to: r.to, broker: '', strategy: '', symbol: '',
+    datePreset: 'month', from: r.from, to: r.to, broker: '', strategy: '', symbol: '', index: '',
     instrument: 'ALL', outcome: 'ALL', status: 'ALL', pnlMin: '', pnlMax: '', qtyMin: '', qtyMax: '',
     tags: [], hasNotes: 'ALL', source: 'ALL', review: 'ALL',
   }
@@ -64,12 +65,14 @@ export function defaultFilters(): Filters {
 /** Number of non-date filters currently active (for the "Filters" badge). */
 export function activeCount(f: Filters): number {
   let n = 0
-  if (f.broker) n++; if (f.strategy) n++; if (f.symbol) n++
+  if (f.broker) n++; if (f.strategy) n++; if (f.symbol) n++; if (f.index) n++
   if (f.instrument !== 'ALL') n++; if (f.outcome !== 'ALL') n++; if (f.status !== 'ALL') n++
   if (f.pnlMin || f.pnlMax) n++; if (f.qtyMin || f.qtyMax) n++
   if (f.tags.length) n++; if (f.hasNotes !== 'ALL') n++; if (f.source !== 'ALL') n++; if (f.review !== 'ALL') n++
   return n
 }
+
+const STANDARD_INDICES = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'SENSEX', 'BANKEX', 'MIDCPNIFTY']
 
 const pnlOf = (t: Trade) => (t.realized_pnl ?? 0) + (t.unrealized_pnl ?? 0)
 
@@ -88,6 +91,11 @@ export function applyFilters(
       else if (t.group_name !== f.strategy) return false
     }
     if (f.symbol && !t.symbol_name?.toLowerCase().includes(f.symbol.toLowerCase())) return false
+    if (f.index) {
+      const base = t.symbol_name?.split('_')[0] ?? ''
+      if (f.index === 'EQ') { if (STANDARD_INDICES.includes(base)) return false }
+      else if (base !== f.index) return false
+    }
     if (f.instrument !== 'ALL' && parseInstrument(t.symbol_name).kind !== f.instrument) return false
     if (f.outcome === 'WIN' && pnl <= 0) return false
     if (f.outcome === 'LOSS' && pnl >= 0) return false

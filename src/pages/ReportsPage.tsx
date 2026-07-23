@@ -11,6 +11,7 @@ import {
   computeDailyPnl,
   computeGroupPnl,
   computeSymbolPnl,
+  computeIndexPnl,
   formatPnl,
 } from '@/utils/tradeStats'
 import { SummaryCards } from '@/components/reports/SummaryCards'
@@ -81,8 +82,10 @@ function defaultDateRange() {
   return { dateFrom: fmt(from), dateTo: fmt(to) }
 }
 
+const STANDARD_INDICES = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'SENSEX', 'BANKEX', 'MIDCPNIFTY']
+
 const DEFAULT_FILTERS: TradeFilters = {
-  brokerName: '', groupName: '', status: 'ALL', symbolSearch: '',
+  brokerName: '', groupName: '', status: 'ALL', symbolSearch: '', indexName: '',
   ...defaultDateRange(),
 }
 
@@ -348,6 +351,11 @@ export default function ReportsPage() {
       const q = filters.symbolSearch.toUpperCase()
       if (!t.symbol_name.toUpperCase().includes(q) && !t.group_name?.toUpperCase().includes(q)) return false
     }
+    if (filters.indexName) {
+      const base = t.symbol_name?.split('_')[0] ?? ''
+      if (filters.indexName === 'EQ') { if (STANDARD_INDICES.includes(base)) return false }
+      else if (base !== filters.indexName) return false
+    }
     // Date filtering is handled server-side by the API (fromDate/toDate params).
     // Client-side date filtering is intentionally skipped to avoid UTC/IST timezone mismatch.
     return true
@@ -368,6 +376,7 @@ export default function ReportsPage() {
   const dailyPnl   = useMemo(() => computeDailyPnl(filteredTrades), [filteredTrades])
   const groupPnl   = useMemo(() => computeGroupPnl(filteredTrades), [filteredTrades])
   const symbolPnl  = useMemo(() => computeSymbolPnl(filteredTrades), [filteredTrades])
+  const indexPnl   = useMemo(() => computeIndexPnl(filteredTrades), [filteredTrades])
 
   const updateFilters = (patch: Partial<TradeFilters>) => {
     setFilters((f) => ({ ...f, ...patch }))
@@ -556,6 +565,23 @@ export default function ReportsPage() {
                   {loading ? <ChartSkeleton height={240} /> : <PnlDistributionChart data={dailyPnl} height={240} />}
                 </ChartCard>
               </div>
+
+              {/* Index comparison — full width */}
+              <ChartCard
+                title="Index-wise P&L"
+                subtitle="Realized P&L comparison by index (closed trades)"
+                action={
+                  filters.indexName
+                    ? <span className="text-[10px] font-semibold px-2 py-1 rounded-full bg-brand-50 dark:bg-brand-900/20 text-brand-600 dark:text-brand-400 border border-brand-200 dark:border-brand-800">Filtered: {filters.indexName}</span>
+                    : undefined
+                }
+              >
+                {loading ? <ChartSkeleton height={260} /> : (
+                  indexPnl.length
+                    ? <HorizontalBarChart data={indexPnl} height={260} maxItems={10} />
+                    : <EmptyChart label="No closed trades" height={260} />
+                )}
+              </ChartCard>
 
               {/* Stat mini-cards */}
               {!loading && (

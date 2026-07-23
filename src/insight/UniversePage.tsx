@@ -2,11 +2,14 @@ import { useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { clsx } from 'clsx'
 import { useUniverseStore } from './universeStore'
+import { useAuth } from '@/hooks/useAuth'
 import { RankingsDashboard } from './components/RankingsDashboard'
-import { BadgeChip, ConvictionStars, RiskChip, ScoreCell } from './components/Badges'
+import { BadgeChip, ConvictionStars, FundamentalChip, RiskChip, ScoreCell } from './components/Badges'
 
 function FailuresPanel() {
   const { failures, showFailures, toggleFailures, job, retryFailed } = useUniverseStore()
+  const { user } = useAuth()
+  if (user?.role !== 'ADMIN') return null // operational detail — admins only
   const failCount = job?.failed ?? failures?.total ?? 0
   if (!failCount && !failures?.total) return null
   return (
@@ -143,6 +146,16 @@ function FilterBar() {
         <option value="55">Discovery ≥ 55</option>
         <option value="70">Discovery ≥ 70</option>
       </select>
+      <select value={filters.fundamentals} onChange={(e) => setFilter('fundamentals', e.target.value as never)} className={selectCls}>
+        <option value="">Any fundamentals</option>
+        <option value="positive">Overall: Positive</option>
+        <option value="quality">💎 Quality (strong + profitable)</option>
+        <option value="undervalued">Undervalued</option>
+        <option value="highgrowth">High growth</option>
+        <option value="dividend">Dividend payers</option>
+        <option value="strongbalance">Strong balance sheet</option>
+        <option value="covered">Has fundamental data</option>
+      </select>
       <select value={filters.sort} onChange={(e) => setFilter('sort', e.target.value as never)} className={selectCls}>
         <option value="discovery">Sort: Hidden gem score</option>
         <option value="transition">Sort: Transition score</option>
@@ -169,6 +182,8 @@ function FilterBar() {
 
 export default function UniversePage() {
   const navigate = useNavigate()
+  const { user } = useAuth()
+  const isAdmin = user?.role === 'ADMIN'
   const {
     rows, total, page, pageSize, loading, error, dashboard, dashboardError, selection, job,
     load, loadFacets, loadDashboard, toggleSelect, clearSelection, analyzeSelected, analyzeAll, pollJob,
@@ -214,13 +229,19 @@ export default function UniversePage() {
                 </button>
               </>
             )}
-            <button
-              onClick={() => void analyzeAll()}
-              disabled={busy}
-              className="px-3.5 py-2 rounded-xl text-xs font-bold bg-slate-900 dark:bg-white text-white dark:text-slate-900 hover:opacity-90 disabled:opacity-50"
-            >
-              {busy ? 'Analysis running…' : 'Analyse Entire Universe'}
-            </button>
+            {isAdmin ? (
+              <button
+                onClick={() => void analyzeAll()}
+                disabled={busy}
+                className="px-3.5 py-2 rounded-xl text-xs font-bold bg-slate-900 dark:bg-white text-white dark:text-slate-900 hover:opacity-90 disabled:opacity-50"
+              >
+                {busy ? 'Analysis running…' : 'Analyse Entire Universe'}
+              </button>
+            ) : (
+              <span className="text-[10px] text-slate-400 px-1" title="Full-universe analysis runs automatically every night">
+                {busy ? 'Nightly analysis running…' : 'Universe refreshed automatically every night'}
+              </span>
+            )}
           </div>
         </div>
 
@@ -265,6 +286,7 @@ export default function UniversePage() {
                   <th className="px-3 py-2.5 font-semibold">Transition</th>
                   <th className="px-3 py-2.5 font-semibold">Momentum</th>
                   <th className="px-3 py-2.5 font-semibold">Conviction</th>
+                  <th className="px-3 py-2.5 font-semibold">Fundamentals</th>
                   <th className="px-3 py-2.5 font-semibold">Risk</th>
                   <th className="px-3 py-2.5 font-semibold">Badge</th>
                   <th className="px-3 py-2.5 font-semibold">Analysed</th>
@@ -272,10 +294,10 @@ export default function UniversePage() {
               </thead>
               <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
                 {loading && rows.length === 0 && (
-                  <tr><td colSpan={10} className="px-4 py-10 text-center text-slate-400">Loading universe…</td></tr>
+                  <tr><td colSpan={11} className="px-4 py-10 text-center text-slate-400">Loading universe…</td></tr>
                 )}
                 {!loading && rows.length === 0 && (
-                  <tr><td colSpan={10} className="px-4 py-10 text-center text-slate-400">No stocks match these filters.</td></tr>
+                  <tr><td colSpan={11} className="px-4 py-10 text-center text-slate-400">No stocks match these filters. (Fundamental filters only match stocks whose fundamentals are loaded — run the nightly or open reports to build coverage.)</td></tr>
                 )}
                 {rows.map((r) => (
                   <tr
@@ -312,6 +334,7 @@ export default function UniversePage() {
                         <span className="text-slate-300 dark:text-slate-600">—</span>
                       )}
                     </td>
+                    <td className="px-3 py-2.5"><FundamentalChip outlook={r.fundamental_outlook} /></td>
                     <td className="px-3 py-2.5"><RiskChip level={r.risk_level} /></td>
                     <td className="px-3 py-2.5"><BadgeChip badge={r.badge} /></td>
                     <td className="px-3 py-2.5 text-[10px] text-slate-400 whitespace-nowrap">

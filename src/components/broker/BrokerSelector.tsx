@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { clsx } from 'clsx'
 import { useBrokerStore, type BrokerAccount } from '@/store/brokerStore'
+import { useAuth } from '@/hooks/useAuth'
 
 const AVATAR_COLORS = ['bg-indigo-500', 'bg-emerald-500', 'bg-amber-500', 'bg-sky-500', 'bg-rose-500', 'bg-violet-500']
 const avatarColor = (id: number) => AVATAR_COLORS[id % AVATAR_COLORS.length]
@@ -52,6 +53,9 @@ function BrokerRow({ account, selected, onToggle, onOnly }: { account: BrokerAcc
 }
 
 export function BrokerSelector() {
+  const { user } = useAuth()
+  const isAdmin = user?.role === 'ADMIN'
+
   const accounts = useBrokerStore((s) => s.accounts)
   const selectedIds = useBrokerStore((s) => s.selectedIds)
   const quickTrade = useBrokerStore((s) => s.quickTrade)
@@ -68,8 +72,15 @@ export function BrokerSelector() {
   return (
     <div className="relative">
       <button
-        onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-2 h-9 pl-2 pr-2.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-white/5"
+        onClick={() => isAdmin && setOpen((o) => !o)}
+        disabled={!isAdmin}
+        title={!isAdmin ? 'Broker selection is managed by your admin' : undefined}
+        className={clsx(
+          'flex items-center gap-2 h-9 pl-2 pr-2.5 rounded-lg border border-slate-200 dark:border-slate-700',
+          isAdmin
+            ? 'hover:bg-slate-50 dark:hover:bg-white/5 cursor-pointer'
+            : 'opacity-60 cursor-not-allowed',
+        )}
       >
         {selected[0] && <span className={clsx('h-5 w-5 rounded-full grid place-items-center text-white text-[9px] font-bold', avatarColor(selected[0].id))}>{selected[0].brokerName.slice(0, 2)}</span>}
         <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 max-w-[130px] truncate">{label}</span>

@@ -14,4 +14,8 @@ export const config = {
     enableKeepAlive: true,
   },
   benchmarkSymbol: 'NIFTY',
+  nightly: {
+    enabled: process.env.NIGHTLY_BATCH !== '0', // set NIGHTLY_BATCH=0 to disable
+    time: process.env.NIGHTLY_TIME || '21:00', // HH:MM, server-local time
+  },
 }

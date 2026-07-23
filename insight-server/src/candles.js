@@ -18,7 +18,18 @@ async function fetchRaw(symbol, frequency, from, to) {
   if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.data
 
   const url = `${config.candleBaseUrl}/data/candle?symbol=${encodeURIComponent(symbol)}&from=${from}&to=${to}&frequency=${frequency}`
-  const res = await fetch(url)
+  // Hard timeout: a hung connection must FAIL (and be retried/reported), never
+  // silently stall the whole batch at "0 done".
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 25_000)
+  let res
+  try {
+    res = await fetch(url, { signal: ctrl.signal })
+  } catch (e) {
+    throw new Error(e.name === 'AbortError' ? `candle API timeout (25s) for ${symbol} ${frequency}` : `candle API network error for ${symbol}: ${e.message}`)
+  } finally {
+    clearTimeout(timer)
+  }
   if (!res.ok) throw new Error(`candle API ${res.status} for ${symbol} ${frequency}`)
   const json = await res.json()
   const raw = Array.isArray(json?.candles) ? json.candles : []

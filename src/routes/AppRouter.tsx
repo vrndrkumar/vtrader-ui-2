@@ -17,7 +17,7 @@ const SignalGeneratorPage = lazy(() => import('@/pages/SignalGeneratorPage'))
 const InsightUniversePage    = lazy(() => import('@/insight/UniversePage'))
 const InsightReportPage      = lazy(() => import('@/insight/StockReportPage'))
 const InsightGuidePage       = lazy(() => import('@/insight/GuidePage'))
-const OptionInsightsPage     = lazy(() => import('@/pages/OptionInsightsPage'))
+const OptionInsightsPage     = lazy(() => import('@/insight/options/OptionInsightsPage'))
 
 function GuestRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth()

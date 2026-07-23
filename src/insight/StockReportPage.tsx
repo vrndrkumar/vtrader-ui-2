@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 import { clsx } from 'clsx'
 import { useReportStore } from './reportStore'
 import { WeeklyChart } from './components/WeeklyChart'
+import { FundamentalsPanel } from './components/FundamentalsPanel'
 import {
   BadgeChip, ConvictionStars, LifecycleStepper, RankCaption, RiskChip, WarningTagChip,
 } from './components/Badges'
@@ -343,6 +344,9 @@ export default function StockReportPage() {
                 </SectionCard>
               </div>
             )}
+
+            {/* ── Fundamentals (display-only) ── */}
+            {symbol && <FundamentalsPanel symbol={symbol} />}
 
             {/* ── History ── */}
             <SectionCard title="Score history" right={<span className="text-[10px] text-slate-400">is the opportunity improving or fading?</span>}>

@@ -12,13 +12,16 @@
     "research": "node research/run.js",
     "research:phase2": "node research/phase2.js",
     "research:phase3": "node research/phase3.js",
-    "research:phase4": "node research/phase4.js"
+    "research:phase4": "node research/phase4.js",
+    "research:phase5": "node research/phase5.js",
+    "research:phase5b": "node research/phase5b.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "mysql2": "^3.11.0"
+    "mysql2": "^3.11.0",
+    "yahoo-finance2": "4.0.0"
   },
   "engines": {
     "node": ">=18"

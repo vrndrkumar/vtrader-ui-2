@@ -164,6 +164,65 @@ export function featureSnapshot(daily, nifty) {
   }
   const rangeTight20 = ((hi20p - lo20p) / px) * 100
 
+  // ── Correction Quality grade (v2.1 — Phase-5b validated; cuts FROZEN) ──────
+  // Computed only in the rest-after-run context (prior advance ≥30% + base ≥10).
+  // Frozen dev-tercile cuts from research-report-phase5b.md:
+  const Q_CUTS = {
+    pathEfficiency: { good: 0.0694, bad: 0.1771 },
+    volDownCorr: { good: -0.0326, bad: 0.1940 },
+    retracement: { good: 0.3478, bad: 0.4985 },
+  }
+  let correctionQuality = null
+  let correctionQualityDetail = null
+  if (priorGain120 != null && priorGain120 >= 30 && baseLen >= 10) {
+    const bStart = i - baseLen + 1
+    let peak = Math.max(0, bStart - 60)
+    for (let k = Math.max(0, bStart - 60); k <= bStart; k++) if (daily[k].high > daily[peak].high) peak = k
+    if (i - peak >= 5) {
+      let pathSum = 0
+      let minLowC = Infinity
+      const xs = []
+      const ys = []
+      for (let k = peak + 1; k <= i; k++) {
+        pathSum += Math.abs(c[k] - c[k - 1])
+        minLowC = Math.min(minLowC, daily[k].low)
+        xs.push(vol[k])
+        ys.push(Math.max(0, -(c[k] - c[k - 1])))
+      }
+      const pathEfficiency = pathSum > 0 ? Math.abs(c[i] - c[peak]) / pathSum : null
+      let volDownCorr = null
+      if (xs.length >= 5) {
+        const mx = xs.reduce((a, b) => a + b, 0) / xs.length
+        const my = ys.reduce((a, b) => a + b, 0) / ys.length
+        let num = 0, dx = 0, dy = 0
+        for (let k = 0; k < xs.length; k++) { num += (xs[k] - mx) * (ys[k] - my); dx += (xs[k] - mx) ** 2; dy += (ys[k] - my) ** 2 }
+        volDownCorr = dx && dy ? num / Math.sqrt(dx * dy) : null
+      }
+      const peakHigh = daily[peak].high
+      const advStart = Math.max(0, peak - 120)
+      const advRange = peakHigh - c[advStart]
+      const retracement = advRange > 0 ? (peakHigh - minLowC) / advRange : null
+      let score = 0
+      for (const [dim, v] of [['pathEfficiency', pathEfficiency], ['volDownCorr', volDownCorr], ['retracement', retracement]]) {
+        if (v == null || !Number.isFinite(v)) continue
+        if (v <= Q_CUTS[dim].good) score++
+        else if (v >= Q_CUTS[dim].bad) score--
+      }
+      correctionQuality = score >= 2 ? 'A' : score <= -2 ? 'C' : 'B'
+      correctionQualityDetail = {
+        pathEfficiency: round(pathEfficiency, 4),
+        volDownCorr: round(volDownCorr, 4),
+        retracement: round(retracement, 4),
+      }
+    }
+  }
+
+  // gap-up frequency — INSTRUMENTATION ONLY (CRI forward confirmation pending;
+  // validated 1.24×/1.26× out-of-sample but may proxy small-cap volatility)
+  let gaps20 = 0
+  for (let k = Math.max(1, i - 19); k <= i; k++) if (daily[k].open >= c[k - 1] * 1.01) gaps20++
+  const gapUpFreq20 = round(gaps20 / 20, 2)
+
   // weekly state + TURN (now vs ~4 completed weeks ago); null when <~21 weeks
   const weekly = toWeekly(daily)
   const wi = weekly.length - 1
@@ -212,6 +271,9 @@ export function featureSnapshot(daily, nifty) {
     priorGain120: round(priorGain120, 1),
     bbPct: round(bbPct, 1),
     baseLen,
+    correctionQuality,
+    correctionQualityDetail,
+    gapUpFreq20,
     rangeTight20: round(rangeTight20, 1),
     dryUpRatio: round(dryUpRatio, 2),
     volRatio: round(volRatio, 2),

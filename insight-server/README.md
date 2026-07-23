@@ -8,11 +8,23 @@ Research-intelligence micro-service for the VTrader UI **Stock Insight** platfor
 
 Evidence items carry themes (UI de-duplicates signals shared across engines), badges are evidence-driven (HIDDEN GEM CANDIDATE, EARLY DISCOVERY, QUIET ACCUMULATION, TRANSITION STARTED, BUILDING STRENGTH, LEADERSHIP EMERGING, MOMENTUM ESTABLISHED, WATCHLIST, QUIET) plus warning tags (DISTRIBUTION RISK, WEAK STRUCTURE, THIN LIQUIDITY, HIGH VOLATILITY). Each report includes: executive summary (analyst note), opportunity lifecycle (Discovery → Transition → Momentum with earliness), overall conviction (1–5★, blends best-engine score, market percentile, risk), market/sector/industry ranks + percentiles per engine, "why it stands out today", and score history with trends. `GET /dashboard` powers the market-intelligence view: top hidden gems, top discovery, biggest improvers, new signals, momentum leaders, highest risk, sector leaders, recently upgraded/downgraded (movement lists need ≥2 snapshots per stock). Conviction + rank snapshots are stored per analysis for future performance studies.
 
-## Engines (v2-2026.07 weights)
+## Engines (v2.1-2026.07 weights)
+
+**v2.1 amendment** (CEO-approved via the Phase-5/5b protocol — the first weight change since the v2 freeze): prior advance is two-tier (30–60% → +22, ≥60% → +30; validated monotone dev + out-of-sample); **Correction Quality grade A/B/C** added to Discovery (+10/+4/0 with a grade-C caution line) — computed from three frozen metrics (path efficiency ≤0.0694/≥0.1771, volume-on-weakness ≤−0.0326/≥0.1940, retracement ≤0.3478/≥0.4985) in rest-after-run contexts; A-vs-C validated 1.96× dev → 2.17× out-of-sample. Gap-up frequency is stored as instrumentation only (CRI forward confirmation pending). All sequence-order motifs, failure vetoes, volume asymmetry, down-day RS and closing range were tested and permanently closed (see `research/out/research-report-phase5.md` and `-phase5b.md`).
+
+## Engine baseline (v2-2026.07 weights)
 
 **Discovery** (primary): prior strong advance +30, weekly turn +20, compression-with-prior-advance +15, volume dry-up +15, OBV rising +10, under-followed location +10. **Transition**: 200-SMA reclaim +30, weekly turn +25, dry-up +15, higher-low +10, OBV +10, CHOCH +10, RS improving +5. **Momentum** (gated to weekly-uptrend + above-200SMA stocks): established trend +30, sustained advance +20, quiet pullback +15, more. **Risk layer** (separate, never a veto): volatility, liquidity, drawdown, structure, regime → LOW/MEDIUM/HIGH + factors. Badges: HIDDEN GEM CANDIDATE / BUILDING STRENGTH / CONFIRMED LEADER / WATCHLIST / QUIET.
 
-Weights change ONLY through the research protocol (`npm run research`, `research:phase2..4`); see `docs/INSIGHT_ENGINE_RESEARCH.md`.
+Weights change ONLY through the research protocol (`npm run research`, `research:phase2..5`); see `docs/INSIGHT_ENGINE_RESEARCH.md` and `docs/INSIGHT_PHASE5_PROTOCOL.md`.
+
+**Phase 5 — Pattern Evolution** (`npm run research:phase5`): pre-registered sequence motifs (M1–M7, F1–F3) vs unordered baselines, behaviour-quality terciles on rest-after-run episodes, evidence audit → `research/out/research-report-phase5.md`.
+
+**CRI — Continuous Research Intelligence** (in-server, research recommendations only, weights frozen): daily forward-outcome capture into `snapshot_outcomes` (auto on startup + every 24h; `POST /cri/capture`, `GET /cri/state`), `GET /cri/summary/weekly` (per-evidence forward lift vs backtest; auto-raises recommendations on ±0.15 divergence with n≥100), `GET /cri/summary/monthly` (regime split), `GET /cri/summary/quarterly` (challenger readiness — never promotes), `GET /cri/recommendations`.
+
+## Fundamentals (display-only)
+
+`GET /stock/:symbol/fundamentals` (`?refresh=1` bypasses the 24h DB cache) serves company snapshot, valuation, profitability, financial health, growth, dividends, ownership and risk metrics from **Yahoo Finance** (via `yahoo-finance2`; NSE codes map `SBIN-EQ → SBIN.NS`, `.BO` fallback), plus a heuristic Fundamental Health Summary. **Hard isolation guarantee** (enforced by `test/fundamentals.offline.test.js`): engines, scoring, rankings, batch and CRI never reference fundamentals — informational context only. Missing metrics render as N/A, never guessed. Requires `npm install` (new dependency).
 
 ## Run
 

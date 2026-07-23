@@ -271,9 +271,23 @@ export async function queryUniverse(q) {
   if (q.minDiscovery) { where.push('a.discovery_score >= ?'); params.push(Number(q.minDiscovery)) }
   if (q.analyzed === '1') where.push('a.id IS NOT NULL')
 
+  // Fundamental filter presets — read-only screening over the display-only
+  // fundamentals grades. Filtering NEVER alters technical scores/rankings.
+  const FUND_PRESETS = {
+    positive: "f.overall_grade = 'Positive'",
+    quality: "f.fin_strength = 'Strong' AND f.profitability_grade IN ('Excellent','Good')",
+    undervalued: "f.valuation_grade = 'Undervalued'",
+    highgrowth: "f.growth_grade = 'High'",
+    dividend: "f.dividend_grade IN ('Attractive','Average')",
+    strongbalance: "f.fin_strength = 'Strong'",
+    covered: 'f.data IS NOT NULL',
+  }
+  if (q.fundamentals && FUND_PRESETS[q.fundamentals]) where.push(`(${FUND_PRESETS[q.fundamentals]})`)
+
   const base = `
     FROM stock_mstr s
     LEFT JOIN stock_analysis_reports a ON a.symbol_code = s.symbol_code AND a.is_latest = 1
+    LEFT JOIN stock_fundamentals f ON f.symbol_code = s.symbol_code
     WHERE ${where.join(' AND ')}`
 
   const orderBy = SORTS[q.sort] ?? SORTS.discovery
@@ -282,7 +296,8 @@ export async function queryUniverse(q) {
     `SELECT s.id, s.symbol_code, s.symbol_name, s.sector, s.industry, s.category,
             a.analysis_date, a.price, a.discovery_score, a.transition_score, a.momentum_score,
             a.risk_score, a.risk_level, a.badge, a.conviction, a.conviction_label,
-            a.summary, a.created_at AS analyzed_at
+            a.summary, a.created_at AS analyzed_at,
+            f.overall_grade AS fundamental_outlook, f.valuation_grade AS fundamental_valuation
        ${base}
       ORDER BY ${orderBy}
       LIMIT ? OFFSET ?`,
@@ -329,10 +344,12 @@ async function latestVsPrevious() {
            cur.risk_score, cur.risk_level, cur.badge, cur.conviction, cur.conviction_label,
            cur.summary, cur.created_at,
            prev.discovery_score AS prev_discovery, prev.transition_score AS prev_transition,
-           prev.momentum_score AS prev_momentum, prev.badge AS prev_badge
+           prev.momentum_score AS prev_momentum, prev.badge AS prev_badge,
+           f.overall_grade AS fundamental_outlook
       FROM ranked cur
       JOIN stock_mstr s ON s.symbol_code = cur.symbol_code AND s.is_active = 1
       LEFT JOIN ranked prev ON prev.symbol_code = cur.symbol_code AND prev.rn = 2
+      LEFT JOIN stock_fundamentals f ON f.symbol_code = cur.symbol_code
      WHERE cur.rn = 1
   `)
   return rows
@@ -352,6 +369,7 @@ export async function getDashboard(limit = 6) {
     badge: r.badge,
     conviction: r.conviction,
     conviction_label: r.conviction_label,
+    fundamental_outlook: r.fundamental_outlook ?? null,
     summary: r.summary,
     ...extra,
   })
@@ -360,6 +378,14 @@ export async function getDashboard(limit = 6) {
 
   const gems = rows
     .filter((r) => ['HIDDEN GEM CANDIDATE', 'EARLY DISCOVERY', 'QUIET ACCUMULATION'].includes(r.badge))
+    .sort((a, b) => (b.discovery_score ?? 0) - (a.discovery_score ?? 0))
+    .slice(0, limit).map((r) => entry(r))
+
+  // the user's exact ask: technically early AND fundamentally sound —
+  // an intersection of independent dimensions, never a blended score
+  const gemsWithFundamentals = rows
+    .filter((r) => ['HIDDEN GEM CANDIDATE', 'EARLY DISCOVERY', 'QUIET ACCUMULATION', 'TRANSITION STARTED'].includes(r.badge)
+      && r.fundamental_outlook === 'Positive')
     .sort((a, b) => (b.discovery_score ?? 0) - (a.discovery_score ?? 0))
     .slice(0, limit).map((r) => entry(r))
 
@@ -405,6 +431,7 @@ export async function getDashboard(limit = 6) {
   return {
     analyzedCount: rows.length,
     topPicks,
+    gemsWithFundamentals,
     topHiddenGems: gems,
     topDiscovery: by('discovery_score'),
     biggestImprovers: improvers,

@@ -4,6 +4,8 @@ import { getTradeOrders } from '@/api/reports'
 import type { Trade, TradeOrder } from '@/types/reports'
 import { formatPnl, formatDateTime } from '@/utils/tradeStats'
 
+const isOpenTrade = (t: Trade) => t.status !== 'CLOSED'
+
 interface Props {
   trade: Trade | null
   onClose: () => void
@@ -91,8 +93,8 @@ export function OrdersDrawer({ trade, onClose }: Props) {
                 <p className="text-[10px] text-slate-400 font-mono mt-0.5 truncate max-w-[200px]">{trade.symbol_name}</p>
               </div>
               <div className="text-right">
-                <p className={clsx('text-xl font-bold tabular-nums', trade.status === 'OPEN' ? 'text-slate-400' : pnlPos ? 'text-green-600 dark:text-green-400' : 'text-red-500 dark:text-red-400')}>
-                  {trade.status === 'OPEN' ? '—' : formatPnl(trade.realized_pnl)}
+                <p className={clsx('text-xl font-bold tabular-nums', isOpenTrade(trade) ? 'text-slate-400' : pnlPos ? 'text-green-600 dark:text-green-400' : 'text-red-500 dark:text-red-400')}>
+                  {isOpenTrade(trade) ? '—' : formatPnl(trade.realized_pnl)}
                 </p>
                 <p className="text-[10px] text-slate-400 dark:text-slate-500">Realized P&L</p>
               </div>
@@ -108,11 +110,11 @@ export function OrdersDrawer({ trade, onClose }: Props) {
               <TradeStat
                 label="Status"
                 value={trade.status}
-                valueClass={trade.status === 'OPEN' ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}
+                valueClass={isOpenTrade(trade) ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}
               />
             </div>
 
-            {trade.status === 'OPEN' && trade.unrealized_pnl !== 0 && (
+            {isOpenTrade(trade) && trade.unrealized_pnl !== 0 && (
               <div className={clsx('mt-3 flex items-center gap-2 text-xs font-semibold px-3 py-2 rounded-xl',
                 trade.unrealized_pnl >= 0
                   ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400'

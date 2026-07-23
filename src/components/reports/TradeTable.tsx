@@ -3,6 +3,8 @@ import { clsx } from 'clsx'
 import type { Trade } from '@/types/reports'
 import { formatPnl, formatDateTime } from '@/utils/tradeStats'
 
+const isOpenTrade = (t: { status: string }) => t.status !== 'CLOSED'
+
 interface Props {
   trades: Trade[]
   onViewOrders: (trade: Trade) => void
@@ -337,7 +339,7 @@ export function TradeTable({ trades, onViewOrders }: Props) {
                   )}
                   {visibleCols.has('realized_pnl') && (
                     <td className="px-4 py-3.5 text-right">
-                      {trade.status === 'OPEN' ? (
+                      {isOpenTrade(trade) ? (
                         <div>
                           <span className="text-xs text-slate-400 dark:text-slate-500">Open</span>
                           {trade.unrealized_pnl !== 0 && (
@@ -418,14 +420,15 @@ function paginationPages(current: number, total: number): (number | '…')[] {
 }
 
 function StatusBadge({ status }: { status: string }) {
+  const isOpen = status !== 'CLOSED'
   return (
     <span className={clsx(
       'inline-flex items-center gap-1 text-[10px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap',
-      status === 'OPEN'
+      isOpen
         ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
         : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400',
     )}>
-      <span className={clsx('h-1.5 w-1.5 rounded-full', status === 'OPEN' ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500')} />
+      <span className={clsx('h-1.5 w-1.5 rounded-full', isOpen ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500')} />
       {status}
     </span>
   )

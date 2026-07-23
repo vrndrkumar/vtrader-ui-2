@@ -11,13 +11,26 @@ import { conviction as convictionOf } from './engines.js'
 import { analyseSymbol, startBatch, stopBatch, jobStatus } from './batch.js'
 import { fetchDaily } from './candles.js'
 import { toWeekly, toMonthly } from './featureSnapshot.js'
+import {
+  ensureCriSchema, captureOutcomes, captureState as criCaptureState,
+  weeklySummary, monthlyRegime, quarterlyChallenger, listRecommendations,
+} from './cri.js'
+const criState = () => ({ ...criCaptureState })
+import { ensureFundamentalsSchema, getFundamentals, fundamentalsHealth, prefetchFundamentals, prefetchState } from './fundamentals.js'
 import { srZones } from './structure.js'
 
 const app = express()
 app.use(express.json())
 app.use(cors({ origin: config.corsOrigins.includes('*') ? true : config.corsOrigins }))
 
-app.get('/health', (_req, res) => res.json({ ok: true, service: 'insight-server' }))
+// Feature manifest: /health always tells you WHICH code is live, killing the
+// "edited but server not restarted" failure mode for good.
+const STARTED_AT = new Date().toISOString()
+const FEATURES = [
+  'engine-v2.1', 'cri', 'nightly-batch', 'fundamentals-display',
+  'fundamentals-filter', 'fundamentals-prefetch', 'gems-x-fundamentals',
+]
+app.get('/health', (_req, res) => res.json({ ok: true, service: 'insight-server', startedAt: STARTED_AT, features: FEATURES }))
 
 // ── Symbols (kept from v1) ───────────────────────────────────────────────────
 app.get('/symbols', async (req, res) => {
@@ -153,6 +166,32 @@ function unpackStored(row) {
   }
 }
 
+// One-URL end-to-end diagnostic: installed version, resolution path, live fetch.
+app.get('/fundamentals/health', async (_req, res) => {
+  res.json(await fundamentalsHealth())
+})
+
+// Prefetch fundamentals for engine candidates (score ≥40) so universe
+// filtering has coverage. Throttled internally; also chained after nightly.
+app.post('/fundamentals/prefetch', async (_req, res) => {
+  try {
+    res.json(await prefetchFundamentals())
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+app.get('/fundamentals/prefetch/status', (_req, res) => res.json({ ...prefetchState }))
+
+// Fundamentals — DISPLAY-ONLY (never touches engines/scores/rankings/CRI).
+// Cached 24h; ?refresh=1 forces a re-fetch.
+app.get('/stock/:symbol/fundamentals', async (req, res) => {
+  try {
+    res.json(await getFundamentals(String(req.params.symbol).trim(), { refresh: req.query.refresh === '1' }))
+  } catch (e) {
+    res.json({ available: false, error: `Fundamentals service error: ${e.message}` })
+  }
+})
+
 app.get('/stock/:symbol/history', async (req, res) => {
   try {
     res.json({ history: await getHistory(String(req.params.symbol), Number(req.query.limit) || 30) })
@@ -210,6 +249,31 @@ app.post('/analyze/retry-failed', async (_req, res) => {
   }
 })
 
+// ── Continuous Research Intelligence (research recommendations ONLY) ─────────
+// Governance: these endpoints never modify scores, weights or badges.
+app.post('/cri/capture', async (_req, res) => {
+  try {
+    if (criState().running) return res.status(409).json({ error: 'capture already running', state: criState() })
+    void captureOutcomes() // async; poll GET /cri/state
+    res.json({ ok: true, started: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+app.get('/cri/state', (_req, res) => res.json(criState()))
+app.get('/cri/summary/weekly', async (_req, res) => {
+  try { res.json(await weeklySummary()) } catch (e) { res.status(502).json({ error: e.message }) }
+})
+app.get('/cri/summary/monthly', async (_req, res) => {
+  try { res.json(await monthlyRegime()) } catch (e) { res.status(502).json({ error: e.message }) }
+})
+app.get('/cri/summary/quarterly', async (_req, res) => {
+  try { res.json(await quarterlyChallenger()) } catch (e) { res.status(502).json({ error: e.message }) }
+})
+app.get('/cri/recommendations', async (req, res) => {
+  try { res.json({ recommendations: await listRecommendations(Number(req.query.limit) || 50) }) } catch (e) { res.status(502).json({ error: e.message }) }
+})
+
 // ── Legacy v1 deep-dive report (kept for compatibility; not used by new UI) ──
 const reportCache = new Map()
 app.get('/report', async (req, res) => {
@@ -230,6 +294,60 @@ app.get('/report', async (req, res) => {
 ensureSchema()
   .then(() => console.log('analysis schema ready'))
   .catch((e) => console.error('⚠ schema init failed (DB down?):', e.message))
+
+// Nightly full-universe analysis (self-sustaining snapshots for CRI + dashboard
+// movement lists). Configure with NIGHTLY_TIME (HH:MM server-local, default
+// 21:00) or disable with NIGHTLY_BATCH=0. Skips if a batch is already running.
+function scheduleNightly() {
+  if (!config.nightly.enabled) {
+    console.log('nightly batch disabled (NIGHTLY_BATCH=0)')
+    return
+  }
+  const [hh, mm] = config.nightly.time.split(':').map(Number)
+  const next = new Date()
+  next.setHours(hh, mm || 0, 0, 0)
+  if (next <= new Date()) next.setDate(next.getDate() + 1)
+  const waitMs = next.getTime() - Date.now()
+  console.log(`nightly batch scheduled for ${next.toLocaleString()} (every 24h)`)
+  setTimeout(async () => {
+    try {
+      const started = await startBatch(null, 'nightly')
+      console.log(started ? 'nightly batch started' : 'nightly batch skipped — a batch is already running')
+      // capture forward outcomes ~2h later (after the batch has finished),
+      // then prefetch fundamentals for the fresh candidate set
+      setTimeout(() => captureOutcomes().catch((e) => console.error('post-nightly CRI capture:', e.message)), 2 * 60 * 60 * 1000)
+      setTimeout(() => prefetchFundamentals().catch((e) => console.error('post-nightly fundamentals prefetch:', e.message)), 2.5 * 60 * 60 * 1000)
+    } catch (e) {
+      console.error('nightly batch failed to start:', e.message)
+    }
+    scheduleNightly() // schedule the next night
+  }, waitMs)
+}
+scheduleNightly()
+
+ensureFundamentalsSchema()
+  .then(() => console.log('fundamentals schema ready'))
+  .catch((e) => console.error('⚠ fundamentals schema init failed:', e.message))
+
+// Startup self-check: the console ALWAYS states whether fundamentals work,
+// which lib version is live, and the exact failure if not. No more guessing.
+setTimeout(() => {
+  fundamentalsHealth()
+    .then((h) => {
+      if (h.resolved && h.liveTest?.ok) console.log(`✓ fundamentals READY — v${h.installedVersion}, live test OK (${h.liveTest.name})`)
+      else console.error(`⚠ fundamentals NOT working — version ${h.installedVersion}, resolved: ${h.resolved} (${h.resolvedAs ?? '—'}), live: ${JSON.stringify(h.liveTest)}, error: ${h.error ?? '—'}`)
+    })
+    .catch((e) => console.error('⚠ fundamentals self-check crashed:', e.message))
+}, 3000)
+
+// CRI daily capture: instrumentation only (protocol §2.2 — starts immediately).
+ensureCriSchema()
+  .then(() => {
+    console.log('CRI schema ready')
+    setTimeout(() => captureOutcomes().catch((e) => console.error('CRI capture:', e.message)), 60 * 1000)
+    setInterval(() => captureOutcomes().catch((e) => console.error('CRI capture:', e.message)), 24 * 60 * 60 * 1000)
+  })
+  .catch((e) => console.error('⚠ CRI schema init failed:', e.message))
 
 app.listen(config.port, () => {
   console.log(`insight-server listening on :${config.port}`)

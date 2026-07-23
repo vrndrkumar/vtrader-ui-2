@@ -2,7 +2,7 @@
 import assert from 'node:assert'
 import { featureSnapshot, toWeekly } from '../src/featureSnapshot.js'
 import {
-  analyse, momentumEngine, riskLayer, deriveBadges, lifecycle, conviction, executiveSummary,
+  analyse, discoveryEngine, momentumEngine, riskLayer, deriveBadges, lifecycle, conviction, executiveSummary,
 } from '../src/engines.js'
 
 function synth(seed, n = 900, profile = 'base') {
@@ -86,6 +86,30 @@ for (const profile of ['gem', 'leader', 'decliner', 'base']) {
   for (const banned of ['stoploss', 'stop_loss', 'entryzone', 'target1', '"entry"']) {
     assert.ok(!json.includes(banned), `no trading field: ${banned}`)
   }
+}
+
+// v2.1: two-tier prior advance + correction quality grade
+{
+  const baseF = { weeklyTurn: false, weeklyUp: true, bbPct: 20, baseLen: 15, dryUpRatio: 0.6, obvSlope: 1, fromHighPct: -20, correctionQuality: null }
+  const weakTier = discoveryEngine({ ...baseF, priorGain120: 45 })
+  const strongTier = discoveryEngine({ ...baseF, priorGain120: 85 })
+  const pa = (e) => e.items.find((i) => i.theme === 'priorAdvance')
+  assert.equal(pa(weakTier).points, 22, 'moderate tier +22')
+  assert.equal(pa(strongTier).points, 30, 'strong tier +30')
+
+  const gA = discoveryEngine({ ...baseF, priorGain120: 85, correctionQuality: 'A' })
+  const gB = discoveryEngine({ ...baseF, priorGain120: 85, correctionQuality: 'B' })
+  const gC = discoveryEngine({ ...baseF, priorGain120: 85, correctionQuality: 'C' })
+  const q = (e) => e.items.find((i) => i.theme === 'quality')
+  assert.equal(q(gA)?.points, 10, 'grade A +10')
+  assert.equal(q(gB)?.points, 4, 'grade B +4')
+  assert.ok(!q(gC) && gC.missing.some((m) => m.theme === 'quality'), 'grade C = caution, no points')
+  assert.equal(gA.score, gC.score + 10, 'A vs C differs by exactly the quality points')
+
+  const ff = featureSnapshot(synth(11, 900, 'gem'), nifty)
+  assert.ok('correctionQuality' in ff && 'gapUpFreq20' in ff, 'v2.1 fields in snapshot')
+  assert.ok(ff.correctionQuality === null || ['A', 'B', 'C'].includes(ff.correctionQuality), 'grade valid or null')
+  assert.ok(ff.gapUpFreq20 >= 0 && ff.gapUpFreq20 <= 1, 'gap frequency bounded')
 }
 
 // badge derivation logic

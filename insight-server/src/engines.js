@@ -6,7 +6,10 @@
 //
 // This is an intelligence/ranking system, NOT a trading system.
 
-export const ENGINE_VERSION = 'v3-2026.07'
+export const ENGINE_VERSION = 'v2.1-2026.07'
+// v2.1 (CEO-approved, Phase-5/5b validated): two-tier prior advance (+22/+30),
+// Correction Quality grade A/B/C (+10/+4/0 + caution), gap-up frequency stored
+// as instrumentation only. All other weights unchanged from v2.
 
 const compressed = (f) => f.bbPct != null && f.bbPct <= 30 && f.baseLen >= 10
 const priorAdvance = (f) => f.priorGain120 != null && f.priorGain120 >= 30
@@ -23,8 +26,12 @@ export function discoveryEngine(f) {
   const add = (pts, theme, label, detail) => { s += pts; items.push({ ok: true, points: pts, theme, label, detail }) }
   const miss = (theme, label, detail) => missing.push({ theme, label, detail })
 
-  if (priorAdvance(f)) add(30, 'priorAdvance', 'Prior strong advance', `+${f.priorGain120}% over ~6 months — demonstrated ability to move. The single strongest validated early signal (1.28×; every combo without it fell below base rate)`)
-  else miss('priorAdvance', 'No prior advance', 'The strongest early evidence is absent — stocks that never demonstrated strength rarely lead the next expansion')
+  if (priorAdvance(f)) {
+    const strong = f.priorGain120 >= 60
+    add(strong ? 30 : 22, 'priorAdvance',
+      strong ? 'Prior strong advance' : 'Prior advance (moderate tier)',
+      `+${f.priorGain120}% over ~6 months — demonstrated ability to move. The single strongest validated early signal (1.28×; combos without it fell below base rate). ${strong ? '≥60% advances won 48% vs 36% for 30–60% tiers (validated dev + out-of-sample)' : 'Moderate tier (30–60%): historically 36% win vs 48% for ≥60% advances'}`)
+  } else miss('priorAdvance', 'No prior advance', 'The strongest early evidence is absent — stocks that never demonstrated strength rarely lead the next expansion')
 
   if (f.weeklyTurn) add(20, 'weeklyTurn', 'Weekly structure turning', 'Weekly trend flipped up recently — the turn itself is early evidence; the established state is confirmation')
   else if (f.weeklyUp !== true) miss('weeklyTurn', 'Weekly trend not up yet', 'Discovery candidates often precede the weekly turn — watch for it')
@@ -39,6 +46,11 @@ export function discoveryEngine(f) {
   else miss('obv', 'No accumulation footprint', 'OBV not rising — volume flow silent')
 
   if (f.fromHighPct != null && f.fromHighPct <= -15) add(10, 'location', 'Under-followed territory', `${f.fromHighPct}% below its 52-week high — future big winners sat deeper below highs than peers months before their moves`)
+
+  // Correction Quality grade (v2.1, Phase-5b): A-vs-C ratio 1.96 dev → 2.17 validation
+  if (f.correctionQuality === 'A') add(10, 'quality', 'Orderly correction — grade A', 'Smooth path, supply drying on weakness, shallow retracement. Grade-A corrections won ~2× more often than disorderly ones (validated out-of-sample, 2.17×)')
+  else if (f.correctionQuality === 'B') add(4, 'quality', 'Correction quality — grade B', 'Mixed correction character — neither clearly orderly nor disorderly')
+  else if (f.correctionQuality === 'C') miss('quality', 'Disorderly correction (grade C)', 'Steep/erratic path with volume on weakness — grade-C setups won 18% vs 40% for grade A out-of-sample. Caution flag, not a veto')
 
   return { score: Math.min(100, s), items, missing }
 }

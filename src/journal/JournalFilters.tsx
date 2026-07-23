@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { clsx } from 'clsx'
 import { StrategySelect } from './StrategySelect'
+import { useHasRegisteredBrokers } from '@/hooks/useHasRegisteredBrokers'
 import {
   DATE_PRESETS, activeCount, defaultFilters, presetRange, loadPresets, savePresets, rehydratePreset,
   type Filters, type SavedPreset,
@@ -64,6 +65,7 @@ export function JournalFilters({ filters, onChange, brokers, tagOptions }: {
 }) {
   const [open, setOpen] = useState(false)
   const [presets, setPresets] = useState<SavedPreset[]>(loadPresets)
+  const hasRegisteredBrokers = useHasRegisteredBrokers()
   const patch = (p: Partial<Filters>) => onChange({ ...filters, ...p })
   const setPreset = (id: Filters['datePreset']) => { const r = presetRange(id); patch(r ? { datePreset: id, ...r } : { datePreset: id }) }
   const count = activeCount(filters)
@@ -86,7 +88,7 @@ export function JournalFilters({ filters, onChange, brokers, tagOptions }: {
 
         <DatePopover filters={filters} patch={patch} setPreset={setPreset} />
 
-        <StrategySelect value={filters.strategy} onChange={(strategy) => patch({ strategy })} includeAll className={clsx(inp, 'max-w-[170px]')} />
+        <StrategySelect value={filters.strategy} onChange={(strategy) => patch({ strategy })} includeAll disabled={!hasRegisteredBrokers} className={clsx(inp, 'max-w-[170px]')} />
 
         <button onClick={() => setOpen((o) => !o)} className={clsx('flex items-center gap-1.5 h-9 px-3 rounded-lg text-sm font-medium border', open || count ? 'border-brand-300 text-brand-600 bg-brand-50 dark:bg-brand-900/20 dark:border-brand-700' : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 bg-white dark:bg-white/5')}>
           <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 6h16M7 12h10M10 18h4" /></svg>
@@ -115,6 +117,13 @@ export function JournalFilters({ filters, onChange, brokers, tagOptions }: {
           <div><span className={lbl}>Broker</span>
             <select value={filters.broker} onChange={(e) => patch({ broker: e.target.value })} className={clsx(inp, 'w-full')}>
               <option value="">All brokers</option>{brokers.map((b) => <option key={b}>{b}</option>)}
+            </select>
+          </div>
+          <div><span className={lbl}>Index</span>
+            <select value={filters.index} onChange={(e) => patch({ index: e.target.value })} className={clsx(inp, 'w-full')}>
+              <option value="">All indices</option>
+              {['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'SENSEX', 'BANKEX', 'MIDCPNIFTY'].map((i) => <option key={i} value={i}>{i}</option>)}
+              <option value="EQ">EQ / Other</option>
             </select>
           </div>
           <div><span className={lbl}>Instrument</span>

@@ -11,7 +11,7 @@ export interface Trade {
   avg_exit_price: number | null
   realized_pnl: number
   unrealized_pnl: number
-  status: 'OPEN' | 'CLOSED'
+  status: string   // 'CLOSED' = fully closed; anything else (LONG, SHORT, OPEN, …) = running
   first_placed_time: string
   last_updated_time: string | null
   order_count: number
@@ -84,6 +84,7 @@ export interface TradeFilters {
   symbolSearch: string
   dateFrom: string
   dateTo: string
+  indexName: string   // '' = all; 'NIFTY' / 'BANKNIFTY' / …; 'EQ' = non-index
 }
 
 // ── Computed analytics ────────────────────────────────────────────────────────

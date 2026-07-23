@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { clsx } from 'clsx'
 import type { TradeFilters } from '@/types/reports'
+import { useHasRegisteredBrokers } from '@/hooks/useHasRegisteredBrokers'
 
 interface StrategyOption {
   groupName: string
@@ -28,6 +29,8 @@ function Label({ children }: { children: React.ReactNode }) {
   )
 }
 
+const STANDARD_INDICES = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'SENSEX', 'BANKEX', 'MIDCPNIFTY']
+
 // Count active filters (excluding status=ALL which is default)
 function countActive(filters: TradeFilters): number {
   let c = 0
@@ -37,16 +40,18 @@ function countActive(filters: TradeFilters): number {
   if (filters.symbolSearch) c++
   if (filters.dateFrom)     c++
   if (filters.dateTo)       c++
+  if (filters.indexName)    c++
   return c
 }
 
 export function FilterBar({ filters, onChange, brokerOptions, strategyOptions }: Props) {
   const [expanded, setExpanded] = useState(true)
   const activeCount = countActive(filters)
+  const hasRegisteredBrokers = useHasRegisteredBrokers()
 
   const clearAll = () => onChange({
     brokerName: '', groupName: '', status: 'ALL',
-    symbolSearch: '', dateFrom: '', dateTo: '',
+    symbolSearch: '', dateFrom: '', dateTo: '', indexName: '',
   })
 
   return (
@@ -92,6 +97,7 @@ export function FilterBar({ filters, onChange, brokerOptions, strategyOptions }:
         <div className="flex flex-wrap gap-2 px-5 pb-3">
           {filters.brokerName && <Chip label={`Broker: ${filters.brokerName}`} onRemove={() => onChange({ brokerName: '' })} />}
           {filters.groupName  && <Chip label={`Strategy: ${filters.groupName}`} onRemove={() => onChange({ groupName: '' })} />}
+          {filters.indexName  && <Chip label={`Index: ${filters.indexName === 'EQ' ? 'EQ/Other' : filters.indexName}`} onRemove={() => onChange({ indexName: '' })} />}
           {filters.status !== 'ALL' && <Chip label={`Status: ${filters.status}`} onRemove={() => onChange({ status: 'ALL' })} />}
           {filters.symbolSearch && <Chip label={`Symbol: ${filters.symbolSearch}`} onRemove={() => onChange({ symbolSearch: '' })} />}
           {filters.dateFrom   && <Chip label={`From: ${filters.dateFrom}`} onRemove={() => onChange({ dateFrom: '' })} />}
@@ -102,7 +108,7 @@ export function FilterBar({ filters, onChange, brokerOptions, strategyOptions }:
       {/* Expanded filter fields */}
       {expanded && (
         <div className="px-5 pb-5 pt-1 border-t border-slate-100 dark:border-slate-800">
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mt-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3 mt-3">
 
             {/* Symbol */}
             <div className="col-span-2 sm:col-span-1">
@@ -132,12 +138,27 @@ export function FilterBar({ filters, onChange, brokerOptions, strategyOptions }:
             {/* Strategy */}
             <div>
               <Label>Strategy</Label>
-              <select className={inputBase} value={filters.groupName} onChange={(e) => onChange({ groupName: e.target.value })}>
+              <select
+                className={clsx(inputBase, !hasRegisteredBrokers && 'opacity-50 cursor-not-allowed')}
+                value={filters.groupName}
+                onChange={(e) => onChange({ groupName: e.target.value })}
+                disabled={!hasRegisteredBrokers}
+              >
                 <option value="">All strategies</option>
                 <option value="Manual">Manual</option>
                 {strategyOptions.map((s) => (
                   <option key={s.groupName} value={s.groupName}>{s.label}</option>
                 ))}
+              </select>
+            </div>
+
+            {/* Index */}
+            <div>
+              <Label>Index</Label>
+              <select className={inputBase} value={filters.indexName} onChange={(e) => onChange({ indexName: e.target.value })}>
+                <option value="">All indices</option>
+                {STANDARD_INDICES.map((i) => <option key={i} value={i}>{i}</option>)}
+                <option value="EQ">EQ / Other</option>
               </select>
             </div>
 

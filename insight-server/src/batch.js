@@ -26,11 +26,15 @@ const job = {
 export const jobStatus = () => ({ ...job, errors: job.errors.slice(-5), remaining: Math.max(0, job.total - job.completed - job.failed) })
 
 let niftyCache = { at: 0, data: null }
+let niftyInFlight = null // dedupe: 3 workers must not fire 3 parallel NIFTY fetches
 async function getNifty() {
   if (niftyCache.data && Date.now() - niftyCache.at < 30 * 60 * 1000) return niftyCache.data
-  const data = await fetchDaily(config.benchmarkSymbol, DATA_FROM)
-  niftyCache = { at: Date.now(), data }
-  return data
+  if (!niftyInFlight) {
+    niftyInFlight = fetchDaily(config.benchmarkSymbol, DATA_FROM)
+      .then((data) => { niftyCache = { at: Date.now(), data }; return data })
+      .finally(() => { niftyInFlight = null })
+  }
+  return niftyInFlight
 }
 
 /** Analyse one stock end-to-end and persist. Returns the analysis. */
@@ -90,6 +94,7 @@ export async function startBatch(symbols = null, label = 'batch') {
     if (/fetch failed|network|timeout|ECONN|ETIMEDOUT|EAI_AGAIN/i.test(e.message)) return 'Network error/timeout (retried once)'
     return `Other: ${e.message}`
   }
+  console.log(`batch "${job.runId}" started: ${rows.length} stocks`)
   const worker = async () => {
     while (queue.length && job.running) {
       const row = queue.shift()
@@ -97,7 +102,11 @@ export async function startBatch(symbols = null, label = 'batch') {
       try {
         await analyseSymbol(row)
         job.completed++
+        if (job.completed <= 3 || job.completed % 50 === 0) {
+          console.log(`batch progress: ${job.completed} ok, ${job.failed} failed, ${queue.length} queued (last: ${row.symbol_code})`)
+        }
       } catch (e1) {
+        if (job.failed < 3) console.error(`batch error ${row.symbol_code}: ${e1.message}`)
         // one retry for transient (network/server) errors
         if (!isPermanent(e1)) {
           await new Promise((r) => setTimeout(r, 1200))

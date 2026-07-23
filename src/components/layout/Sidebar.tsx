@@ -61,7 +61,7 @@ const NAV: NavEntry[] = [
     icon: <I><polyline points="22 12 18 12 15 21 9 3 6 12 2 12" /></I>,
   },
   {
-    kind: 'link', to: '/journal', label: 'Journal', comingSoon: true,
+    kind: 'link', to: '/journal', label: 'Journal',
     icon: <I><path d="M4 4a2 2 0 012-2h9l5 5v13a2 2 0 01-2 2H6a2 2 0 01-2-2z" /><path d="M14 2v6h6M8 12h8M8 16h5" /></I>,
   },
   {
@@ -140,7 +140,7 @@ function Leaf({ item, collapsed, locked, sub }: {
   }
 
   return (
-    <NavLink to={item.to}>
+    <NavLink to={item.to} end>
       {({ isActive }) => (
         <div className={clsx(
           'group relative flex items-center gap-3 rounded-xl transition-all duration-150 cursor-pointer',

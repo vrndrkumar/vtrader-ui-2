@@ -7,7 +7,7 @@ import type { DashboardData, Facets, FailureReport, JobStatus, UniverseFilters, 
 
 const DEFAULT_FILTERS: UniverseFilters = {
   q: '', sector: '', industry: '', badge: '', riskLevel: '', minDiscovery: '',
-  analyzed: false, sort: 'discovery',
+  analyzed: false, fundamentals: '', sort: 'discovery',
 }
 
 interface UniverseState {

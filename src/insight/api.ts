@@ -34,6 +34,7 @@ export async function fetchUniverse(
   if (filters.riskLevel) params.riskLevel = filters.riskLevel
   if (filters.minDiscovery) params.minDiscovery = filters.minDiscovery
   if (filters.analyzed) params.analyzed = '1'
+  if (filters.fundamentals) params.fundamentals = filters.fundamentals
   if (filters.sort) params.sort = filters.sort
   const { data } = await client.get<UniverseResponse>('/universe', { params })
   return data
@@ -65,6 +66,14 @@ export async function startAnalyzeSelected(symbols: string[]): Promise<JobStatus
 export async function startAnalyzeAll(): Promise<JobStatus> {
   const { data } = await client.post<{ status: JobStatus }>('/analyze/all')
   return data.status
+}
+
+export async function fetchFundamentals(symbol: string, refresh = false): Promise<import('./types').FundamentalsResponse> {
+  const { data } = await client.get<import('./types').FundamentalsResponse>(
+    `/stock/${encodeURIComponent(symbol)}/fundamentals`,
+    { params: refresh ? { refresh: 1 } : {} },
+  )
+  return data
 }
 
 export async function startRetryFailed(): Promise<JobStatus> {

@@ -27,12 +27,6 @@ export interface BrokerPreference {
 const LS_ACCOUNTS = 'vtrader_brokers'
 const LS_UI = 'vtrader_broker_ui'
 
-// Demo seed from the login sample — used until a real login hydrates the store.
-const SEED: BrokerAccount[] = [
-  { id: 4, brokerName: 'FINVASIA', displayName: 'FINVASIA[FA30962]', isDefault: true, quantity: { nifty: 225, sensex: 60, stocks: 10, banknifty: 70 } },
-  { id: 11, brokerName: 'ANGELONE', displayName: 'ANGELONE[S2110038]', isDefault: false, quantity: { nifty: 225, sensex: 60, stocks: 10, banknifty: 70 } },
-]
-
 function fromPreferences(prefs: BrokerPreference[]): BrokerAccount[] {
   return prefs.map((p) => ({
     id: p.id, brokerName: p.brokerName, displayName: p.displayName,
@@ -43,9 +37,9 @@ function fromPreferences(prefs: BrokerPreference[]): BrokerAccount[] {
 function loadAccounts(): BrokerAccount[] {
   try {
     const raw = localStorage.getItem(LS_ACCOUNTS)
-    if (raw) { const a = JSON.parse(raw); if (Array.isArray(a) && a.length) return a }
+    if (raw) { const a = JSON.parse(raw); if (Array.isArray(a)) return a }
   } catch { /* ignore */ }
-  return SEED
+  return []
 }
 
 interface UiPrefs { selectedIds: number[]; quickTrade: boolean; confirmOrders: boolean }
@@ -109,7 +103,7 @@ export const useBrokerStore = create<BrokerState>((set, get) => ({
   setConfirmOrders: (confirmOrders) => { saveUi({ selectedIds: get().selectedIds, quickTrade: get().quickTrade, confirmOrders }); set({ confirmOrders }) },
   reset: () => {
     try { localStorage.removeItem(LS_ACCOUNTS); localStorage.removeItem(LS_UI) } catch { /* ignore */ }
-    set({ accounts: SEED, selectedIds: reconcile(SEED, []), quickTrade: false, confirmOrders: true })
+    set({ accounts: [], selectedIds: [], quickTrade: false, confirmOrders: true })
   },
 }))
 
