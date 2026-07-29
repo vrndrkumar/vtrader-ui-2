@@ -1,8 +1,9 @@
 // ── KLineCharts implementation of ChartEngine ────────────────────────────────
 
 import { init, dispose, type KLineData } from 'klinecharts'
-import type { ChartEngine } from './ChartEngine'
+import type { ChartEngine, DrawingDef } from './ChartEngine'
 import type { Candle } from '../types/market'
+import { INDICATORS } from './indicatorMeta'
 import './customOverlays' // register Shapes + Text overlays before any chart init
 import './orderOverlays'  // register the draggable order-line overlay
 import type { OrderLine } from './orderOverlays'
@@ -52,6 +53,9 @@ export class KLineChartEngine implements ChartEngine {
   private readonly el: HTMLElement
   private readonly indicators = new Map<string, string>() // name -> paneId
   private readonly orderLines = new Map<string, string>() // lineId -> overlayId
+  private readonly drawingIds = new Set<string>()          // user-drawing overlay ids
+  private readonly drawingById = new Map<string, DrawingDef>() // id -> serialized def
+  private onDrawings?: (list: DrawingDef[]) => void
 
   constructor(el: HTMLElement, dark: boolean) {
     this.el = el
@@ -72,7 +76,7 @@ export class KLineChartEngine implements ChartEngine {
     this.chart?.setStyles(styles(dark) as never)
   }
 
-  toggleIndicator(name: string): void {
+  toggleIndicator(name: string, calcParams?: number[]): void {
     if (!this.chart) return
     const existing = this.indicators.get(name)
     if (existing) {
@@ -82,8 +86,18 @@ export class KLineChartEngine implements ChartEngine {
     }
     const onMain = MAIN_PANE.has(name)
     const paneId = onMain ? 'candle_pane' : `${name.toLowerCase()}_pane`
+    // Create with the exact original call (known good), then apply params via a
+    // guarded override so a bad param can never break the chart's rendering.
     this.chart.createIndicator(name, onMain, { id: paneId })
     this.indicators.set(name, paneId)
+    const params = calcParams ?? INDICATORS[name]?.defaults
+    if (params && params.length) this.configureIndicator(name, params)
+  }
+
+  configureIndicator(name: string, calcParams: number[]): void {
+    const paneId = this.indicators.get(name)
+    if (!this.chart || !paneId) return
+    try { this.chart.overrideIndicator({ name, calcParams } as never, paneId) } catch { /* keep chart alive */ }
   }
 
   hasIndicator(name: string): boolean {
@@ -94,12 +108,87 @@ export class KLineChartEngine implements ChartEngine {
     return [...this.indicators.keys()]
   }
 
+  // ── Drawings (persisted as time+price, never pixels) ───────────────────────
+
+  setDrawingChangeHandler(cb: (list: DrawingDef[]) => void): void {
+    this.onDrawings = cb
+  }
+
+  private serialize(overlay: { name?: string; points?: { timestamp?: number; dataIndex?: number; value?: number }[]; styles?: unknown }): DrawingDef {
+    // Anchor by TIME. KLineCharts points at draw-end may only carry dataIndex, so
+    // resolve the real bar timestamp. For a point drawn beyond the last bar (the
+    // empty "future" area), the dataIndex is out of range — extrapolate the
+    // timestamp from the bar interval so it still anchors by time on reload.
+    const data = (this.chart as unknown as { getDataList?: () => { timestamp?: number }[] } | null)?.getDataList?.() ?? []
+    const lastIdx = data.length - 1
+    const interval = data.length >= 2 ? Number(data[lastIdx]?.timestamp) - Number(data[lastIdx - 1]?.timestamp) : 60_000
+    const tsFor = (di?: number): number | undefined => {
+      if (di == null || !data.length) return undefined
+      if (di >= 0 && di <= lastIdx) return data[di]?.timestamp
+      const base = Number(data[di < 0 ? 0 : lastIdx]?.timestamp)
+      return Number.isFinite(base) ? base + (di - (di < 0 ? 0 : lastIdx)) * interval : undefined
+    }
+    const def: DrawingDef = {
+      type: String(overlay?.name ?? ''),
+      points: (overlay?.points ?? []).map((p) => ({ timestamp: p?.timestamp ?? tsFor(p?.dataIndex), value: p?.value })),
+      styles: overlay?.styles,
+    }
+    try { console.info('[VT-DRAW] save', def.type, JSON.stringify(def.points)) } catch { /* noop */ }
+    return def
+  }
+
+  private emitDrawings(): void {
+    this.onDrawings?.([...this.drawingById.values()])
+  }
+
+  // Callbacks attached to every user drawing so create / move / remove keep the
+  // serialized store in sync. Order lines ('orderLine') are excluded.
+  private drawingCallbacks() {
+    const upd = (data: { overlay?: { id?: string; name?: string; points?: { timestamp?: number; dataIndex?: number; value?: number }[]; styles?: unknown } }) => {
+      const o = data?.overlay
+      if (!o || o.name === 'orderLine' || !o.id) return false
+      this.drawingIds.add(o.id)
+      this.drawingById.set(o.id, this.serialize(o))
+      this.emitDrawings()
+      return false
+    }
+    return {
+      onDrawEnd: upd,
+      onPressedMoveEnd: upd,
+      onRemoved: (data: { overlay?: { id?: string } }) => {
+        const id = data?.overlay?.id
+        if (id) { this.drawingIds.delete(id); this.drawingById.delete(id) }
+        this.emitDrawings()
+        return false
+      },
+    }
+  }
+
   startDrawing(name: string): void {
-    this.chart?.createOverlay(name)
+    this.chart?.createOverlay({ name, ...this.drawingCallbacks() } as never)
   }
 
   clearDrawings(): void {
-    this.chart?.removeOverlay()
+    for (const id of this.drawingIds) { try { this.chart?.removeOverlay(id) } catch { /* noop */ } }
+    this.drawingIds.clear()
+    this.drawingById.clear()
+    this.emitDrawings()
+  }
+
+  restoreDrawings(list: DrawingDef[]): void {
+    if (!this.chart) return
+    // Remove only our drawing overlays (leave order lines alone), then rebuild
+    // from the time+price defs so anchors re-map to the CURRENT bars.
+    for (const id of this.drawingIds) { try { this.chart.removeOverlay(id) } catch { /* noop */ } }
+    this.drawingIds.clear()
+    this.drawingById.clear()
+    try { console.info('[VT-DRAW] restore', list.length, JSON.stringify(list.map((d) => ({ t: d.type, p: d.points })))) } catch { /* noop */ }
+    for (const d of list) {
+      if (!d?.type) continue
+      const created = this.chart.createOverlay({ name: d.type, points: d.points, styles: d.styles, ...this.drawingCallbacks() } as never)
+      const id = Array.isArray(created) ? created[0] : created
+      if (typeof id === 'string') { this.drawingIds.add(id); this.drawingById.set(id, d) }
+    }
   }
 
   syncOrderLines(lines: OrderLine[]): void {
@@ -161,5 +250,8 @@ export class KLineChartEngine implements ChartEngine {
     dispose(this.el)
     this.chart = null
     this.indicators.clear()
+    this.drawingIds.clear()
+    this.drawingById.clear()
+    this.onDrawings = undefined
   }
 }

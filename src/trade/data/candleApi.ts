@@ -16,7 +16,7 @@ import { axiosCandle } from '@/api/axios'
 import type { Candle, Timeframe, TradeSymbol } from '../types/market'
 
 const FREQUENCY: Record<Timeframe, string> = {
-  '1': '1', '3': '3', '5': '5', '15': '15', '30': '30', '60': '60', D: 'D',
+  '1': '1', '3': '3', '5': '5', '15': '15', '30': '30', '60': '60', D: 'D', W: 'W', M: 'M',
 }
 
 export type CandleKind = 'INDEX' | 'OPTION'
@@ -28,7 +28,7 @@ function defaultRange(tf: Timeframe, kind: CandleKind): { from: string; to: stri
   // Options only have data since the contract listed → cap at ~2 months.
   const days = kind === 'OPTION'
     ? 60
-    : tf === 'D' ? 365 : tf === '60' || tf === '30' ? 60 : 20
+    : tf === 'M' ? 3650 : tf === 'W' ? 1825 : tf === 'D' ? 365 : tf === '60' || tf === '30' ? 60 : 20
   return { from: fmt(new Date(to.getTime() - days * 864e5)), to: fmt(to) }
 }
 

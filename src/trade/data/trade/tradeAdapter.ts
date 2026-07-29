@@ -3,8 +3,11 @@
 // drags on SL/Target modify it. Real REST/WS endpoints map in here later with
 // no change to the store or chart.
 
+import toast from 'react-hot-toast'
 import { useTradeStore, type Side } from '../../store/tradeStore'
 import { useMarketStore } from '../../store/marketStore'
+import { useBrokerStore } from '@/store/brokerStore'
+import { saveOcoMonitor } from '@/api/trade'
 import { setOrderLineDragEnd } from '../../chart/orderOverlays'
 
 export function placeMarket(
@@ -27,6 +30,32 @@ export function placeMarket(
   const sl = existing?.stopLoss ?? (opts?.slPct ? +(avg * (1 - dir * opts.slPct)).toFixed(2) : undefined)
   const tgt = existing?.target ?? (opts?.tgtPct ? +(avg * (1 + dir * opts.tgtPct)).toFixed(2) : undefined)
   st.upsertPosition({ id, brokerId, symbolKey, display, netQty, avgPrice: avg, stopLoss: sl, target: tgt })
+}
+
+/**
+ * Persist a position's SL/Target as a server-side OCO monitor.
+ * Sends the FULL current bracket (SL and/or Target — either optional); the
+ * backend upserts by (user, broker, symbol). Call on set / drag-end / qty-edit,
+ * not on every drag frame. No-op when neither leg is set.
+ */
+export function syncOcoMonitor(positionId: string) {
+  const p = useTradeStore.getState().positions[positionId]
+  if (!p || (p.stopLoss == null && p.target == null)) return
+  const long = p.netQty >= 0
+  const posQty = Math.abs(p.netQty)
+  const brokerName = useBrokerStore.getState().accounts.find((a) => a.id === p.brokerId)?.brokerName
+  if (!brokerName) return
+  void saveOcoMonitor({
+    brokerName,
+    indexName: p.symbolKey.split('_')[0],
+    symbolName: p.symbolKey,
+    product: 'MARGIN',
+    direction: long ? 'LONG' : 'SHORT',
+    side: long ? 'SELL' : 'BUY',
+    quantity: posQty,
+    stopLoss: p.stopLoss != null ? { limitPrice: +p.stopLoss.toFixed(2), quantity: p.stopQty ?? posQty } : undefined,
+    target: p.target != null ? { limitPrice: +p.target.toFixed(2), quantity: p.targetQty ?? posQty } : undefined,
+  }).then(() => toast.success('OCO monitor saved')).catch(() => toast.error('Failed to save OCO monitor'))
 }
 
 export function modifyStop(id: string, price: number) { useTradeStore.getState().updatePosition(id, { stopLoss: +price.toFixed(2) }) }

@@ -10,4 +10,5 @@ export const engineRegistry = {
   set: (panelId: string, engine: ChartEngine) => registry.set(panelId, engine),
   get: (panelId: string) => registry.get(panelId),
   delete: (panelId: string) => registry.delete(panelId),
+  all: (): ChartEngine[] => [...registry.values()],
 }

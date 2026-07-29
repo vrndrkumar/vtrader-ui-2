@@ -324,171 +324,454 @@ function KpiCard({ label, value, sub, positive, accent, sparkData }: {
   )
 }
 
-// ─── algo strategy boxes ──────────────────────────────────────────────────────
+// ─── strategy card data ──────────────────────────────────────────────────────
 
-interface StrategyBoxData {
-  strat: UserStrategy
+interface StrategyCardData {
+  id: string
   code: string
+  isManual: boolean
   openTrades: Trade[]
   closedTrades: Trade[]
   totalUnrealized: number
   totalRealized: number
 }
 
-function TradeRow({ symbol, qty, entry, pnl, live }: {
-  symbol: string; qty: number; entry: number; pnl: number; live: boolean
+// ─── compact strategy card ────────────────────────────────────────────────────
+
+function StrategyCard({ data, ltpMap, onClick }: {
+  data: StrategyCardData; ltpMap: LtpMap; onClick: () => void
 }) {
-  const pos = pnl >= 0
-  return (
-    <div className={clsx(
-      'flex items-center gap-3 px-3 py-2.5 rounded-xl',
-      live
-        ? 'bg-indigo-50/60 dark:bg-indigo-500/[0.07] border border-indigo-100 dark:border-indigo-500/20'
-        : 'bg-slate-50 dark:bg-white/[0.03] border border-slate-100 dark:border-white/[0.04]',
-    )}>
-      {live && <span className="shrink-0 h-2 w-2 rounded-full bg-indigo-400 animate-pulse shadow-[0_0_6px_rgba(99,102,241,0.6)]" />}
-      <div className="flex-1 min-w-0">
-        <p className="text-[12px] font-bold text-slate-900 dark:text-white/90 truncate leading-tight">{symbol}</p>
-        <p className="text-[10px] text-slate-400 font-mono mt-0.5">
-          {qty} qty · ₹{entry.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
-        </p>
-      </div>
-      <div className="shrink-0 text-right">
-        <p className={clsx('text-[13px] font-bold tabular-nums leading-tight', pos ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500 dark:text-red-400')}>
-          {pos ? '+' : '−'}₹{INR(pnl)}
-        </p>
-        <p className={clsx('text-[9px] font-semibold mt-0.5', live ? 'text-indigo-400' : pos ? 'text-emerald-400' : 'text-red-400')}>
-          {live ? 'unrealised' : 'realised'}
-        </p>
-      </div>
-    </div>
-  )
-}
-
-function StrategyBox({ code, openTrades, closedTrades, totalUnrealized, totalRealized, isManual, ltpMap }: Omit<StrategyBoxData, 'strat'> & { isManual?: boolean; ltpMap: LtpMap }) {
+  const { code, isManual, openTrades, closedTrades, totalUnrealized, totalRealized } = data
   const grandTotal = totalRealized + totalUnrealized
-  const pos = grandTotal >= 0
-  const hasAny = openTrades.length > 0 || closedTrades.length > 0
-  const wins = closedTrades.filter(t => t.realized_pnl > 0).length
-  const winPct = closedTrades.length ? Math.round((wins / closedTrades.length) * 100) : null
+  const pos        = grandTotal >= 0
+  const wins       = closedTrades.filter(t => t.realized_pnl > 0).length
+  const winPct     = closedTrades.length ? Math.round((wins / closedTrades.length) * 100) : null
+  const isActive   = openTrades.length > 0
 
-  const headerGradient = isManual
-    ? 'bg-gradient-to-br from-violet-600 to-indigo-700'
+  const sparkData = useMemo(
+    () => closedTrades.slice(-14).map(t => t.realized_pnl),
+    [closedTrades],
+  )
+
+  const profitable = openTrades.filter(t => computeUnrealized(t, ltpMap) >= 0).length
+  const losing     = openTrades.length - profitable
+  const aiMsg: string | null =
+    openTrades.length === 0
+      ? (closedTrades.length > 0 ? `${wins} win${wins !== 1 ? 's' : ''} out of ${closedTrades.length} closed` : null)
+      : profitable > 0 && losing > 0
+        ? `${profitable} in profit · ${losing} need${losing === 1 ? 's' : ''} attention`
+        : profitable === openTrades.length
+          ? `All ${profitable} position${profitable !== 1 ? 's' : ''} profitable`
+          : `${losing} position${losing !== 1 ? 's' : ''} need attention`
+
+  const accentGrad = isManual
+    ? 'from-violet-500 to-indigo-600'
     : pos
-      ? 'bg-gradient-to-br from-emerald-500 to-teal-600'
-      : 'bg-gradient-to-br from-red-500 to-rose-600'
+      ? 'from-emerald-400 to-teal-500'
+      : 'from-rose-400 to-red-500'
+
+  const stats = [
+    {
+      label: 'Realized',
+      value: `${totalRealized >= 0 ? '+' : '−'}₹${INR(Math.abs(totalRealized))}`,
+      cls: totalRealized >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500 dark:text-red-400',
+    },
+    {
+      label: 'Unrealized',
+      value: `${totalUnrealized >= 0 ? '+' : '−'}₹${INR(Math.abs(totalUnrealized))}`,
+      cls: totalUnrealized >= 0 ? 'text-indigo-600 dark:text-indigo-400' : 'text-red-500 dark:text-red-400',
+    },
+    { label: 'Win Rate', value: winPct != null ? `${winPct}%` : '—', cls: 'text-amber-500 dark:text-amber-400' },
+  ]
 
   return (
-    <div className="shrink-0 w-[400px] flex flex-col bg-white dark:bg-white/[0.03] rounded-2xl border border-slate-200/70 dark:border-white/[0.07] shadow-[0_2px_12px_rgba(0,0,0,0.06)] dark:shadow-none overflow-hidden">
-      {/* Hero header */}
-      <div className={clsx('relative px-5 py-4 overflow-hidden', headerGradient)}>
-        <div className="absolute -right-6 -top-6 h-28 w-28 rounded-full bg-white/[0.08]" />
-        <div className="absolute -right-2 -top-2 h-16 w-16 rounded-full bg-white/[0.06]" />
-        <div className="relative z-10">
-          <div className="flex items-center gap-2 mb-3">
-            <span className="h-2 w-2 rounded-full bg-white animate-pulse shadow-[0_0_8px_rgba(255,255,255,0.8)]" />
-            <span className="text-[10px] font-black uppercase tracking-[0.2em] text-white/70">
-              {isManual ? 'Manual Trades' : 'Algo Strategy'}
-            </span>
-          </div>
-          <div className="flex items-end justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-[18px] font-black text-white leading-tight truncate">{code}</p>
-              <p className="text-[11px] text-white/60 mt-1">
-                Today · {openTrades.length} running · {closedTrades.length} closed
-              </p>
-            </div>
-            <div className="shrink-0 text-right">
-              <p className="text-[22px] font-black text-white tabular-nums leading-none">
-                {pos ? '+' : '−'}₹{INR(grandTotal)}
-              </p>
-              <p className="text-[10px] text-white/50 mt-0.5 font-medium">total P&amp;L</p>
-            </div>
-          </div>
-        </div>
-      </div>
+    <button
+      onClick={onClick}
+      className="group text-left w-full bg-white dark:bg-white/[0.03] rounded-2xl border border-slate-200/70 dark:border-white/[0.07] shadow-[0_2px_12px_rgba(0,0,0,0.06)] dark:shadow-none overflow-hidden hover:-translate-y-0.5 hover:shadow-[0_8px_28px_rgba(0,0,0,0.12)] dark:hover:shadow-[0_8px_28px_rgba(0,0,0,0.35)] transition-all duration-200 flex flex-col"
+    >
+      {/* Gradient top accent */}
+      <div className={clsx('h-[3px] w-full bg-gradient-to-r', accentGrad)} />
 
-      {/* Stats strip */}
-      <div className="grid grid-cols-3 divide-x divide-slate-100 dark:divide-white/[0.06] border-b border-slate-100 dark:border-white/[0.06]">
-        <div className="flex flex-col items-center py-2.5 gap-0.5">
-          <p className={clsx('text-[14px] font-black tabular-nums', totalRealized >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500 dark:text-red-400')}>
-            {totalRealized >= 0 ? '+' : '−'}₹{INR(totalRealized)}
-          </p>
-          <p className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Realised</p>
-        </div>
-        <div className="flex flex-col items-center py-2.5 gap-0.5">
-          <p className={clsx('text-[14px] font-black tabular-nums', totalUnrealized >= 0 ? 'text-indigo-600 dark:text-indigo-400' : 'text-red-500 dark:text-red-400')}>
-            {totalUnrealized >= 0 ? '+' : '−'}₹{INR(totalUnrealized)}
-          </p>
-          <p className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Unrealised</p>
-        </div>
-        <div className="flex flex-col items-center py-2.5 gap-0.5">
-          <p className="text-[14px] font-black tabular-nums text-amber-500 dark:text-amber-400">
-            {winPct != null ? `${winPct}%` : '—'}
-          </p>
-          <p className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Win rate</p>
-        </div>
-      </div>
-
-      {/* Trade lists */}
-      <div className="flex-1 px-4 py-3 space-y-4">
-        {openTrades.length > 0 && (
-          <div>
-            <div className="flex items-center gap-2 mb-2">
-              <span className="h-1.5 w-1.5 rounded-full bg-indigo-400 animate-pulse" />
-              <p className="text-[10px] font-black uppercase tracking-[0.16em] text-indigo-500 dark:text-indigo-400">Running trades</p>
-              <span className="ml-auto text-[10px] font-bold text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 px-1.5 py-0.5 rounded-full">{openTrades.length}</span>
+      <div className="flex-1 p-5 flex flex-col gap-3.5">
+        {/* Header */}
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 mb-1.5">
+              <span className="text-[9px] font-black uppercase tracking-[0.18em] text-slate-400 dark:text-white/25">
+                {isManual ? 'Manual' : 'Algo'}
+              </span>
+              {isActive && (
+                <span className="flex items-center gap-1 text-[9px] font-black text-emerald-500 dark:text-emerald-400">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  LIVE
+                </span>
+              )}
             </div>
-            <div className="space-y-1.5">
-              {openTrades.map(t => (
-                <TradeRow key={t.trade_id} symbol={t.symbol_name} qty={t.total_quantity} entry={t.avg_entry_price} pnl={computeUnrealized(t, ltpMap)} live />
-              ))}
-            </div>
+            <p className="text-[15px] font-black text-slate-900 dark:text-white/90 truncate leading-tight">{code}</p>
           </div>
-        )}
-
-        {closedTrades.length > 0 && (
-          <div>
-            <div className="flex items-center gap-2 mb-2">
-              <span className="h-1.5 w-1.5 rounded-full bg-slate-300 dark:bg-slate-600" />
-              <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400 dark:text-white/30">Closed trades</p>
-              <span className="ml-auto text-[10px] font-bold text-slate-400 bg-slate-100 dark:bg-white/[0.06] px-1.5 py-0.5 rounded-full">{closedTrades.length}</span>
-            </div>
-            <div className="space-y-1.5">
-              {closedTrades.map(t => (
-                <TradeRow key={t.trade_id} symbol={t.symbol_name} qty={t.total_quantity} entry={t.avg_entry_price} pnl={t.realized_pnl} live={false} />
-              ))}
-            </div>
-          </div>
-        )}
-
-        {!hasAny && (
-          <div className="flex flex-col items-center justify-center py-8 gap-2 text-center">
-            <div className="h-10 w-10 rounded-full bg-slate-100 dark:bg-white/[0.05] grid place-items-center">
-              <svg viewBox="0 0 24 24" className="h-5 w-5 text-slate-300 dark:text-white/15" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-            </div>
-            <p className="text-[13px] font-medium text-slate-400 dark:text-white/25">No trades today</p>
-            <p className="text-[11px] text-slate-300 dark:text-white/15">
-              {isManual ? 'No manual trades placed yet' : "Strategy is live but hasn't traded yet"}
+          <div className="shrink-0 text-right">
+            <p className={clsx('text-[22px] font-black tabular-nums leading-none', pos ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500 dark:text-red-400')}>
+              {pos ? '+' : '−'}₹{INR(grandTotal)}
             </p>
+            <p className="text-[9px] text-slate-400 dark:text-white/25 mt-0.5 font-medium">total P&amp;L</p>
+          </div>
+        </div>
+
+        {/* Stats grid */}
+        <div className="grid grid-cols-3 gap-2">
+          {stats.map(s => (
+            <div key={s.label} className="bg-slate-50/80 dark:bg-white/[0.025] rounded-xl px-3 py-2 text-center border border-slate-100 dark:border-white/[0.04]">
+              <p className={clsx('text-[12px] font-black tabular-nums', s.cls)}>{s.value}</p>
+              <p className="text-[8px] font-bold uppercase tracking-wider text-slate-400 dark:text-white/25 mt-0.5">{s.label}</p>
+            </div>
+          ))}
+        </div>
+
+        {/* Counts + sparkline */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-1.5">
+              <span className={clsx('h-2 w-2 rounded-full', isActive ? 'bg-indigo-400 animate-pulse' : 'bg-slate-300 dark:bg-white/20')} />
+              <span className="text-[11px] font-bold text-slate-700 dark:text-white/60">{openTrades.length}</span>
+              <span className="text-[10px] text-slate-400 dark:text-white/25">running</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-full bg-slate-300 dark:bg-white/20" />
+              <span className="text-[11px] font-bold text-slate-500 dark:text-white/40">{closedTrades.length}</span>
+              <span className="text-[10px] text-slate-400 dark:text-white/25">closed</span>
+            </div>
+          </div>
+          {sparkData.length >= 2 && <Spark data={sparkData} positive={pos} />}
+        </div>
+
+        {/* AI summary */}
+        {aiMsg && (
+          <div className="flex items-center gap-2 text-[10px] text-slate-500 dark:text-white/30 bg-slate-50 dark:bg-white/[0.025] rounded-xl px-3 py-1.5 border border-slate-100 dark:border-white/[0.04]">
+            <span className="text-brand-500 shrink-0">✦</span>
+            <span className="truncate">{aiMsg}</span>
           </div>
         )}
+      </div>
+
+      {/* Footer */}
+      <div className="px-5 py-3 border-t border-slate-100 dark:border-white/[0.05] flex items-center justify-between">
+        <span className="text-[10px] text-slate-400 dark:text-white/25">Click to view all trades</span>
+        <span className="flex items-center gap-1 text-[10px] font-bold text-brand-600 dark:text-brand-400 group-hover:text-brand-700 transition-colors">
+          View details
+          <svg viewBox="0 0 24 24" className="h-3 w-3 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <path d="M5 12h14M12 5l7 7-7 7" />
+          </svg>
+        </span>
+      </div>
+    </button>
+  )
+}
+
+// ─── strategy table (table-view alternative) ──────────────────────────────────
+
+function StrategyTable({ cards, onSelect }: {
+  cards: StrategyCardData[]; onSelect: (d: StrategyCardData) => void
+}) {
+  return (
+    <div className="bg-white dark:bg-white/[0.03] rounded-2xl border border-slate-200/70 dark:border-white/[0.07] shadow-sm overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="w-full">
+          <thead>
+            <tr className="border-b border-slate-100 dark:border-white/[0.06]">
+              {['Strategy', 'Status', 'Running', 'Closed', 'Realized', 'Unrealized', 'Win Rate', 'Total P&L'].map(h => (
+                <th key={h} className="px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.14em] text-slate-400 dark:text-white/25 whitespace-nowrap">
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-50 dark:divide-white/[0.04]">
+            {cards.map(card => {
+              const total  = card.totalRealized + card.totalUnrealized
+              const pos    = total >= 0
+              const wins   = card.closedTrades.filter(t => t.realized_pnl > 0).length
+              const winPct = card.closedTrades.length ? Math.round((wins / card.closedTrades.length) * 100) : null
+              return (
+                <tr key={card.id} onClick={() => onSelect(card)} className="cursor-pointer hover:bg-slate-50 dark:hover:bg-white/[0.02] transition-colors group">
+                  <td className="px-4 py-3.5">
+                    <div className="flex items-center gap-2">
+                      <span className={clsx('h-2 w-2 rounded-full shrink-0', card.openTrades.length > 0 ? 'bg-indigo-400 animate-pulse' : 'bg-slate-300 dark:bg-white/20')} />
+                      <div>
+                        <p className="text-[12px] font-bold text-slate-800 dark:text-white/80 group-hover:text-brand-600 dark:group-hover:text-brand-400 transition-colors">{card.code}</p>
+                        <p className="text-[9px] text-slate-400 dark:text-white/25">{card.isManual ? 'Manual' : 'Algo'}</p>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3.5">
+                    <span className={clsx('text-[9px] font-black px-2 py-0.5 rounded-full', card.openTrades.length > 0 ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-slate-100 dark:bg-white/[0.05] text-slate-400 dark:text-white/25')}>
+                      {card.openTrades.length > 0 ? 'LIVE' : 'IDLE'}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3.5 text-[12px] font-bold text-slate-700 dark:text-white/60">{card.openTrades.length}</td>
+                  <td className="px-4 py-3.5 text-[12px] text-slate-500 dark:text-white/40">{card.closedTrades.length}</td>
+                  <td className="px-4 py-3.5">
+                    <span className={clsx('text-[12px] font-bold tabular-nums', card.totalRealized >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500 dark:text-red-400')}>
+                      {card.totalRealized >= 0 ? '+' : '−'}₹{INR(Math.abs(card.totalRealized))}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3.5">
+                    <span className={clsx('text-[12px] font-bold tabular-nums', card.totalUnrealized >= 0 ? 'text-indigo-600 dark:text-indigo-400' : 'text-red-500 dark:text-red-400')}>
+                      {card.totalUnrealized >= 0 ? '+' : '−'}₹{INR(Math.abs(card.totalUnrealized))}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3.5">
+                    <span className="text-[12px] font-bold text-amber-500 dark:text-amber-400">{winPct != null ? `${winPct}%` : '—'}</span>
+                  </td>
+                  <td className="px-4 py-3.5">
+                    <span className={clsx('text-[13px] font-black tabular-nums', pos ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500 dark:text-red-400')}>
+                      {pos ? '+' : '−'}₹{INR(Math.abs(total))}
+                    </span>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   )
 }
+
+// ─── strategy detail drawer ───────────────────────────────────────────────────
+
+function StrategyDrawer({ data, ltpMap, onClose }: {
+  data: StrategyCardData | null; ltpMap: LtpMap; onClose: () => void
+}) {
+  const navigate          = useNavigate()
+  const isOpen            = data !== null
+  const [showAll, setShowAll] = useState(false)
+
+  useEffect(() => {
+    document.body.style.overflow = isOpen ? 'hidden' : ''
+    return () => { document.body.style.overflow = '' }
+  }, [isOpen])
+
+  // Reset when switching strategy
+  useEffect(() => { setShowAll(false) }, [data?.id])
+
+  const grandTotal = (data?.totalRealized ?? 0) + (data?.totalUnrealized ?? 0)
+  const pos        = grandTotal >= 0
+  const wins       = data?.closedTrades.filter(t => t.realized_pnl > 0).length ?? 0
+  const winPct     = data?.closedTrades.length ? Math.round((wins / data.closedTrades.length) * 100) : null
+  const SHOW_N     = 5
+  const moreCount  = data ? Math.max(0, data.closedTrades.length - SHOW_N) : 0
+  const closedList = data
+    ? (showAll ? [...data.closedTrades].reverse() : data.closedTrades.slice(-SHOW_N).reverse())
+    : []
+
+  const headerGrad = data?.isManual
+    ? 'from-violet-600 to-indigo-700'
+    : pos ? 'from-emerald-500 to-teal-600' : 'from-red-500 to-rose-600'
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div
+        aria-hidden
+        className={clsx(
+          'fixed inset-0 z-40 bg-black/25 dark:bg-black/50 backdrop-blur-[2px] transition-opacity duration-300',
+          isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none',
+        )}
+        onClick={onClose}
+      />
+
+      {/* Panel */}
+      <div
+        role="dialog"
+        aria-modal="true"
+        className={clsx(
+          'fixed right-0 top-0 bottom-0 z-50 w-[480px] max-w-[100vw]',
+          'bg-white dark:bg-[#0c1018] border-l border-slate-200 dark:border-white/[0.07] shadow-2xl',
+          'flex flex-col transition-transform duration-300 ease-out',
+          isOpen ? 'translate-x-0' : 'translate-x-full',
+        )}
+      >
+        {data && (
+          <>
+            {/* Drawer header */}
+            <div className={clsx('shrink-0 relative px-5 py-4 overflow-hidden bg-gradient-to-br', headerGrad)}>
+              <div className="absolute -right-8 -top-8 h-32 w-32 rounded-full bg-white/[0.07]" />
+              <div className="absolute right-4 -top-2 h-16 w-16 rounded-full bg-white/[0.05]" />
+              <div className="relative z-10">
+                <div className="flex items-start justify-between gap-3 mb-3">
+                  <div className="min-w-0">
+                    <p className="text-[9px] font-black uppercase tracking-[0.2em] text-white/60 mb-0.5">
+                      {data.isManual ? 'Manual Trades' : 'Algo Strategy'}
+                    </p>
+                    <h2 className="text-[18px] font-black text-white leading-tight truncate">{data.code}</h2>
+                  </div>
+                  <div className="flex items-center gap-3 shrink-0">
+                    <div className="text-right">
+                      <p className="text-[22px] font-black text-white tabular-nums leading-none">
+                        {pos ? '+' : '−'}₹{INR(grandTotal)}
+                      </p>
+                      <p className="text-[9px] text-white/50 mt-0.5">total P&amp;L</p>
+                    </div>
+                    <button
+                      onClick={onClose}
+                      className="h-8 w-8 grid place-items-center rounded-xl bg-white/10 hover:bg-white/20 text-white transition-colors active:scale-95"
+                    >
+                      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M6 6l12 12M18 6L6 18" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Stats strip */}
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { label: 'Realized',   v: `${data.totalRealized   >= 0 ? '+' : '−'}₹${INR(Math.abs(data.totalRealized))}` },
+                    { label: 'Unrealized', v: `${data.totalUnrealized >= 0 ? '+' : '−'}₹${INR(Math.abs(data.totalUnrealized))}` },
+                    { label: 'Win Rate',   v: winPct != null ? `${winPct}%` : '—' },
+                  ].map(s => (
+                    <div key={s.label} className="bg-white/10 rounded-xl px-3 py-2 text-center">
+                      <p className="text-[13px] font-black text-white tabular-nums">{s.v}</p>
+                      <p className="text-[8px] font-bold uppercase tracking-wider text-white/50 mt-0.5">{s.label}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Scrollable body */}
+            <div className="flex-1 overflow-y-auto">
+
+              {/* Running trades */}
+              <div className="px-5 pt-5 pb-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="h-2 w-2 rounded-full bg-indigo-400 animate-pulse" />
+                  <p className="text-[10px] font-black uppercase tracking-[0.18em] text-indigo-500 dark:text-indigo-400">Running Trades</p>
+                  <span className="ml-auto text-[9px] font-black px-2 py-0.5 rounded-full bg-indigo-50 dark:bg-indigo-500/10 text-indigo-500 dark:text-indigo-400">
+                    {data.openTrades.length}
+                  </span>
+                </div>
+
+                {data.openTrades.length === 0 ? (
+                  <p className="text-center text-[12px] text-slate-400 dark:text-white/25 py-6">No running positions</p>
+                ) : (
+                  <div className="space-y-2">
+                    {data.openTrades.map(t => {
+                      const ur = computeUnrealized(t, ltpMap)
+                      const up = ur >= 0
+                      return (
+                        <div key={t.trade_id} className="flex items-center gap-3 px-4 py-3 rounded-xl bg-indigo-50/60 dark:bg-indigo-500/[0.07] border border-indigo-100 dark:border-indigo-500/20">
+                          <span className="h-2 w-2 rounded-full bg-indigo-400 animate-pulse shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[12px] font-bold text-slate-900 dark:text-white/90 truncate">{t.symbol_name}</p>
+                            <p className="text-[10px] text-slate-400 dark:text-white/30 font-mono mt-0.5">
+                              {Math.abs(t.total_quantity)} qty · ₹{t.avg_entry_price.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                            </p>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <p className={clsx('text-[13px] font-bold tabular-nums', up ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500 dark:text-red-400')}>
+                              {up ? '+' : '−'}₹{INR(Math.abs(ur))}
+                            </p>
+                            <p className="text-[9px] text-indigo-400 mt-0.5">unrealised</p>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Divider */}
+              <div className="mx-5 border-t border-slate-100 dark:border-white/[0.06]" />
+
+              {/* Closed trades */}
+              <div className="px-5 pt-4 pb-6">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="h-2 w-2 rounded-full bg-slate-300 dark:bg-white/20" />
+                  <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400 dark:text-white/30">Closed Trades</p>
+                  <span className="ml-auto text-[9px] font-black px-2 py-0.5 rounded-full bg-slate-100 dark:bg-white/[0.06] text-slate-400 dark:text-white/30">
+                    {data.closedTrades.length}
+                  </span>
+                </div>
+
+                {data.closedTrades.length === 0 ? (
+                  <p className="text-center text-[12px] text-slate-400 dark:text-white/25 py-6">No closed trades today</p>
+                ) : (
+                  <>
+                    {/* Summary strip */}
+                    <div className="grid grid-cols-3 gap-2 mb-3">
+                      {[
+                        { label: 'Total Closed', value: data.closedTrades.length, cls: 'text-slate-800 dark:text-white/80' },
+                        { label: 'Winners',      value: wins,                           cls: 'text-emerald-600 dark:text-emerald-400' },
+                        { label: 'Losers',       value: data.closedTrades.length - wins, cls: 'text-red-500 dark:text-red-400' },
+                      ].map(s => (
+                        <div key={s.label} className="text-center bg-slate-50 dark:bg-white/[0.025] rounded-xl px-2 py-2.5 border border-slate-100 dark:border-white/[0.04]">
+                          <p className={clsx('text-[14px] font-black', s.cls)}>{s.value}</p>
+                          <p className="text-[8px] font-bold uppercase tracking-wide text-slate-400 mt-0.5">{s.label}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Trade list */}
+                    <div className="space-y-1.5">
+                      {closedList.map(t => {
+                        const p = t.realized_pnl >= 0
+                        return (
+                          <div key={t.trade_id} className="flex items-center gap-3 px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-white/[0.025] border border-slate-100 dark:border-white/[0.04]">
+                            <div className="flex-1 min-w-0">
+                              <p className="text-[12px] font-bold text-slate-900 dark:text-white/90 truncate">{t.symbol_name}</p>
+                              <p className="text-[10px] text-slate-400 dark:text-white/30 font-mono mt-0.5">
+                                {Math.abs(t.total_quantity)} qty · ₹{t.avg_entry_price.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                              </p>
+                            </div>
+                            <div className="text-right shrink-0">
+                              <p className={clsx('text-[13px] font-bold tabular-nums', p ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500 dark:text-red-400')}>
+                                {p ? '+' : '−'}₹{INR(Math.abs(t.realized_pnl))}
+                              </p>
+                              <p className={clsx('text-[9px] mt-0.5', p ? 'text-emerald-400' : 'text-red-400')}>realised</p>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+
+                    {/* Actions */}
+                    <div className="mt-3 flex items-center gap-2">
+                      {moreCount > 0 && !showAll && (
+                        <button
+                          onClick={() => setShowAll(true)}
+                          className="flex-1 py-2 text-[11px] font-bold text-brand-600 dark:text-brand-400 bg-brand-50 dark:bg-brand-500/10 hover:bg-brand-100 dark:hover:bg-brand-500/15 rounded-xl transition-colors border border-brand-200 dark:border-brand-500/25"
+                        >
+                          +{moreCount} more trades
+                        </button>
+                      )}
+                      <button
+                        onClick={() => navigate('/journal')}
+                        className="flex-1 py-2 text-[11px] font-bold text-slate-600 dark:text-white/40 bg-slate-100 dark:bg-white/[0.04] hover:bg-slate-200 dark:hover:bg-white/[0.07] rounded-xl transition-colors"
+                      >
+                        View in Journal →
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </>
+  )
+}
+
+// ─── algo strategy boxes ──────────────────────────────────────────────────────
 
 function AlgoStrategyBoxes({ strategies, trades, loading }: { strategies: UserStrategy[]; trades: Trade[]; loading: boolean }) {
-  // `trades` is already today-only (API called with fromDate=today&toDate=today).
-  // No client-side date filtering needed — just split by group_name and status.
+  const [view,   setView]   = useState<'card' | 'table'>('card')
+  const [active, setActive] = useState<StrategyCardData | null>(null)
 
-  // Live quotes from WebSocket tick feed (same source as TradebookPanel)
   const tbPositions = useTradebookStore(s => s.positions)
   const quotes      = useMarketStore(s => s.quotes)
 
-  // Subscribe to tick feed for every open trade symbol
   const openSymKey = useMemo(() => {
     const syms = [...new Set(trades.filter(isOpenTrade).map(t => t.symbol_name).filter(Boolean))].sort()
     return syms.join(',')
@@ -500,91 +783,99 @@ function AlgoStrategyBoxes({ strategies, trades, loading }: { strategies: UserSt
     return () => unsubs.forEach(u => u())
   }, [openSymKey])
 
-  // LTP map: live quotes primary, broker positions as fallback
   const ltpMap = useMemo(() => buildLtpMap(quotes, tbPositions), [quotes, tbPositions])
 
-  const { manualOpen, manualClosed, manualUnrealized, manualRealized } = useMemo(() => {
-    const manualAll    = trades.filter(t => MANUAL_CODES.has(t.group_name ?? ''))
-    const manualOpen   = manualAll.filter(isOpenTrade)
-    const manualClosed = manualAll.filter(t => t.status === 'CLOSED')
+  // Manual card
+  const manualCard = useMemo<StrategyCardData>(() => {
+    const all    = trades.filter(t => MANUAL_CODES.has(t.group_name ?? ''))
+    const open   = all.filter(isOpenTrade)
+    const closed = all.filter(t => t.status === 'CLOSED')
     return {
-      manualOpen, manualClosed,
-      manualUnrealized: manualOpen.reduce((s, t) => s + computeUnrealized(t, ltpMap), 0),
-      manualRealized:   manualAll.reduce((s, t)  => s + t.realized_pnl, 0),
+      id: 'manual', code: 'Manual', isManual: true,
+      openTrades: open, closedTrades: closed,
+      totalUnrealized: open.reduce((s, t) => s + computeUnrealized(t, ltpMap), 0),
+      totalRealized:   all.reduce((s, t)  => s + t.realized_pnl, 0),
     }
   }, [trades, ltpMap])
 
-  const strategyData = useMemo<StrategyBoxData[]>(() => {
-    console.debug('[Dashboard] today trades group_names:', [...new Set(trades.map(t => t.group_name))])
-
+  // Algo cards
+  const algoCards = useMemo<StrategyCardData[]>(() => {
     return strategies.map(strat => {
-      const code  = (strat.strategyName ?? strat.strategyCode ?? String(strat.strategy_code ?? '')).trim()
-      const codeN = normCode(code)
-
-      const openTrades = codeN
-        ? trades.filter(t =>
-            isOpenTrade(t) &&
-            normCode(t.group_name) === codeN &&
-            !MANUAL_CODES.has(t.group_name ?? ''),
-          )
-        : []
-      const closedTrades = codeN
-        ? trades.filter(t =>
-            t.status === 'CLOSED' &&
-            normCode(t.group_name) === codeN &&
-            !MANUAL_CODES.has(t.group_name ?? ''),
-          )
-        : []
-
-      const allStratTrades = [...openTrades, ...closedTrades]
+      const code   = (strat.strategyName ?? strat.strategyCode ?? String(strat.strategy_code ?? '')).trim()
+      const codeN  = normCode(code)
+      const open   = codeN ? trades.filter(t => isOpenTrade(t) && normCode(t.group_name) === codeN && !MANUAL_CODES.has(t.group_name ?? '')) : []
+      const closed = codeN ? trades.filter(t => t.status === 'CLOSED' && normCode(t.group_name) === codeN && !MANUAL_CODES.has(t.group_name ?? '')) : []
+      const all    = [...open, ...closed]
       return {
-        strat, code, openTrades, closedTrades,
-        totalUnrealized: openTrades.reduce((s, t)     => s + computeUnrealized(t, ltpMap), 0),
-        totalRealized:   allStratTrades.reduce((s, t) => s + t.realized_pnl, 0),
+        id: String(strat.id), code, isManual: false,
+        openTrades: open, closedTrades: closed,
+        totalUnrealized: open.reduce((s, t) => s + computeUnrealized(t, ltpMap), 0),
+        totalRealized:   all.reduce((s, t)  => s + t.realized_pnl, 0),
       }
     })
   }, [strategies, trades, ltpMap])
 
-  const hasContent = strategies.length > 0 || manualOpen.length > 0 || manualClosed.length > 0
+  const allCards   = [manualCard, ...algoCards]
+  const hasContent = strategies.length > 0 || manualCard.openTrades.length > 0 || manualCard.closedTrades.length > 0
   if (!loading && !hasContent) return null
 
   return (
     <div>
-      <SectionHeader
-        title="Today's Trading Activity"
-        sub="Manual & algo strategies · running and closed trades"
-        badge={strategies.length > 0 ? { label: `${strategies.length} ALGO LIVE`, color: 'emerald' } : undefined}
-      />
+      {/* Header + view toggle */}
+      <div className="flex items-center gap-3 mb-4">
+        <div className="flex-1">
+          <SectionHeader
+            title="Today's Trading Activity"
+            sub="Manual & algo strategies · running and closed trades"
+            badge={strategies.length > 0 ? { label: `${strategies.length} ALGO LIVE`, color: 'emerald' } : undefined}
+            inline
+          />
+        </div>
+        <div className="flex items-center gap-1 bg-slate-100 dark:bg-white/[0.05] rounded-xl p-1">
+          {(['card', 'table'] as const).map(v => (
+            <button
+              key={v}
+              onClick={() => setView(v)}
+              className={clsx(
+                'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all',
+                view === v
+                  ? 'bg-white dark:bg-white/[0.09] text-slate-800 dark:text-white shadow-sm'
+                  : 'text-slate-400 dark:text-white/30 hover:text-slate-600 dark:hover:text-white/50',
+              )}
+            >
+              {v === 'card' ? (
+                <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2">
+                  <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
+                  <rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M3 5h18M3 12h18M3 19h18" />
+                </svg>
+              )}
+              {v === 'card' ? 'Cards' : 'Table'}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {loading ? (
-        <div className="flex gap-5 overflow-x-hidden">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
           {[0, 1, 2].map(i => (
-            <div key={i} className="shrink-0 w-[400px] h-72 rounded-2xl bg-slate-100 dark:bg-white/[0.05] animate-pulse" style={{ opacity: 1 - i * 0.25 }} />
+            <div key={i} className="h-56 rounded-2xl bg-slate-100 dark:bg-white/[0.05] animate-pulse" style={{ opacity: 1 - i * 0.3 }} />
+          ))}
+        </div>
+      ) : view === 'card' ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+          {allCards.map(card => (
+            <StrategyCard key={card.id} data={card} ltpMap={ltpMap} onClick={() => setActive(card)} />
           ))}
         </div>
       ) : (
-        <div className="flex gap-5 overflow-x-auto pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          <StrategyBox
-            code="Manual"
-            openTrades={manualOpen}
-            closedTrades={manualClosed}
-            totalUnrealized={manualUnrealized}
-            totalRealized={manualRealized}
-            isManual
-            ltpMap={ltpMap}
-          />
-          {strategyData.map(({ strat, code, openTrades, closedTrades, totalUnrealized, totalRealized }) => (
-            <StrategyBox
-              key={strat.id}
-              code={code}
-              openTrades={openTrades}
-              closedTrades={closedTrades}
-              totalUnrealized={totalUnrealized}
-              totalRealized={totalRealized}
-              ltpMap={ltpMap}
-            />
-          ))}
-        </div>
+        <StrategyTable cards={allCards} onSelect={setActive} />
       )}
+
+      <StrategyDrawer data={active} ltpMap={ltpMap} onClose={() => setActive(null)} />
     </div>
   )
 }
@@ -1005,6 +1296,47 @@ function DashboardTradebook() {
   )
 }
 
+// ─── command-center header sub-components ────────────────────────────────────
+
+function HeaderKpiChip({
+  label, value, sub, positive, icon, pulse,
+}: {
+  label: string
+  value: React.ReactNode
+  sub?: string
+  positive?: boolean
+  icon: React.ReactNode
+  pulse?: boolean
+}) {
+  return (
+    <div className="flex flex-col gap-1.5 px-3.5 py-3 rounded-xl bg-slate-50/90 dark:bg-white/[0.03] border border-slate-100 dark:border-white/[0.06] hover:border-slate-200 dark:hover:border-white/[0.1] transition-colors">
+      <div className="flex items-center justify-between gap-1.5">
+        <span className={clsx(
+          'shrink-0',
+          positive === true  ? 'text-emerald-500 dark:text-emerald-400'
+          : positive === false ? 'text-red-500 dark:text-red-400'
+          : 'text-slate-400 dark:text-white/25',
+        )}>
+          {icon}
+        </span>
+        <div className="flex items-center gap-1 min-w-0">
+          {pulse && <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />}
+          <p className="text-[8px] font-black uppercase tracking-[0.16em] text-slate-400 dark:text-white/25 truncate">{label}</p>
+        </div>
+      </div>
+      <div className={clsx(
+        'text-[16px] font-black tabular-nums leading-none',
+        positive === true  ? 'text-emerald-600 dark:text-emerald-400'
+        : positive === false ? 'text-red-500 dark:text-red-400'
+        : 'text-slate-900 dark:text-white/85',
+      )}>
+        {value}
+      </div>
+      {sub && <p className="text-[9px] text-slate-400 dark:text-white/25 leading-none">{sub}</p>}
+    </div>
+  )
+}
+
 // ─── shared section header ────────────────────────────────────────────────────
 
 function SectionHeader({ title, sub, badge, inline }: {
@@ -1063,12 +1395,22 @@ export default function DashboardPage() {
     return Object.entries(d.daily).sort(([a], [b]) => a.localeCompare(b)).slice(-14).map(([, v]) => { cum += v; return cum })
   }, [d.daily])
 
-  const hour     = new Date().getHours()
-  const greeting = hour < 5 ? 'Good night' : hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
+  const hour         = new Date().getHours()
+  const greeting     = hour < 5 ? 'Good night' : hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
+  const greetingIcon = hour < 5 ? '🌙' : hour < 12 ? '🌤️' : hour < 17 ? '☀️' : '🌆'
+  const initials     = name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) || '??'
 
   const todayPos = d.todayPnl >= 0
   const mtdPos   = d.mtdPnl >= 0
   const wrPos    = (d.winRate ?? 0) >= 50
+
+  const aiSummary = d.loading ? null : [
+    d.strategies.length > 0 && `${d.strategies.length} ${d.strategies.length === 1 ? 'strategy' : 'strategies'} running`,
+    `Portfolio ${todayPos ? 'up' : 'down'} ₹${INR(Math.abs(d.todayPnl))} today`,
+    d.live.length > 0 && `${d.live.length} position${d.live.length !== 1 ? 's' : ''} open`,
+    d.winRate != null && `${Math.round(d.winRate)}% win rate · ${d.closedCount} trades closed`,
+    d.picks.length > 0 && `${d.picks.length} AI conviction picks available`,
+  ].filter(Boolean).join(' · ')
 
   return (
     <div
@@ -1077,92 +1419,194 @@ export default function DashboardPage() {
     >
       <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-6 space-y-7">
 
-        {/* ① Header */}
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <p className="text-[11px] font-semibold text-slate-400 dark:text-white/25">{greeting}</p>
-            <h1 className="text-[22px] font-extrabold text-slate-900 dark:text-white/90 tracking-tight mt-0.5">
-              {name ? `${name}'s Dashboard` : 'Dashboard'}{isAdmin ? ' · Admin' : ''}
-              <span className="ml-2 text-slate-300 dark:text-white/15 font-light">·</span>
-              <span className="ml-2 text-[18px] font-semibold text-slate-400 dark:text-white/25">{market.longDate}</span>
-            </h1>
-            {!d.loading && (
-              <div className="flex items-center gap-3 mt-1.5 flex-wrap text-[12px]">
-                <span className={clsx('font-semibold', todayPos ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500 dark:text-red-400')}>
-                  {todayPos ? '+' : '−'}₹{INR(d.todayPnl)} today
-                </span>
-                {d.winRate != null && (
-                  <><span className="text-slate-200 dark:text-white/10">·</span>
-                  <span className="text-slate-500 dark:text-white/35">{Math.round(d.winRate)}% win rate</span></>
-                )}
-                <span className="text-slate-200 dark:text-white/10">·</span>
-                <span className="text-slate-500 dark:text-white/35">{d.closedCount} trades closed</span>
-                {d.strategies.length > 0 && (
-                  <><span className="text-slate-200 dark:text-white/10">·</span>
-                  <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
-                    {d.strategies.length} {d.strategies.length === 1 ? 'strategy' : 'strategies'} live
-                  </span></>
+        {/* ① Command Center Header */}
+        <div className="relative overflow-hidden rounded-2xl bg-white dark:bg-white/[0.03] border border-slate-200/70 dark:border-white/[0.07] shadow-[0_2px_16px_rgba(0,0,0,0.06)] dark:shadow-none">
+          {/* Ambient gradient */}
+          <div className="absolute inset-0 bg-gradient-to-br from-brand-50/60 via-transparent to-indigo-50/30 dark:from-brand-900/10 dark:via-transparent dark:to-indigo-900/10 pointer-events-none" />
+          {/* Top accent line */}
+          <div className={clsx('absolute top-0 left-0 right-0 h-[3px]', todayPos ? 'bg-gradient-to-r from-emerald-400 via-teal-500 to-brand-500' : 'bg-gradient-to-r from-red-400 via-rose-500 to-pink-500')} />
+
+          <div className="relative z-10 p-5 sm:p-6 space-y-4 pt-6">
+
+            {/* ── Row 1: Identity + market status ── */}
+            <div className="flex items-center justify-between gap-4 flex-wrap">
+              {/* Avatar + name */}
+              <div className="flex items-center gap-4">
+                <div className="relative shrink-0">
+                  <div className="h-13 w-13 h-[52px] w-[52px] rounded-2xl bg-gradient-to-br from-brand-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-brand-500/30">
+                    <span className="text-[15px] font-black text-white tracking-tight">{initials}</span>
+                  </div>
+                  <span className={clsx(
+                    'absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 rounded-full ring-2 ring-white dark:ring-[#0c1018]',
+                    market.open ? 'bg-emerald-500' : 'bg-slate-400 dark:bg-slate-600',
+                  )} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <span className="text-[11px] text-slate-400 dark:text-white/30">{greetingIcon} {greeting}</span>
+                    {isAdmin && (
+                      <span className="text-[8px] font-black px-1.5 py-0.5 rounded-md bg-violet-100 dark:bg-violet-500/15 text-violet-600 dark:text-violet-400 border border-violet-200 dark:border-violet-500/25 tracking-widest">
+                        ADMIN
+                      </span>
+                    )}
+                  </div>
+                  <h1 className="text-[20px] font-black text-slate-900 dark:text-white/90 leading-tight tracking-tight">
+                    {name ? `${name}` : 'Dashboard'}
+                  </h1>
+                  <p className="text-[11px] text-slate-400 dark:text-white/25 mt-0.5 font-medium">{market.longDate}</p>
+                </div>
+              </div>
+
+              {/* Market status + accounts */}
+              <div className="flex flex-col items-end gap-1.5 shrink-0">
+                <div className={clsx(
+                  'flex items-center gap-2 px-3.5 py-2 rounded-xl border text-[10px] font-black tracking-[0.1em]',
+                  market.open
+                    ? 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/25 text-emerald-700 dark:text-emerald-400'
+                    : 'bg-slate-100 dark:bg-white/[0.04] border-slate-200 dark:border-white/[0.07] text-slate-500 dark:text-white/30',
+                )}>
+                  <span className={clsx('h-1.5 w-1.5 rounded-full', market.open ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400 dark:bg-white/20')} />
+                  {market.open ? 'MARKET OPEN' : 'MARKET CLOSED'}
+                  <span className="opacity-55 font-mono ml-0.5">{market.hhmm} IST</span>
+                </div>
+                {accounts.length > 0 && (
+                  <div className="flex items-center gap-1">
+                    {accounts.slice(0, 3).map(a => (
+                      <span key={a.id} className="text-[9px] font-bold px-1.5 py-0.5 rounded-md bg-slate-100 dark:bg-white/[0.04] text-slate-400 dark:text-white/25 border border-slate-200 dark:border-white/[0.05]">
+                        {(a as { displayName?: string }).displayName ?? '—'}
+                      </span>
+                    ))}
+                  </div>
                 )}
               </div>
-            )}
-          </div>
-
-          <div className="shrink-0 flex flex-col items-end gap-1.5">
-            <div className={clsx(
-              'flex items-center gap-2 px-3 py-1.5 rounded-full border text-[10px] font-bold tracking-[0.12em]',
-              market.open
-                ? 'bg-emerald-50 dark:bg-emerald-500/[0.08] border-emerald-200 dark:border-emerald-500/25 text-emerald-700 dark:text-emerald-400'
-                : 'bg-slate-100 dark:bg-white/[0.04] border-slate-200 dark:border-white/[0.07] text-slate-500 dark:text-white/25',
-            )}>
-              <span className={clsx('h-1.5 w-1.5 rounded-full', market.open ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400 dark:bg-white/20')} />
-              {market.open ? 'MARKET OPEN' : 'MARKET CLOSED'}
             </div>
-            <span className="text-[11px] font-mono text-slate-400 dark:text-white/20">{market.hhmm} IST</span>
-            {accounts.length > 0 && (
-              <div className="flex items-center gap-1.5">
-                {accounts.slice(0, 3).map(a => (
-                  <span key={a.id} className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-white/[0.05] text-slate-400 dark:text-white/20">
-                    {(a as { displayName?: string }).displayName ?? '—'}
-                  </span>
+
+            {/* ── Row 2: KPI chips ── */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+              <HeaderKpiChip
+                label="Today's P&L"
+                value={d.loading ? '—' : `${todayPos ? '+' : '−'}₹${INR(d.todayPnl)}`}
+                sub={d.live.length > 0 ? `${d.live.length} pos. open` : 'No open positions'}
+                positive={d.loading ? undefined : todayPos || undefined}
+                icon={<svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18" /><polyline points="17 6 23 6 23 12" /></svg>}
+              />
+              <HeaderKpiChip
+                label="30-Day Return"
+                value={d.loading ? '—' : `${mtdPos ? '+' : '−'}₹${INR(d.mtdPnl)}`}
+                sub="realized"
+                positive={d.loading ? undefined : mtdPos || undefined}
+                icon={<svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></svg>}
+              />
+              <HeaderKpiChip
+                label="Win Rate · 30D"
+                value={d.loading || d.winRate == null ? '—' : `${Math.round(d.winRate)}%`}
+                sub={d.closedCount > 0 ? `${d.closedCount} trades` : 'No data yet'}
+                positive={d.loading || d.winRate == null ? undefined : wrPos || undefined}
+                icon={<svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" /></svg>}
+              />
+              <HeaderKpiChip
+                label="Running"
+                value={d.loading ? '—' : String(d.live.length)}
+                sub="open positions"
+                positive={d.live.length > 0 ? true : undefined}
+                pulse={d.live.length > 0}
+                icon={<svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>}
+              />
+              <HeaderKpiChip
+                label="Strategies"
+                value={d.loading ? '—' : String(d.strategies.length)}
+                sub={d.strategies.length > 0 ? 'algo live' : 'none active'}
+                positive={d.strategies.length > 0 ? true : undefined}
+                pulse={d.strategies.length > 0}
+                icon={<svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5M2 12l10 5 10-5" /></svg>}
+              />
+              <HeaderKpiChip
+                label="Closed Today"
+                value={d.loading ? '—' : String(d.closedCount)}
+                sub="trades executed"
+                icon={<svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M20 6L9 17l-5-5" /></svg>}
+              />
+            </div>
+
+            {/* ── Row 3: Sparkline KPIs (with trends) ── */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              <KpiCard
+                label="Today's P&L"
+                value={d.loading ? '—' : `${todayPos ? '+' : '−'}₹${INR(d.todayPnl)}`}
+                sub={d.live.length > 0 ? `${d.live.length} open position${d.live.length !== 1 ? 's' : ''} included` : 'No open positions'}
+                positive={d.loading ? undefined : todayPos || undefined}
+                accent={todayPos ? 'bg-emerald-500' : 'bg-red-500'}
+                sparkData={spark7}
+              />
+              <KpiCard
+                label="30-Day Return"
+                value={d.loading ? '—' : `${mtdPos ? '+' : '−'}₹${INR(d.mtdPnl)}`}
+                sub={`${d.closedCount} trades closed`}
+                positive={d.loading ? undefined : mtdPos || undefined}
+                accent={mtdPos ? 'bg-emerald-500' : 'bg-red-500'}
+                sparkData={sparkCum}
+              />
+              <KpiCard
+                label="Win Rate · 30D"
+                value={d.loading || d.winRate == null ? '—' : `${Math.round(d.winRate)}%`}
+                sub={d.closedCount > 0 ? `${d.closedCount} closed trades` : 'No data yet'}
+                positive={d.loading || d.winRate == null ? undefined : wrPos || undefined}
+                accent="bg-amber-400"
+                sparkData={spark7.map((v, i) => (i > 0 && v > spark7[i - 1] ? 1 : 0))}
+              />
+              <KpiCard
+                label="Open Positions"
+                value={d.loading ? '—' : String(d.live.length)}
+                sub={d.strategies.length > 0 ? `${d.strategies.length} algo${d.strategies.length !== 1 ? 's' : ''} running` : 'Manual trading'}
+                positive={d.live.length > 0 ? true : undefined}
+                accent="bg-brand-500"
+              />
+            </div>
+
+            {/* ── Row 4: AI summary + quick actions ── */}
+            <div className="flex flex-col lg:flex-row items-start lg:items-center gap-3">
+              {/* AI portfolio summary */}
+              {aiSummary && (
+                <div className="flex-1 flex items-start gap-3 px-4 py-2.5 rounded-xl bg-gradient-to-r from-brand-50/80 to-indigo-50/50 dark:from-brand-900/20 dark:to-indigo-900/10 border border-brand-100 dark:border-brand-500/20 min-w-0">
+                  <div className="shrink-0 mt-0.5 h-5 w-5 rounded-md bg-brand-100 dark:bg-brand-500/20 flex items-center justify-center">
+                    <span className="text-[11px] text-brand-600 dark:text-brand-400">✦</span>
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-[9px] font-black uppercase tracking-[0.18em] text-brand-600 dark:text-brand-400 mb-0.5">AI Portfolio Summary</p>
+                    <p className="text-[11px] text-slate-600 dark:text-white/45 leading-relaxed truncate">{aiSummary}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Quick actions */}
+              <div className="flex items-center gap-1.5 flex-wrap shrink-0">
+                {(([
+                  { label: 'Trade', to: '/trade', icon: '⚡', primary: true },
+                  { label: 'Holdings', to: '/holdings', icon: '📊' },
+                  { label: 'AI Insights', to: '/insight', icon: '✦' },
+                  { label: 'Journal', to: '/journal', icon: '📓' },
+                  { label: 'Reports', to: '/reports', icon: '📈' },
+                  { label: 'Options', to: '/insight/options', icon: '🎯' },
+                  ...(isAdmin ? [{ label: 'Analytics', to: '/analytics', icon: '🔬' }] : []),
+                ] as Array<{ label: string; to: string; icon: string; primary?: boolean }>)).map(a => (
+                  <button
+                    key={a.to}
+                    onClick={() => navigate(a.to)}
+                    className={clsx(
+                      'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-bold transition-all hover:-translate-y-px active:scale-95 whitespace-nowrap',
+                      a.primary
+                        ? 'bg-brand-600 text-white shadow-sm shadow-brand-500/30 hover:bg-brand-700'
+                        : 'bg-white dark:bg-white/[0.04] border border-slate-200 dark:border-white/[0.07] text-slate-600 dark:text-white/45 hover:bg-slate-50 dark:hover:bg-white/[0.07]',
+                    )}
+                  >
+                    <span className="text-[10px]">{a.icon}</span>
+                    {a.label}
+                  </button>
                 ))}
               </div>
-            )}
-          </div>
-        </div>
+            </div>
 
-        {/* ② KPI cards */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <KpiCard
-            label="Today's P&L"
-            value={d.loading ? '—' : `${todayPos ? '+' : '−'}₹${INR(d.todayPnl)}`}
-            sub={d.live.length > 0 ? `${d.live.length} open position${d.live.length !== 1 ? 's' : ''} included` : 'No open positions'}
-            positive={d.loading ? undefined : todayPos || undefined}
-            accent={todayPos ? 'bg-emerald-500' : 'bg-red-500'}
-            sparkData={spark7}
-          />
-          <KpiCard
-            label="30-Day Return"
-            value={d.loading ? '—' : `${mtdPos ? '+' : '−'}₹${INR(d.mtdPnl)}`}
-            sub={`${d.closedCount} trades closed`}
-            positive={d.loading ? undefined : mtdPos || undefined}
-            accent={mtdPos ? 'bg-emerald-500' : 'bg-red-500'}
-            sparkData={sparkCum}
-          />
-          <KpiCard
-            label="Win Rate · 30D"
-            value={d.loading || d.winRate == null ? '—' : `${Math.round(d.winRate)}%`}
-            sub={d.closedCount > 0 ? `${d.closedCount} closed trades` : 'No data yet'}
-            positive={d.loading || d.winRate == null ? undefined : wrPos || undefined}
-            accent="bg-amber-400"
-            sparkData={spark7.map((v, i) => (i > 0 && v > spark7[i - 1] ? 1 : 0))}
-          />
-          <KpiCard
-            label="Open Positions"
-            value={d.loading ? '—' : String(d.live.length)}
-            sub={d.strategies.length > 0 ? `${d.strategies.length} algo${d.strategies.length !== 1 ? 's' : ''} running` : 'Manual trading'}
-            positive={d.live.length > 0 ? true : undefined}
-            accent="bg-brand-500"
-          />
+          </div>
         </div>
 
         {/* ③ Today's Activity — Manual + Algo boxes */}
@@ -1193,28 +1637,6 @@ export default function DashboardPage() {
             </button>
           </div>
           <DashboardTradebook />
-        </div>
-
-        {/* ⑦ Quick nav */}
-        <div className="flex items-center justify-center gap-2 flex-wrap py-2">
-          {[
-            { label: 'Trade Now', to: '/trade', primary: true },
-            { label: 'Journal', to: '/journal' },
-            { label: 'Reports', to: '/reports' },
-            { label: 'Stock Insights', to: '/insight' },
-            { label: 'Options', to: '/insight/options' },
-            ...(isAdmin ? [{ label: 'Analytics', to: '/analytics' }] : []),
-          ].map(c => (
-            <button key={c.to} onClick={() => navigate(c.to)}
-              className={clsx(
-                'px-4 py-2 rounded-full text-[12px] font-semibold transition-all hover:-translate-y-px active:scale-95',
-                (c as { primary?: boolean }).primary
-                  ? 'bg-brand-600 text-white shadow-sm shadow-brand-500/25 hover:bg-brand-700'
-                  : 'bg-white dark:bg-white/[0.04] border border-slate-200 dark:border-white/[0.07] text-slate-600 dark:text-white/45 hover:bg-slate-50 dark:hover:bg-white/[0.07]',
-              )}>
-              {c.label}
-            </button>
-          ))}
         </div>
 
         <p className="text-center text-[10px] text-slate-300 dark:text-white/12 pb-2 tracking-wider">

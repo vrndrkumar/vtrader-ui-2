@@ -4,11 +4,23 @@
 // IndexedDB snapshot, and exposes a ref-counted subscribe API. Idempotent start.
 
 import { wsManager, type ConnState } from '../ws/WebSocketManager'
+import { jwtDecode } from 'jwt-decode'
 import {
-  indexTickChannel, optionChainChannel, symbolTickChannel,
-  isIndexTickChannel, isOptionChainChannel, isSymbolTickChannel,
+  indexTickChannel, optionChainChannel, symbolTickChannel, ocoChannel,
+  isIndexTickChannel, isOptionChainChannel, isSymbolTickChannel, isOcoChannel,
   type IndexTickPayload, type OptionChainPayload, type SymbolTickPayload,
 } from '../ws/messages'
+import { handleOcoEvent } from './ocoEvents'
+
+/** userId from the auth JWT, for the per-user OCO channel. Null if not logged in. */
+function currentUserId(): string | number | null {
+  try {
+    const token = typeof localStorage !== 'undefined' ? localStorage.getItem('vtrader_token') : null
+    if (!token) return null
+    const p = jwtDecode<{ userId?: string | number }>(token)
+    return p.userId ?? null
+  } catch { return null }
+}
 import { applyOptionUpdate, exportSnapshot, importSnapshot } from './optionChainCache'
 import { loadSnapshot, saveSnapshot, todayStamp, type RtSnapshot } from './persistence'
 import { getDailyMarks } from './dailyMarks'
@@ -93,6 +105,7 @@ function handleMessage(channel: string, payload: unknown) {
   if (isIndexTickChannel(channel)) handleIndexTick(payload as IndexTickPayload)
   else if (isOptionChainChannel(channel)) { applyOptionUpdate(payload as OptionChainPayload); dirty = true }
   else if (isSymbolTickChannel(channel)) handleSymbolTick(payload as SymbolTickPayload)
+  else if (isOcoChannel(channel)) handleOcoEvent(payload)
 }
 
 function buildSnapshot(): RtSnapshot {
@@ -127,6 +140,10 @@ export const realtime = {
     started = true
     void restore()
     wsManager.onMessage((env) => handleMessage(env.channel, env.payload))
+    // Always-on subscription for server-side SL/Target (OCO) fills, scoped to
+    // this user's channel (OCO_<userId>).
+    const uid = currentUserId()
+    if (uid != null) wsManager.subscribeChannel(ocoChannel(uid))
     setupPersistence()
   },
 

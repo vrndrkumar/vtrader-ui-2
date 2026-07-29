@@ -5,33 +5,44 @@ export default {
   theme: {
     extend: {
       colors: {
+        // ── VTrader Brand: Amber Pro as primary ──────────────────────────────
         brand: {
-          50:  '#eff6ff',
-          100: '#dbeafe',
-          200: '#bfdbfe',
-          300: '#93c5fd',
-          400: '#60a5fa',
-          500: '#3b82f6',
-          600: '#2563eb',
-          700: '#1d4ed8',
-          800: '#1e40af',
-          900: '#1e3a8a',
+          50:  '#FFFBEB',
+          100: '#FEF3C7',
+          200: '#FDE68A',
+          300: '#FCD34D',
+          400: '#FBBF24',   // Amber — light accent / dark-mode text
+          500: '#FBBF24',   // Amber — primary action colour
+          600: '#D97706',   // darker amber — button hover / active
+          700: '#B45309',   // deep amber — light-mode active text
+          800: '#92400E',
+          900: '#78350F',
+        },
+        // ── VTrader extended palette ─────────────────────────────────────────
+        vt: {
+          navy:    '#0B1020',   // Deep Navy — main dark bg
+          indigo:  '#121A2B',   // Indigo Blue — card/panel dark
+          purple:  '#7C5CFF',   // Signal Purple — secondary accent / AI
+          electric:'#00B5FF',   // Electric Blue — data highlights
+          amber:   '#FFB020',   // Alert Amber — warnings
+          coral:   '#FF4D4D',   // Coral Red — loss / danger
         },
         surface: {
           light:  '#ffffff',
-          dark:   '#0f1117',
+          dark:   '#0B1020',    // VTrader Deep Navy
         },
         card: {
           light: '#f8fafc',
-          dark:  '#1a1f2e',
+          dark:  '#121A2B',     // VTrader Indigo Blue
         },
         border: {
           light: '#e2e8f0',
-          dark:  '#2d3748',
+          dark:  '#1E2A3F',
         },
       },
       fontFamily: {
-        sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        sans:    ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        display: ['"Exo 2"', 'Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
       },
       animation: {
         'fade-in': 'fadeIn 0.3s ease-out',

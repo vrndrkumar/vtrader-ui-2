@@ -13,7 +13,9 @@ import { useTradeStore, type Position } from '../store/tradeStore'
 import { useTradebookStore } from '../features/tradebook/tradebookStore'
 import { isLiveStatus } from '../features/tradebook/types'
 import { lotSizeFor } from '@/services/orders/lotSize'
-import { clearStop, clearTarget, exitPosition, modifyStop, modifyStopQty, modifyTarget, modifyTargetQty } from '../data/trade/tradeAdapter'
+import { clearStop, clearTarget, exitPosition, modifyStop, modifyStopQty, modifyTarget, modifyTargetQty, syncOcoMonitor } from '../data/trade/tradeAdapter'
+import { useIndexBracketStore } from '../store/indexBracketStore'
+import { useBrokerStore } from '@/store/brokerStore'
 
 type Leg = 'sl' | 'tp'
 type DragTarget =
@@ -95,7 +97,69 @@ export function ChartOrderLayer({ engineRef, symbolKey, ltp }: {
     for (const id of Object.keys(st.positions)) {
       if (id.startsWith('tb:') && st.positions[id].symbolKey === symbolKey && !want.has(id)) st.removePosition(id)
     }
+    applyOco()
   }, [tbPositions, symbolKey])
+
+  // ── Restore on-chart SL/Target from the server ──────────────────────────────
+  // The SL/Target were chart-local, so a reload/navigation dropped them. Fetch
+  // the active SYMBOL OCO monitor for this strike and:
+  //   • if a live position is loaded → re-apply its levels to that position (once);
+  //   • if NO live position is loaded → synthesize a chart position from the
+  //     monitor so the SL/Target are still visible (uses current LTP as a
+  //     placeholder entry; replaced the moment the real position loads).
+  type Oco = { sl?: number; slQty?: number; tgt?: number; tgtQty?: number; direction?: string; quantity?: number; brokerName?: string }
+  const ocoDataRef = useRef<Oco | null>(null)
+  const restoredRef = useRef<Set<string>>(new Set())
+  const applyOco = () => {
+    const o = ocoDataRef.current
+    if (!o) return
+    const st = useTradeStore.getState()
+    const synthId = `oco:${symbolKey}`
+    const reals = Object.entries(st.positions).filter(([id, p]) => p.symbolKey === symbolKey && !id.startsWith('oco:'))
+    if (reals.length > 0) {
+      st.removePosition(synthId)
+      for (const [id] of reals) {
+        if (restoredRef.current.has(id)) continue
+        restoredRef.current.add(id)
+        if (o.sl != null || o.tgt != null) st.updatePosition(id, { stopLoss: o.sl, stopQty: o.slQty, target: o.tgt, targetQty: o.tgtQty })
+      }
+      return
+    }
+    if (o.sl == null && o.tgt == null) { st.removePosition(synthId); return }
+    if (!st.positions[synthId]) {
+      const brokerId = useBrokerStore.getState().accounts.find((a) => a.brokerName === o.brokerName)?.id ?? 0
+      const net = (o.direction === 'SHORT' ? -1 : 1) * (o.quantity || 1)
+      st.upsertPosition({ id: synthId, brokerId, symbolKey, display: symbolKey, netQty: net, avgPrice: ltp || o.sl || o.tgt || 0, stopLoss: o.sl, stopQty: o.slQty, target: o.tgt, targetQty: o.tgtQty })
+    }
+  }
+  // One shared OCO store (loads ALL active monitors — index + symbol). The
+  // strike chart reads its own SYMBOL monitor from it, consistently with how the
+  // index chart reads its INDEX brackets.
+  const ocoAll = useIndexBracketStore((s) => s.all)
+  const reloadOco = useIndexBracketStore((s) => s.reload)
+  useEffect(() => { void reloadOco() }, [reloadOco])
+  const symMon = useMemo(
+    () => ocoAll.find((r) => r.monitorType !== 'INDEX' && r.symbolName === symbolKey),
+    [ocoAll, symbolKey],
+  )
+  useEffect(() => {
+    restoredRef.current = new Set()
+    const numOr = (v: unknown) => (v == null ? undefined : Number(v))
+    const m = symMon
+    ocoDataRef.current = m
+      ? {
+        sl: m.slStatus === 'PENDING' ? (numOr(m.slLimitPrice) ?? numOr(m.slTriggerPrice)) : undefined,
+        slQty: numOr(m.slQuantity),
+        tgt: m.tgtStatus === 'PENDING' ? (numOr(m.tgtLimitPrice) ?? numOr(m.tgtTriggerPrice)) : undefined,
+        tgtQty: numOr(m.tgtQuantity),
+        direction: m.direction != null ? String(m.direction) : undefined,
+        quantity: numOr(m.quantity),
+        brokerName: m.brokerName != null ? String(m.brokerName) : undefined,
+      }
+      : {}
+    applyOco()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [symMon, symbolKey])
 
   const onExit = (p: Position) => {
     if (p.id.startsWith('tb:')) useTradebookStore.getState().squareOff(p.id.slice(3))
@@ -162,6 +226,8 @@ export function ChartOrderLayer({ engineRef, symbolKey, ltp }: {
       const d = dragRef.current
       // Pending order price/trigger is committed once, on release (single modify call).
       if (d?.kind === 'order') useTradebookStore.getState().modifyOrder(d.id, d.field === 'price' ? { price: d.last } : { triggerPrice: d.last })
+      // SL/Target drag → update the OCO monitor once, on release.
+      else if (d?.kind === 'leg') syncOcoMonitor(d.id)
       if (d) { dragRef.current = null; draggingRef.current = false; setDragging(null) }
     }
     window.addEventListener('pointermove', move)
@@ -185,8 +251,22 @@ export function ChartOrderLayer({ engineRef, symbolKey, ltp }: {
   }, [ltp])
 
   const refCb = (id: string) => (el: HTMLDivElement | null) => { if (el) elMap.current.set(id, el); else elMap.current.delete(id) }
-  const addStop = (p: Position) => modifyStop(p.id, +(((ltp || p.avgPrice) * (p.netQty > 0 ? 0.97 : 1.03)).toFixed(2)))
-  const addTarget = (p: Position) => modifyTarget(p.id, +(((ltp || p.avgPrice) * (p.netQty > 0 ? 1.05 : 0.95)).toFixed(2)))
+
+  // Press a "Set SL / Set Target" chip and DRAG straight to the price you want:
+  // the leg is created at a sensible default and immediately enters drag mode, so
+  // the line tracks the cursor. The window-level pointermove drives the price and
+  // the pointerup handler syncs the OCO monitor once, on release. (No priming
+  // click; releasing without moving just leaves it at the default.)
+  const startLegCreate = (p: Position, leg: Leg) => (e: React.PointerEvent) => {
+    e.preventDefault(); e.stopPropagation()
+    const long = p.netQty > 0
+    const base = ltp || p.avgPrice
+    const def = leg === 'sl' ? base * (long ? 0.97 : 1.03) : base * (long ? 1.05 : 0.95)
+    if (leg === 'sl') modifyStop(p.id, +def.toFixed(2)); else modifyTarget(p.id, +def.toFixed(2))
+    dragRef.current = { kind: 'leg', id: p.id, leg }
+    draggingRef.current = true
+    setDragging(`${p.id}:${leg}`)
+  }
 
   const legDrag = (p: Position, leg: Leg) => ({
     dragging: dragging === `${p.id}:${leg}`,
@@ -226,8 +306,8 @@ export function ChartOrderLayer({ engineRef, symbolKey, ltp }: {
                   <div className={clsx('flex items-center gap-1 transition-all duration-200',
                     open ? 'opacity-100 translate-x-0 pointer-events-auto'
                       : 'opacity-0 -translate-x-1 pointer-events-none group-hover:opacity-100 group-hover:translate-x-0 group-hover:pointer-events-auto')}>
-                    {p.stopLoss == null && <Chip tone="sl" label="Set SL" onClick={() => addStop(p)} />}
-                    {p.target == null && <Chip tone="tp" label="Set Target" onClick={() => addTarget(p)} />}
+                    {p.stopLoss == null && <Chip tone="sl" label="SL" onDown={startLegCreate(p, 'sl')} />}
+                    {p.target == null && <Chip tone="tp" label="Target" onDown={startLegCreate(p, 'tp')} />}
                     <IconChip title="Exit position" danger onClick={() => onExit(p)}><path d="M6 6l12 12M18 6L6 18" /></IconChip>
                   </div>
                 </div>
@@ -239,14 +319,14 @@ export function ChartOrderLayer({ engineRef, symbolKey, ltp }: {
               const slQty = p.stopQty ?? qty
               return <LegTag refCb={refCb(`${p.id}:sl`)} kind="sl" color={COLORS.sl} label="SL" price={p.stopLoss} qty={slQty} step={legStep}
                 pnl={(p.stopLoss - p.avgPrice) * (long ? 1 : -1) * slQty}
-                onSetQty={(q) => modifyStopQty(p.id, q)} onRemove={() => clearStop(p.id)} {...legDrag(p, 'sl')} />
+                onSetQty={(q) => { modifyStopQty(p.id, q); syncOcoMonitor(p.id) }} onRemove={() => { clearStop(p.id); syncOcoMonitor(p.id) }} {...legDrag(p, 'sl')} />
             })()}
             {/* ── Target (editable qty) ── */}
             {p.target != null && (() => {
               const tpQty = p.targetQty ?? qty
               return <LegTag refCb={refCb(`${p.id}:tp`)} kind="tp" color={COLORS.tp} label="Target" price={p.target} qty={tpQty} step={legStep}
                 pnl={(p.target - p.avgPrice) * (long ? 1 : -1) * tpQty}
-                onSetQty={(q) => modifyTargetQty(p.id, q)} onRemove={() => clearTarget(p.id)} {...legDrag(p, 'tp')} />
+                onSetQty={(q) => { modifyTargetQty(p.id, q); syncOcoMonitor(p.id) }} onRemove={() => { clearTarget(p.id); syncOcoMonitor(p.id) }} {...legDrag(p, 'tp')} />
             })()}
           </div>
         )
@@ -320,10 +400,10 @@ function OrderTag({ refCb, dragging, onStart, side, qty, step, price, priceType,
   )
 }
 
-function Chip({ tone, label, onClick }: { tone: 'sl' | 'tp'; label: string; onClick: () => void }) {
+function Chip({ tone, label, onDown }: { tone: 'sl' | 'tp'; label: string; onDown: (e: React.PointerEvent) => void }) {
   return (
-    <button onPointerDown={(e) => e.stopPropagation()} onClick={onClick}
-      className={clsx('h-6 px-2 rounded-lg text-white text-[10px] font-bold shadow-sm transition-all active:scale-95 whitespace-nowrap',
+    <button onPointerDown={onDown} title="Press and drag onto the chart to place"
+      className={clsx('h-6 px-2 rounded-lg text-white text-[10px] font-bold shadow-sm transition-all active:scale-95 whitespace-nowrap cursor-ns-resize select-none touch-none',
         tone === 'sl' ? 'bg-red-500 hover:bg-red-600' : 'bg-teal-500 hover:bg-teal-600')}>
       {label}
     </button>

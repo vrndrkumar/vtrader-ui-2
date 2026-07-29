@@ -14,6 +14,7 @@ const ReportsPage     = lazy(() => import('@/pages/ReportsPage'))
 const AnalyticsPage   = lazy(() => import('@/pages/AnalyticsPage'))
 const StrategiesPage      = lazy(() => import('@/pages/StrategiesPage'))
 const SignalGeneratorPage = lazy(() => import('@/pages/SignalGeneratorPage'))
+const HoldingsPage           = lazy(() => import('@/holdings/HoldingsPage'))
 const InsightUniversePage    = lazy(() => import('@/insight/UniversePage'))
 const InsightReportPage      = lazy(() => import('@/insight/StockReportPage'))
 const InsightGuidePage       = lazy(() => import('@/insight/GuidePage'))
@@ -51,6 +52,7 @@ export function AppRouter() {
           <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
             <Route path="/dashboard"   element={<DashboardPage />} />
             <Route path="/trade"       element={<TradePage />} />
+            <Route path="/holdings"    element={<HoldingsPage />} />
             <Route path="/journal"     element={<JournalPage />} />
             <Route path="/brokers"     element={<BrokerPage />} />
             <Route path="/strategies"  element={<StrategiesPage />} />

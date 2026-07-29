@@ -53,6 +53,15 @@ const NAV: NavEntry[] = [
   { kind: 'sep', label: 'Portfolio' },
 
   {
+    kind: 'link', to: '/holdings', label: 'Holdings',
+    icon: <I>
+      <path d="M3 3v18h18" />
+      <rect x="7" y="10" width="3" height="8" />
+      <rect x="12" y="6" width="3" height="12" />
+      <rect x="17" y="13" width="3" height="5" />
+    </I>,
+  },
+  {
     kind: 'link', to: '/brokers', label: 'Brokers', comingSoon: true,
     icon: <I><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z" /><polyline points="3.27 6.96 12 12.01 20.73 6.96" /><line x1="12" y1="22.08" x2="12" y2="12" /></I>,
   },
@@ -99,7 +108,7 @@ function IconBox({ children, active, muted }: { children: React.ReactNode; activ
     <span className={clsx(
       'shrink-0 h-[30px] w-[30px] rounded-lg flex items-center justify-center transition-all duration-200',
       active
-        ? 'bg-brand-500/20 text-brand-400 shadow-[0_0_14px_-2px_rgba(99,102,241,0.5)]'
+        ? 'bg-brand-500/20 text-brand-400 shadow-[0_0_14px_-2px_rgba(251,191,36,0.4)]'
         : muted
         ? 'bg-white/[0.04] dark:bg-white/[0.04] text-slate-400 dark:text-slate-600'
         : [
@@ -119,6 +128,10 @@ function Leaf({ item, collapsed, locked, sub }: {
   item: NavLeaf; collapsed: boolean; locked: boolean; sub?: boolean
 }) {
   const pad = sub ? 'pl-3 pr-3 py-1.5' : 'px-2.5 py-1.5'
+  // Exact-path match: a parent route (/insight) must NOT light up while a
+  // nested one (/insight/options) is open.
+  const { pathname } = useLocation()
+  const activeExact = pathname === item.to
 
   if (locked) {
     return (
@@ -141,7 +154,9 @@ function Leaf({ item, collapsed, locked, sub }: {
 
   return (
     <NavLink to={item.to} end>
-      {({ isActive }) => (
+      {() => {
+        const isActive = activeExact
+        return (
         <div className={clsx(
           'group relative flex items-center gap-3 rounded-xl transition-all duration-150 cursor-pointer',
           pad,
@@ -168,7 +183,8 @@ function Leaf({ item, collapsed, locked, sub }: {
             </span>
           )}
         </div>
-      )}
+        )
+      }}
     </NavLink>
   )
 }
@@ -263,13 +279,13 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     <aside className={clsx(
       'relative flex flex-col h-screen sticky top-0 shrink-0 z-30 transition-all duration-300 ease-in-out',
       /* Light */ 'bg-[#F9FAFB] border-r border-slate-200/70',
-      /* Dark  */ 'dark:bg-[#070C15] dark:border-white/[0.06]',
+      /* Dark  */ 'dark:bg-[#0B1020] dark:border-white/[0.06]',
       collapsed ? 'w-[72px]' : 'w-[240px]',
     )}>
 
       {/* Ambient glow (dark mode only) */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-none">
-        <div className="absolute -top-20 -left-10 h-60 w-60 rounded-full bg-brand-600/[0.07] blur-3xl dark:bg-brand-500/[0.12]" />
+        <div className="absolute -top-20 -left-10 h-60 w-60 rounded-full blur-3xl dark:bg-brand-500/[0.10]" style={{ background: 'radial-gradient(circle, rgba(251,191,36,0.08) 0%, rgba(124,92,255,0.06) 60%, transparent 100%)' }} />
       </div>
 
       {/* Top accent */}
@@ -281,31 +297,45 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         collapsed ? 'justify-center px-0' : 'px-4 gap-3',
       )}>
         <button onClick={onToggle} className="shrink-0 group/logo">
+          {/* VTrader V-Reversal Mark */}
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36"
-            className="h-9 w-9 transition-transform duration-200 group-hover/logo:scale-110"
-            fill="currentColor">
+            className="h-9 w-9 transition-transform duration-200 group-hover/logo:scale-110">
             <defs>
-              <linearGradient id="vt-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stopColor="#3b82f6" />
-                <stop offset="100%" stopColor="#6366f1" />
+              <linearGradient id="vt-vmark-grad" x1="0%" y1="100%" x2="100%" y2="0%">
+                <stop offset="0%" stopColor="#7C5CFF" />
+                <stop offset="100%" stopColor="#FBBF24" />
               </linearGradient>
             </defs>
-            <rect width="36" height="36" rx="10" fill="url(#vt-grad)" opacity="0.15" />
-            <rect width="36" height="36" rx="10" fill="url(#vt-grad)" opacity="0.08" />
-            <polyline points="4,26 11,14 18,20 25,9 32,16"
-              fill="none" stroke="url(#vt-grad)" strokeWidth="2.6"
-              strokeLinecap="round" strokeLinejoin="round" />
-            <circle cx="32" cy="16" r="2.4" fill="#6366f1" />
+            {/* Dark background */}
+            <rect width="36" height="36" rx="9" fill="#0C1228" />
+            {/* Left arm: amber, from top-left (5,6) down to vertex (18,28) */}
+            <line x1="5" y1="6" x2="18" y2="28"
+              stroke="#FBBF24" strokeWidth="2.6" strokeLinecap="round" />
+            {/* Right arm lower: gradient, from vertex (18,28) up to trigger (24,18) */}
+            <line x1="18" y1="28" x2="24" y2="18"
+              stroke="url(#vt-vmark-grad)" strokeWidth="2.6" strokeLinecap="round" />
+            {/* Right arm upper: purple dimmed, from trigger (24,18) to top-right (31,6) */}
+            <line x1="24" y1="18" x2="31" y2="6"
+              stroke="#7C5CFF" strokeWidth="2.4" strokeLinecap="round" opacity="0.45" />
+            {/* Price trigger level — horizontal at y=17 through left arm at x≈12 */}
+            <line x1="2" y1="17" x2="9" y2="17"
+              stroke="#FBBF24" strokeWidth="1.1" strokeDasharray="2,1.5" strokeLinecap="round" opacity="0.55" />
+            <line x1="15" y1="17" x2="21" y2="17"
+              stroke="#FBBF24" strokeWidth="1.1" strokeLinecap="round" opacity="0.65" />
+            {/* Execution pulse circle on left arm */}
+            <circle cx="12" cy="17" r="3.8" fill="#FBBF24" fillOpacity="0.1" />
+            <circle cx="12" cy="17" r="2.1" fill="#FBBF24" />
+            <circle cx="11.5" cy="16.5" r="0.65" fill="white" opacity="0.85" />
           </svg>
         </button>
 
         {!collapsed && (
           <div>
-            <p className="text-[15px] font-extrabold tracking-tight leading-none text-slate-900 dark:text-white">
-              VTrader
+            <p className="text-[15px] font-extrabold tracking-tight leading-none">
+              <span className="text-slate-900 dark:text-white">Trader</span>
             </p>
-            <p className="text-[9px] font-semibold tracking-[0.15em] uppercase mt-0.5 bg-gradient-to-r from-brand-500 to-indigo-500 bg-clip-text text-transparent">
-              Pro Terminal
+            <p className="text-[9px] font-bold tracking-[0.14em] uppercase mt-0.5 truncate max-w-[140px] text-brand-700 dark:text-brand-400">
+              Not Just a Platform. Your Trading Engine
             </p>
           </div>
         )}
@@ -332,16 +362,18 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           collapsed && 'p-2 flex justify-center',
         )}>
           {collapsed ? (
-            <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-brand-500 to-indigo-600 grid place-items-center shadow-md shadow-brand-500/25">
+            <div className="h-8 w-8 rounded-lg grid place-items-center shadow-md"
+              style={{ background: 'linear-gradient(135deg,#FBBF24,#7C5CFF)', boxShadow: '0 4px 12px rgba(251,191,36,0.25)' }}>
               <span className="text-[11px] font-bold text-white">{initials}</span>
             </div>
           ) : (
             <div className="flex items-center gap-2.5">
               <div className="relative shrink-0">
-                <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-brand-500 to-indigo-600 grid place-items-center shadow-md shadow-brand-500/20">
+                <div className="h-8 w-8 rounded-lg grid place-items-center shadow-md"
+                  style={{ background: 'linear-gradient(135deg,#FBBF24,#7C5CFF)', boxShadow: '0 4px 12px rgba(251,191,36,0.25)' }}>
                   <span className="text-[11px] font-bold text-white">{initials}</span>
                 </div>
-                <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-emerald-400 border-[1.5px] border-white dark:border-[#070C15] shadow-sm" />
+                <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-emerald-400 border-[1.5px] border-white dark:border-[#0B1020] shadow-sm" />
               </div>
               <div className="min-w-0 flex-1">
                 <p className="text-[13px] font-semibold text-slate-800 dark:text-white truncate leading-tight">

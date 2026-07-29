@@ -275,37 +275,59 @@ export default function UniversePage() {
         {/* Table */}
         <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card-dark overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-xs min-w-[980px]">
+            <table className="w-full text-xs min-w-[1060px]">
               <thead>
-                <tr className="text-left text-[10px] uppercase tracking-wide text-slate-400 border-b border-slate-100 dark:border-slate-800">
-                  <th className="px-3 py-2.5 w-8" />
-                  <th className="px-3 py-2.5 font-semibold">Stock</th>
-                  <th className="px-3 py-2.5 font-semibold">Sector / Industry</th>
-                  <th className="px-3 py-2.5 font-semibold text-right">Price</th>
-                  <th className="px-3 py-2.5 font-semibold">Discovery</th>
-                  <th className="px-3 py-2.5 font-semibold">Transition</th>
-                  <th className="px-3 py-2.5 font-semibold">Momentum</th>
-                  <th className="px-3 py-2.5 font-semibold">Conviction</th>
-                  <th className="px-3 py-2.5 font-semibold">Fundamentals</th>
-                  <th className="px-3 py-2.5 font-semibold">Risk</th>
-                  <th className="px-3 py-2.5 font-semibold">Badge</th>
-                  <th className="px-3 py-2.5 font-semibold">Analysed</th>
+                <tr className="bg-slate-50/80 dark:bg-white/[0.025] border-b border-slate-200 dark:border-slate-800">
+                  <th className="w-10 px-3 py-3" />
+                  <th className="px-4 py-3 text-left">
+                    <span className="text-[9px] font-black uppercase tracking-[0.12em] text-slate-400 dark:text-white/30">Stock</span>
+                  </th>
+                  <th className="px-4 py-3 text-left">
+                    <span className="text-[9px] font-black uppercase tracking-[0.12em] text-slate-400 dark:text-white/30">Sector / Industry</span>
+                  </th>
+                  <th className="px-4 py-3 text-right">
+                    <span className="text-[9px] font-black uppercase tracking-[0.12em] text-slate-400 dark:text-white/30">Price</span>
+                  </th>
+                  <th className="px-4 py-3">
+                    <span className="text-[9px] font-black uppercase tracking-[0.12em] text-violet-500 dark:text-violet-400">Discovery</span>
+                  </th>
+                  <th className="px-4 py-3">
+                    <span className="text-[9px] font-black uppercase tracking-[0.12em] text-brand-500 dark:text-brand-400">Transition</span>
+                  </th>
+                  <th className="px-4 py-3">
+                    <span className="text-[9px] font-black uppercase tracking-[0.12em] text-emerald-500 dark:text-emerald-400">Momentum</span>
+                  </th>
+                  <th className="px-4 py-3">
+                    <span className="text-[9px] font-black uppercase tracking-[0.12em] text-slate-400 dark:text-white/30">Conviction</span>
+                  </th>
+                  <th className="px-4 py-3">
+                    <span className="text-[9px] font-black uppercase tracking-[0.12em] text-slate-400 dark:text-white/30">Fundamentals</span>
+                  </th>
+                  <th className="px-4 py-3">
+                    <span className="text-[9px] font-black uppercase tracking-[0.12em] text-slate-400 dark:text-white/30">Risk</span>
+                  </th>
+                  <th className="px-4 py-3">
+                    <span className="text-[9px] font-black uppercase tracking-[0.12em] text-slate-400 dark:text-white/30">Badge</span>
+                  </th>
+                  <th className="px-4 py-3 text-right">
+                    <span className="text-[9px] font-black uppercase tracking-[0.12em] text-slate-400 dark:text-white/30">Analysed</span>
+                  </th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                 {loading && rows.length === 0 && (
-                  <tr><td colSpan={11} className="px-4 py-10 text-center text-slate-400">Loading universe…</td></tr>
+                  <tr><td colSpan={12} className="px-4 py-10 text-center text-slate-400">Loading universe…</td></tr>
                 )}
                 {!loading && rows.length === 0 && (
-                  <tr><td colSpan={11} className="px-4 py-10 text-center text-slate-400">No stocks match these filters. (Fundamental filters only match stocks whose fundamentals are loaded — run the nightly or open reports to build coverage.)</td></tr>
+                  <tr><td colSpan={12} className="px-4 py-10 text-center text-slate-400">No stocks match these filters. (Fundamental filters only match stocks whose fundamentals are loaded — run the nightly or open reports to build coverage.)</td></tr>
                 )}
                 {rows.map((r) => (
                   <tr
                     key={r.symbol_code}
                     onClick={() => navigate(`/insight/${encodeURIComponent(r.symbol_code)}`)}
-                    className="cursor-pointer hover:bg-slate-50 dark:hover:bg-white/5 transition-colors"
+                    className="group cursor-pointer hover:bg-brand-50/40 dark:hover:bg-white/[0.03] transition-colors"
                   >
-                    <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
+                    <td className="px-3 py-0 align-middle" onClick={(e) => e.stopPropagation()}>
                       <input
                         type="checkbox"
                         checked={selection.includes(r.symbol_code)}
@@ -313,32 +335,48 @@ export default function UniversePage() {
                         className="rounded border-slate-300 text-brand-600 focus:ring-brand-500/40"
                       />
                     </td>
-                    <td className="px-3 py-2.5">
-                      <div className="font-bold text-slate-900 dark:text-white">{r.symbol_code}</div>
-                      <div className="text-[10px] text-slate-400 truncate max-w-[180px]">{r.symbol_name}</div>
+                    <td className="px-4 py-3.5 align-middle">
+                      <div className="text-[13px] font-bold text-slate-900 dark:text-white group-hover:text-brand-600 dark:group-hover:text-brand-400 transition-colors leading-tight">
+                        {r.symbol_code}
+                      </div>
+                      <div className="text-[10px] text-slate-400 dark:text-white/30 truncate max-w-[160px] mt-0.5 leading-none">
+                        {r.symbol_name ?? ''}
+                      </div>
                     </td>
-                    <td className="px-3 py-2.5 text-slate-500 dark:text-slate-400">
-                      <div className="truncate max-w-[160px]">{r.sector ?? '—'}</div>
-                      <div className="text-[10px] truncate max-w-[160px]">{r.industry ?? ''}</div>
+                    <td className="px-4 py-3.5 align-middle">
+                      <div className="text-[11px] font-semibold text-slate-700 dark:text-slate-300 truncate max-w-[148px] leading-tight">
+                        {r.sector ?? '—'}
+                      </div>
+                      {r.industry && (
+                        <div className="text-[10px] text-slate-400 dark:text-white/25 truncate max-w-[148px] mt-0.5 leading-none">
+                          {r.industry}
+                        </div>
+                      )}
                     </td>
-                    <td className="px-3 py-2.5 text-right font-medium tabular-nums text-slate-700 dark:text-slate-200">
-                      {r.price != null ? Number(r.price).toLocaleString('en-IN') : '—'}
+                    <td className="px-4 py-3.5 align-middle text-right">
+                      <span className="text-[12px] font-semibold tabular-nums text-slate-700 dark:text-slate-200 whitespace-nowrap">
+                        {r.price != null ? Number(r.price).toLocaleString('en-IN') : '—'}
+                      </span>
                     </td>
-                    <td className="px-3 py-2.5"><ScoreCell value={r.discovery_score} tone="discovery" /></td>
-                    <td className="px-3 py-2.5"><ScoreCell value={r.transition_score} tone="transition" /></td>
-                    <td className="px-3 py-2.5"><ScoreCell value={r.momentum_score} tone="momentum" /></td>
-                    <td className="px-3 py-2.5">
+                    <td className="px-4 py-3.5 align-middle"><ScoreCell value={r.discovery_score} tone="discovery" /></td>
+                    <td className="px-4 py-3.5 align-middle"><ScoreCell value={r.transition_score} tone="transition" /></td>
+                    <td className="px-4 py-3.5 align-middle"><ScoreCell value={r.momentum_score} tone="momentum" /></td>
+                    <td className="px-4 py-3.5 align-middle whitespace-nowrap">
                       {r.conviction != null ? (
                         <ConvictionStars conviction={{ stars: Math.max(1, Math.min(5, Math.round(r.conviction / 20))), label: r.conviction_label ?? '' }} />
                       ) : (
                         <span className="text-slate-300 dark:text-slate-600">—</span>
                       )}
                     </td>
-                    <td className="px-3 py-2.5"><FundamentalChip outlook={r.fundamental_outlook} /></td>
-                    <td className="px-3 py-2.5"><RiskChip level={r.risk_level} /></td>
-                    <td className="px-3 py-2.5"><BadgeChip badge={r.badge} /></td>
-                    <td className="px-3 py-2.5 text-[10px] text-slate-400 whitespace-nowrap">
-                      {r.analysis_date ? String(r.analysis_date).slice(0, 10) : 'never'}
+                    <td className="px-4 py-3.5 align-middle"><FundamentalChip outlook={r.fundamental_outlook} /></td>
+                    <td className="px-4 py-3.5 align-middle"><RiskChip level={r.risk_level} /></td>
+                    <td className="px-4 py-3.5 align-middle"><BadgeChip badge={r.badge} /></td>
+                    <td className="px-4 py-3.5 align-middle text-right whitespace-nowrap">
+                      <span className="text-[10px] text-slate-400 dark:text-white/25">
+                        {r.analysis_date
+                          ? new Date(String(r.analysis_date)).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+                          : 'never'}
+                      </span>
                     </td>
                   </tr>
                 ))}
@@ -347,20 +385,24 @@ export default function UniversePage() {
           </div>
 
           {/* Pagination */}
-          <div className="flex items-center justify-between px-4 py-3 border-t border-slate-100 dark:border-slate-800 text-xs text-slate-500 dark:text-slate-400">
-            <span>{total.toLocaleString('en-IN')} stocks · page {page} of {pages}</span>
+          <div className="flex items-center justify-between px-5 py-3.5 border-t border-slate-100 dark:border-slate-800">
+            <span className="text-[11px] text-slate-500 dark:text-slate-400">
+              <span className="font-semibold text-slate-700 dark:text-slate-200">{total.toLocaleString('en-IN')}</span> stocks · page{' '}
+              <span className="font-semibold text-slate-700 dark:text-slate-200">{page}</span> of{' '}
+              <span className="font-semibold text-slate-700 dark:text-slate-200">{pages}</span>
+            </span>
             <div className="flex items-center gap-1.5">
               <button
                 onClick={() => void load(page - 1)}
                 disabled={page <= 1 || loading}
-                className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-white/5"
+                className="px-3 py-1.5 rounded-lg text-[11px] font-semibold border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-white/5 transition-colors"
               >
                 ← Prev
               </button>
               <button
                 onClick={() => void load(page + 1)}
                 disabled={page >= pages || loading}
-                className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-white/5"
+                className="px-3 py-1.5 rounded-lg text-[11px] font-semibold border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-white/5 transition-colors"
               >
                 Next →
               </button>

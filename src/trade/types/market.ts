@@ -1,6 +1,6 @@
 // ── Trade module — core market types ────────────────────────────────────────
 
-export type Timeframe = '1' | '3' | '5' | '15' | '30' | '60' | 'D'
+export type Timeframe = '1' | '3' | '5' | '15' | '30' | '60' | 'D' | 'W' | 'M'
 
 export const TIMEFRAMES: { value: Timeframe; label: string }[] = [
   { value: '1', label: '1m' },
@@ -10,11 +10,13 @@ export const TIMEFRAMES: { value: Timeframe; label: string }[] = [
   { value: '30', label: '30m' },
   { value: '60', label: '1H' },
   { value: 'D', label: '1D' },
+  { value: 'W', label: '1W' },
+  { value: 'M', label: '1M' },
 ]
 
 /** Minutes per timeframe bucket (used to build the live forming candle). */
 export const TF_MINUTES: Record<Timeframe, number> = {
-  '1': 1, '3': 3, '5': 5, '15': 15, '30': 30, '60': 60, D: 1440,
+  '1': 1, '3': 3, '5': 5, '15': 15, '30': 30, '60': 60, D: 1440, W: 10080, M: 43200,
 }
 
 /** KLineCharts candle shape (timestamp in ms). */

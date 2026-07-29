@@ -53,7 +53,14 @@ function mapPosition(r: Record<string, unknown>, b: BrokerAccount, i: number): P
     avgPrice,
     ltp,
     prevClose: num(r, ['prevClose', 'close', 'closePrice', 'close_price'], avgPrice),
-    realized: num(r, ['realized', 'realised', 'realizedPnl', 'realisedPnl', 'realized_pnl', 'bookedPnl']),
+    // API sends realized under `realiasedPNL` (broker spelling). Unrealized is NOT
+    // taken from the snapshot (`unrealiasedMTM`) — the UI computes it from the tick.
+    realized: num(r, [
+      'realiasedPNL', 'realisedPNL', 'realizedPNL', 'realiasedPnl',
+      'realized', 'realised', 'realizedPnl', 'realisedPnl', 'realized_pnl', 'realised_pnl',
+      'realizedProfit', 'realized_profit', 'realisedProfit', 'realised_profit',
+      'realizedPL', 'realisedPL', 'realizedProfitLoss', 'rpnl', 'bookedPnl', 'bookedProfit',
+    ]),
     status: netQ === 0 ? 'CLOSED' : 'OPEN',
   }
 }

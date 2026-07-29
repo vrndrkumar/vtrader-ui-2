@@ -36,7 +36,11 @@ export async function getDailyMarks(candleSymbol: string, kind: CandleKind = 'IN
   const hit = cache.get(candleSymbol)
   if (hit) return hit
 
-  const candles = await getCandlesBySymbol(candleSymbol, '15', kind).catch(() => [])
+  // Indices: use DAILY candles so the previous-close baseline for change% is the
+  // official prior-session close (matches the broker). Reconstructing it from
+  // intraday (15m) buckets is unreliable and can be off by a session.
+  const freq = kind === 'INDEX' ? 'D' : '15'
+  const candles = await getCandlesBySymbol(candleSymbol, freq, kind).catch(() => [])
   const marks = marksFromCandles(candles)
   if (marks) cache.set(candleSymbol, marks)
   return marks

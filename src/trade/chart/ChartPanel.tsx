@@ -6,12 +6,17 @@ import { ChartOrderLayer } from './ChartOrderLayer'
 import { engineRegistry } from './engineRegistry'
 import { dataSource } from '../data/dataSource'
 import { marksFromCandles, setDailyMarks } from '../data/realtime/dailyMarks'
-import { placeMarket } from '../data/trade/tradeAdapter'
+import { placeOrder } from '@/services/orders/placeOrder'
 import { ChartPlusOrder } from './ChartPlusOrder'
+import { IndexPlusOrder } from './IndexPlusOrder'
+import { IndexBracketLayer } from './IndexBracketLayer'
+import { BarCountdown } from './BarCountdown'
 import { useQuote } from '../store/marketStore'
 import { useChartLayoutStore } from '../store/chartLayoutStore'
 import { useBrokerStore, resolveQty } from '@/store/brokerStore'
 import { lotSizeFor } from '@/services/orders/lotSize'
+import { useIndicatorParams } from '../store/indicatorParamsStore'
+import { useDrawingStore } from '../store/drawingStore'
 import { TF_MINUTES, type Candle } from '../types/market'
 
 const isDark = () => document.documentElement.classList.contains('dark')
@@ -27,6 +32,8 @@ export function ChartPanel({ panelId }: { panelId: string }) {
   const [hoverC, setHoverC] = useState<Candle | null>(null)
 
   const config = useChartLayoutStore((s) => s.panels[panelId])
+  const showIndexOrders = useChartLayoutStore((s) => s.showIndexOrders)
+  const barCountdown = useChartLayoutStore((s) => s.barCountdown)
   const active = useChartLayoutStore((s) => s.activePanelId === panelId)
   const setActive = useChartLayoutStore((s) => s.setActive)
   const quote = useQuote(config?.symbol?.key ?? '')
@@ -59,15 +66,25 @@ export function ChartPanel({ panelId }: { panelId: string }) {
       setLoading(false)
       if (!candles.length) { setEmpty(true); return }
       engine.setData(candles)
-      // Seed prev-close/change% from these candles so the tick subscription
-      // below doesn't fire a second (15m) candle request for this symbol.
+      // Persist + re-anchor drawings: save on any change, and rebuild from the
+      // stored time+price defs now that the (new-timeframe) bars are loaded.
+      engine.setDrawingChangeHandler((list) => useDrawingStore.getState().save(symbol.key, list))
+      engine.restoreDrawings(useDrawingStore.getState().get(symbol.key))
+      // Seed prev-close/last-price from these candles to avoid a second candle
+      // request — but NOT for an index: an index's change% baseline must be the
+      // official prior-session (daily) close, which intraday candles can't give,
+      // so let the daily marks fetch drive it instead.
       const marks = marksFromCandles(candles)
-      if (marks) setDailyMarks(symbol.key, marks)
+      if (marks && symbol.kind !== 'INDEX') setDailyMarks(symbol.key, marks)
       const bucketMs = TF_MINUTES[config.timeframe] * 60_000
+      // Weekly/monthly can't be bucketed by fixed minutes (calendar weeks/months
+      // aren't fixed-length), so just merge live ticks into the last candle; a new
+      // W/M candle appears when history reloads.
+      const coarse = config.timeframe === 'W' || config.timeframe === 'M'
       let last: Candle = { ...candles[candles.length - 1] }
       setLastC(last)
       unsub = dataSource.subscribeQuote(symbol, (q) => {
-        const b = Math.floor(q.ts / bucketMs) * bucketMs
+        const b = coarse ? last.timestamp : Math.floor(q.ts / bucketMs) * bucketMs
         if (b > last.timestamp) last = { timestamp: b, open: q.ltp, high: q.ltp, low: q.ltp, close: q.ltp, volume: 0 }
         else if (b === last.timestamp) last = { ...last, close: q.ltp, high: Math.max(last.high, q.ltp), low: Math.min(last.low, q.ltp) }
         else return
@@ -84,7 +101,8 @@ export function ChartPanel({ panelId }: { panelId: string }) {
     if (!engine || !config) return
     const want = new Set(config.indicators)
     const have = new Set(engine.activeIndicators())
-    want.forEach((n) => { if (!have.has(n)) engine.toggleIndicator(n) })
+    const gp = useIndicatorParams.getState().get
+    want.forEach((n) => { if (!have.has(n)) engine.toggleIndicator(n, gp(n)) })
     have.forEach((n) => { if (!want.has(n)) engine.toggleIndicator(n) })
   }, [config?.indicators])
 
@@ -93,13 +111,12 @@ export function ChartPanel({ panelId }: { panelId: string }) {
   const selectedIds = useBrokerStore((s) => s.selectedIds)
 
   const trade = (side: 'BUY' | 'SELL') => {
-    const b = accounts.find((a) => selectedIds.includes(a.id))
     const sym = config?.symbol
-    if (!b || !sym) return
-    // Quantity = lots × index lot size (e.g. 1 lot NIFTY = 65), same as the order service.
-    const size = lotSizeFor(sym.key.split('_')[0])
-    const lots = Math.max(1, Math.round(resolveQty(b, sym.key) / size))
-    placeMarket(sym.key, sym.display, side, lots * size, b.id) // no auto SL/TP
+    if (!sym) return
+    // Real order via the global service: Quick Trade ON → submit MKT immediately
+    // across selected brokers; OFF → open the shared Order Window for review.
+    // Quantity defaults to each broker's lots (resolveQty ÷ lot size) inside placeOrder.
+    placeOrder({ symbolName: sym.candleSymbol, indexName: sym.key.split('_')[0], side, display: sym.display, priceType: 'MKT', ltp: quote?.ltp })
   }
 
   // Default order quantity (lots × lot size) for the chart "+" trade menu.
@@ -157,6 +174,9 @@ export function ChartPanel({ panelId }: { panelId: string }) {
       <div ref={elRef} className="h-full w-full" />
       {config?.symbol && <ChartOrderLayer engineRef={engineRef} symbolKey={config.symbol.key} ltp={quote?.ltp ?? 0} />}
       {config?.symbol?.kind === 'OPTION' && quote && <ChartPlusOrder engineRef={engineRef} containerRef={rootRef} symbol={config.symbol} ltp={quote.ltp} qty={orderQty} />}
+      {config?.symbol?.kind === 'INDEX' && quote && <IndexPlusOrder engineRef={engineRef} containerRef={rootRef} index={config.symbol.key} ltp={quote.ltp} />}
+      {config?.symbol?.kind === 'INDEX' && showIndexOrders && <IndexBracketLayer engineRef={engineRef} index={config.symbol.key} ltp={quote?.ltp ?? 0} />}
+      {config?.symbol && barCountdown && quote && <BarCountdown engineRef={engineRef} ltp={quote.ltp} timeframe={config.timeframe} />}
       {loading && config?.symbol && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <svg className="animate-spin h-5 w-5 text-brand-600" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>

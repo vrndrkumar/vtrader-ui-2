@@ -6,11 +6,10 @@ import { LayoutIcon } from './LayoutIcon'
 import { useWatchlistStore } from '../store/watchlistStore'
 import { SYMBOLS, indexChartSymbol, TIMEFRAMES, type ChartSymbol } from '../types/market'
 import { BrokerSelector } from '@/components/broker/BrokerSelector'
+import { INDICATORS, INDICATOR_GROUPS } from './indicatorMeta'
+import { IndicatorSettings } from './IndicatorSettings'
 
-const INDICATOR_GROUPS = [
-  { group: 'Overlays', items: ['MA', 'EMA', 'BOLL', 'SAR'] },
-  { group: 'Oscillators', items: ['VOL', 'MACD', 'RSI', 'KDJ'] },
-]
+const GEAR = 'M12 15a3 3 0 100-6 3 3 0 000 6zM19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z'
 const SYNC_ROWS: { key: keyof SyncState; label: string; wired: boolean }[] = [
   { key: 'symbol', label: 'Symbol', wired: true },
   { key: 'interval', label: 'Interval', wired: true },
@@ -38,6 +37,10 @@ function LayoutMenu() {
   const setLayout = useChartLayoutStore((s) => s.setLayout)
   const sync = useChartLayoutStore((s) => s.sync)
   const setSync = useChartLayoutStore((s) => s.setSync)
+  const showIndexOrders = useChartLayoutStore((s) => s.showIndexOrders)
+  const setShowIndexOrders = useChartLayoutStore((s) => s.setShowIndexOrders)
+  const barCountdown = useChartLayoutStore((s) => s.barCountdown)
+  const setBarCountdown = useChartLayoutStore((s) => s.setBarCountdown)
   const [open, setOpen] = useState(false)
   const current = getLayout(layoutId)
 
@@ -80,6 +83,17 @@ function LayoutMenu() {
                   <Toggle on={sync[r.key]} onChange={(v) => setSync({ [r.key]: v })} />
                 </div>
               ))}
+            </div>
+            <div className="mt-1 pt-1.5 border-t border-slate-100 dark:border-slate-800">
+              <p className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Index chart</p>
+              <div className="flex items-center justify-between px-3 py-1.5">
+                <span className="text-sm text-slate-700 dark:text-slate-200">Show orders on chart</span>
+                <Toggle on={showIndexOrders} onChange={setShowIndexOrders} />
+              </div>
+              <div className="flex items-center justify-between px-3 py-1.5">
+                <span className="text-sm text-slate-700 dark:text-slate-200">Countdown to bar close</span>
+                <Toggle on={barCountdown} onChange={setBarCountdown} />
+              </div>
             </div>
           </div>
         </>
@@ -132,6 +146,7 @@ export function ChartToolbar({ onFullscreen }: { onFullscreen: () => void }) {
   const setPanelIndicators = useChartLayoutStore((s) => s.setPanelIndicators)
   const active = panels[activeId]
   const [menu, setMenu] = useState<null | 'ind'>(null)
+  const [settings, setSettings] = useState<string | null>(null)
 
   const toggleIndicator = (name: string) => {
     const cur = active?.indicators ?? []
@@ -160,10 +175,17 @@ export function ChartToolbar({ onFullscreen }: { onFullscreen: () => void }) {
                 {g.items.map((name) => {
                   const on = active?.indicators.includes(name)
                   return (
-                    <button key={name} onClick={() => toggleIndicator(name)} className="flex w-full items-center justify-between px-2 py-1.5 rounded-lg text-sm hover:bg-slate-100 dark:hover:bg-white/5">
-                      <span className={clsx(on ? 'text-brand-600 font-medium' : 'text-slate-700 dark:text-slate-300')}>{name}</span>
-                      {on && <Icon d="M5 12l4 4 10-10" className="h-4 w-4 text-brand-600" />}
-                    </button>
+                    <div key={name} className="flex items-center rounded-lg hover:bg-slate-100 dark:hover:bg-white/5">
+                      <button onClick={() => toggleIndicator(name)} className="flex-1 flex items-center justify-between px-2 py-1.5 text-sm">
+                        <span className={clsx(on ? 'text-brand-600 font-medium' : 'text-slate-700 dark:text-slate-300')}>{INDICATORS[name]?.label ?? name}</span>
+                        {on && <Icon d="M5 12l4 4 10-10" className="h-4 w-4 text-brand-600" />}
+                      </button>
+                      {on && (
+                        <button title="Settings" onClick={() => setSettings(name)} className="mr-1 h-6 w-6 grid place-items-center rounded-md text-slate-400 hover:text-brand-600 hover:bg-slate-200/60 dark:hover:bg-white/10">
+                          <Icon d={GEAR} className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
                   )
                 })}
               </div>
@@ -180,6 +202,7 @@ export function ChartToolbar({ onFullscreen }: { onFullscreen: () => void }) {
       </div>
 
       {menu && <div className="fixed inset-0 z-20" onClick={() => setMenu(null)} />}
+      {settings && <IndicatorSettings name={settings} onClose={() => setSettings(null)} />}
     </div>
   )
 }
