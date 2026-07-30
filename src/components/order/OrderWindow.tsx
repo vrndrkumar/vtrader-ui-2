@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { clsx } from 'clsx'
 import { useBrokerStore } from '@/store/brokerStore'
 import { useOrderStore, type ExecStatus } from '@/store/orderStore'
@@ -31,6 +31,18 @@ export function OrderWindow() {
   const [lots, setLots] = useState<Record<number, number>>({})
   const [lotSize, setLotSize] = useState(1)
 
+  // ── Draggable window (by the header) ──
+  const [pos, setPos] = useState({ x: 0, y: 0 })
+  const dragRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null)
+  useEffect(() => { if (open) setPos({ x: 0, y: 0 }) }, [open, intent]) // recenter on each new order
+  useEffect(() => {
+    const move = (e: PointerEvent) => { const d = dragRef.current; if (!d) return; setPos({ x: d.ox + (e.clientX - d.sx), y: d.oy + (e.clientY - d.sy) }) }
+    const up = () => { dragRef.current = null }
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up)
+    return () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up) }
+  }, [])
+  const startDrag = (e: React.PointerEvent) => { dragRef.current = { sx: e.clientX, sy: e.clientY, ox: pos.x, oy: pos.y } }
+
   // Initialise per-broker lots + price whenever a new order is opened.
   useEffect(() => {
     if (!open || !intent) return
@@ -62,14 +74,16 @@ export function OrderWindow() {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 animate-fade-in" onClick={close}>
-      <div className="w-full max-w-md rounded-2xl bg-white dark:bg-card-dark shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
-        {/* Header */}
-        <div className={clsx('flex items-center justify-between px-4 py-3', isBuy ? 'bg-brand-600' : 'bg-red-600')}>
+      <div className="w-full max-w-md rounded-2xl bg-white dark:bg-card-dark shadow-2xl overflow-hidden"
+        style={{ transform: `translate(${pos.x}px, ${pos.y}px)` }} onClick={(e) => e.stopPropagation()}>
+        {/* Header — drag handle */}
+        <div onPointerDown={startDrag}
+          className={clsx('flex items-center justify-between px-4 py-3 cursor-move select-none touch-none', isBuy ? 'bg-brand-600' : 'bg-red-600')}>
           <div className="text-white">
             <p className="text-[11px] opacity-80">{isBuy ? 'BUY' : 'SELL'} · {product}</p>
             <p className="font-semibold">{intent.display ?? intent.symbolName}</p>
           </div>
-          <button onClick={close} className="text-white/80 hover:text-white"><svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 6l12 12M18 6L6 18" /></svg></button>
+          <button onPointerDown={(e) => e.stopPropagation()} onClick={close} className="text-white/80 hover:text-white"><svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 6l12 12M18 6L6 18" /></svg></button>
         </div>
 
         <div className="p-4 space-y-4">

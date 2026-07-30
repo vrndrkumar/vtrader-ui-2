@@ -17,6 +17,7 @@ import {
 } from './cri.js'
 const criState = () => ({ ...criCaptureState })
 import { ensureFundamentalsSchema, getFundamentals, fundamentalsHealth, prefetchFundamentals, prefetchState } from './fundamentals.js'
+import { ensurePaperSchema, capturePaperCohort, computeScorecard, getCohortHoldings } from './paper.js'
 import { srZones } from './structure.js'
 
 const app = express()
@@ -249,6 +250,23 @@ app.post('/analyze/retry-failed', async (_req, res) => {
   }
 })
 
+// ── Strategy Lab: paper-portfolio category attribution (admin analysis) ──────
+let scorecardCache = null
+app.post('/paper/capture', async (req, res) => {
+  try { res.json(await capturePaperCohort(req.query.force === '1')) } catch (e) { res.status(500).json({ error: e.message }) }
+})
+app.get('/paper/cohort/:key/holdings', async (req, res) => {
+  try { res.json(await getCohortHoldings(String(req.params.key))) } catch (e) { res.status(502).json({ error: e.message }) }
+})
+app.get('/paper/scorecard', async (_req, res) => {
+  try {
+    if (scorecardCache && Date.now() - scorecardCache.at < 15 * 60 * 1000) return res.json(scorecardCache.data)
+    const data = await computeScorecard()
+    scorecardCache = { at: Date.now(), data }
+    res.json(data)
+  } catch (e) { res.status(502).json({ error: e.message }) }
+})
+
 // ── Continuous Research Intelligence (research recommendations ONLY) ─────────
 // Governance: these endpoints never modify scores, weights or badges.
 app.post('/cri/capture', async (_req, res) => {
@@ -328,6 +346,27 @@ scheduleNightly()
 ensureFundamentalsSchema()
   .then(() => console.log('fundamentals schema ready'))
   .catch((e) => console.error('⚠ fundamentals schema init failed:', e.message))
+
+// Strategy Lab: seed this week's cohort now (Wednesday start), then capture a
+// fresh cohort every Monday 09:30 IST when the market has settled.
+ensurePaperSchema()
+  .then(() => {
+    console.log('paper-portfolio schema ready')
+    setTimeout(() => capturePaperCohort(false).then((r) => console.log('paper cohort:', JSON.stringify(r))).catch((e) => console.error('paper capture:', e.message)), 90 * 1000)
+    schedulePaperCapture()
+  })
+  .catch((e) => console.error('⚠ paper schema init failed:', e.message))
+
+function schedulePaperCapture() {
+  // 09:30 IST = 04:00 UTC; fire on Mondays (or the first weekday if Mon is off)
+  const check = () => {
+    const ist = new Date(Date.now() + 5.5 * 3600e3)
+    if (ist.getUTCDay() === 1 && ist.getUTCHours() === 9 && ist.getUTCMinutes() < 40) {
+      capturePaperCohort(false).then((r) => console.log('weekly paper cohort:', JSON.stringify(r))).catch((e) => console.error('weekly paper capture:', e.message))
+    }
+  }
+  setInterval(check, 30 * 60 * 1000) // every 30 min; the once-per-week window guards duplicates
+}
 
 // Startup self-check: the console ALWAYS states whether fundamentals work,
 // which lib version is live, and the exact failure if not. No more guessing.

@@ -1,0 +1,241 @@
+import { useEffect, useMemo, useState } from 'react'
+import { clsx } from 'clsx'
+import axios from 'axios'
+
+/// <reference types="vite/client" />
+const BASE = (import.meta.env.VITE_INSIGHT_API as string | undefined) ??
+  (import.meta.env.DEV ? 'http://localhost:3600' : 'http://164.52.201.122:3600')
+const client = axios.create({ baseURL: BASE })
+
+interface Row {
+  category: string; horizon: string; topN: number; sl: number
+  n: number; cohorts: number; confidence: string
+  avgRet: number | null; medianRet: number | null; hitRate: number | null
+  avgExcess: number | null; beatNiftyPct: number | null; avgMaxDD: number | null
+}
+interface Scorecard {
+  cohorts: Array<{ key: string; startDate: string; engine: string; niftyStart: number | null }>
+  horizons: string[]; slScenarios: number[]; categories: string[]; rows: Row[]; note: string | null
+}
+interface Holding {
+  category: string; rank: number; symbol: string; name: string
+  entryPrice: number | null; qty: number | null; invested: number
+  livePrice: number | null; returnPct: number | null; pnl: number | null; maxDDPct: number | null
+}
+interface HoldingsResp { cohortKey: string; startDate: string; engine: string; holdings: Holding[] }
+
+const num = (v: number | null, s = false) => (v == null ? '—' : `${s && v > 0 ? '+' : ''}${v}${'%'}`)
+
+export default function StrategyLabPage() {
+  const [data, setData] = useState<Scorecard | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState<string | null>(null)
+  const [capturing, setCapturing] = useState(false)
+  const [horizon, setHorizon] = useState('1W')
+  const [topN, setTopN] = useState(10)
+  const [sl, setSl] = useState(0)
+  const [openCohort, setOpenCohort] = useState<string | null>(null)
+  const [holdings, setHoldings] = useState<HoldingsResp | null>(null)
+  const [holdingsLoading, setHoldingsLoading] = useState(false)
+  const [catFilter, setCatFilter] = useState<string>('')
+
+  const openHoldings = async (key: string) => {
+    if (openCohort === key) { setOpenCohort(null); return }
+    setOpenCohort(key); setHoldings(null); setHoldingsLoading(true); setCatFilter('')
+    try { setHoldings((await client.get<HoldingsResp>(`/paper/cohort/${encodeURIComponent(key)}/holdings`)).data) }
+    catch (e: unknown) { setErr((e as Error).message) }
+    finally { setHoldingsLoading(false) }
+  }
+
+  const load = async () => {
+    setLoading(true); setErr(null)
+    try { setData((await client.get<Scorecard>('/paper/scorecard')).data) }
+    catch (e: unknown) { setErr((e as { response?: { data?: { error?: string } } })?.response?.data?.error ?? (e as Error).message) }
+    finally { setLoading(false) }
+  }
+  useEffect(() => { void load() }, [])
+
+  const capture = async () => {
+    setCapturing(true)
+    try { await client.post('/paper/capture'); await load() }
+    catch (e: unknown) { setErr((e as Error).message) }
+    finally { setCapturing(false) }
+  }
+
+  const view = useMemo(() => {
+    if (!data) return []
+    return data.rows
+      .filter((r) => r.horizon === horizon && r.topN === topN && r.sl === sl)
+      .sort((a, b) => (b.avgExcess ?? b.avgRet ?? -99) - (a.avgExcess ?? a.avgRet ?? -99))
+  }, [data, horizon, topN, sl])
+
+  return (
+    <div className="flex-1 min-h-screen bg-slate-50 dark:bg-surface-dark">
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
+          <div>
+            <h1 className="text-xl font-bold text-slate-900 dark:text-white tracking-tight">Strategy Lab <span className="text-[10px] align-top text-amber-500 font-bold">ADMIN</span></h1>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              Paper-trade attribution — which dashboard category actually pays, measured forward vs NIFTY. ₹10k/stock, no costs.
+            </p>
+          </div>
+          <button onClick={() => void capture()} disabled={capturing}
+            className="px-3.5 py-2 rounded-xl text-xs font-bold bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
+            {capturing ? 'Capturing…' : 'Capture cohort now'}
+          </button>
+        </div>
+
+        {data?.note && (
+          <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-4 py-3 text-xs text-amber-700 dark:text-amber-400">
+            ⚠ {data.note}
+          </div>
+        )}
+        {err && <div className="rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-xs text-red-700 dark:text-red-400">{err}</div>}
+
+        {/* cohorts strip */}
+        {data && data.cohorts.length > 0 && (
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card-dark px-4 py-3">
+            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400 mb-1.5">Cohorts ({data.cohorts.length})</div>
+            <div className="flex flex-wrap gap-1.5">
+              {data.cohorts.map((c) => (
+                <button key={c.key} onClick={() => void openHoldings(c.key)}
+                  className={clsx('text-[10px] px-2 py-1 rounded font-medium transition-colors',
+                    openCohort === c.key ? 'bg-brand-600 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700')}>
+                  {c.key} · {c.startDate} · {c.engine} · {openCohort === c.key ? 'hide ▲' : 'view holdings ▼'}
+                </button>
+              ))}
+            </div>
+
+            {/* holdings drill-down */}
+            {openCohort && (
+              <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800">
+                {holdingsLoading && <p className="text-xs text-slate-400">Loading holdings + live prices…</p>}
+                {holdings && (
+                  <>
+                    <div className="flex flex-wrap items-center gap-1.5 mb-2">
+                      <button onClick={() => setCatFilter('')}
+                        className={clsx('text-[10px] px-2 py-0.5 rounded font-semibold', catFilter === '' ? 'bg-brand-600 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-500')}>All ({holdings.holdings.length})</button>
+                      {[...new Set(holdings.holdings.map((h) => h.category))].map((c) => (
+                        <button key={c} onClick={() => setCatFilter(c)}
+                          className={clsx('text-[10px] px-2 py-0.5 rounded font-semibold', catFilter === c ? 'bg-brand-600 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-500')}>{c}</button>
+                      ))}
+                    </div>
+                    <div className="overflow-x-auto max-h-96 overflow-y-auto rounded-lg border border-slate-100 dark:border-slate-800">
+                      <table className="w-full text-xs min-w-[720px]">
+                        <thead className="sticky top-0 bg-slate-50 dark:bg-slate-800/80">
+                          <tr className="text-left text-[10px] uppercase tracking-wide text-slate-400">
+                            <th className="px-3 py-2">Category</th><th className="px-3 py-2">#</th><th className="px-3 py-2">Stock</th>
+                            <th className="px-3 py-2 text-right">Entry ₹</th><th className="px-3 py-2 text-right">Qty</th>
+                            <th className="px-3 py-2 text-right">Invested</th><th className="px-3 py-2 text-right">Live ₹</th>
+                            <th className="px-3 py-2 text-right">Return</th><th className="px-3 py-2 text-right">P&L ₹</th>
+                            <th className="px-3 py-2 text-right" title="Max Drawdown — the worst intraday drop from your entry price since capture (using daily lows). It shows how much 'heat' you'd have sat through, even if the price later recovered.">Max DD ⓘ</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60 text-slate-600 dark:text-slate-300">
+                          {holdings.holdings.filter((h) => !catFilter || h.category === catFilter).map((h, i) => (
+                            <tr key={`${h.category}-${h.symbol}-${i}`}>
+                              <td className="px-3 py-1.5 text-[10px] text-slate-400">{h.category}</td>
+                              <td className="px-3 py-1.5 text-slate-400">{h.rank}</td>
+                              <td className="px-3 py-1.5 font-semibold text-slate-900 dark:text-white">{h.symbol}<span className="text-[10px] text-slate-400 ml-1 font-normal">{h.name}</span></td>
+                              <td className="px-3 py-1.5 text-right tabular-nums">{h.entryPrice ?? '—'}</td>
+                              <td className="px-3 py-1.5 text-right tabular-nums">{h.qty ?? '—'}</td>
+                              <td className="px-3 py-1.5 text-right tabular-nums text-slate-400">{h.invested.toLocaleString('en-IN')}</td>
+                              <td className="px-3 py-1.5 text-right tabular-nums">{h.livePrice ?? '—'}</td>
+                              <td className={clsx('px-3 py-1.5 text-right tabular-nums font-bold', (h.returnPct ?? 0) > 0 ? 'text-emerald-600 dark:text-emerald-400' : (h.returnPct ?? 0) < 0 ? 'text-red-500' : 'text-slate-400')}>{h.returnPct != null ? `${h.returnPct > 0 ? '+' : ''}${h.returnPct}%` : '—'}</td>
+                              <td className={clsx('px-3 py-1.5 text-right tabular-nums', (h.pnl ?? 0) > 0 ? 'text-emerald-600 dark:text-emerald-400' : (h.pnl ?? 0) < 0 ? 'text-red-500' : 'text-slate-400')}>{h.pnl != null ? `${h.pnl > 0 ? '+' : ''}${h.pnl.toLocaleString('en-IN')}` : '—'}</td>
+                              <td className="px-3 py-1.5 text-right tabular-nums text-red-400">{h.maxDDPct != null ? `${h.maxDDPct}%` : '—'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
+                      <b>Qty</b> = whole shares that fit in ₹10,000 (no fractional shares), so <b>Invested</b> is the actual amount deployed (≤ ₹10k).
+                      {' '}<b>Max DD</b> (drawdown) = the worst drop from your entry the stock touched since capture — the pain you'd have sat through even if it recovered. A −8% Max DD with 0% return means it dipped 8% then came back.
+                      {' '}Live return is running (unrealised); the scorecard above uses fixed 1W/2W/1M/3M windows.
+                    </p>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* controls */}
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="flex rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
+            {(data?.horizons ?? ['1W', '2W', '1M', '3M']).map((h) => (
+              <button key={h} onClick={() => setHorizon(h)}
+                className={clsx('px-3 py-1.5 text-xs font-bold', horizon === h ? 'bg-brand-600 text-white' : 'bg-white dark:bg-card-dark text-slate-500 dark:text-slate-400')}>{h}</button>
+            ))}
+          </span>
+          <span className="flex rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
+            {[5, 10, 20].map((n) => (
+              <button key={n} onClick={() => setTopN(n)}
+                className={clsx('px-3 py-1.5 text-xs font-bold', topN === n ? 'bg-brand-600 text-white' : 'bg-white dark:bg-card-dark text-slate-500 dark:text-slate-400')}>Top {n}</button>
+            ))}
+          </span>
+          <span className="flex rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
+            {(data?.slScenarios ?? [0, 5, 10]).map((s) => (
+              <button key={s} onClick={() => setSl(s)}
+                className={clsx('px-3 py-1.5 text-xs font-bold', sl === s ? 'bg-brand-600 text-white' : 'bg-white dark:bg-card-dark text-slate-500 dark:text-slate-400')}>{s === 0 ? 'No SL' : `${s}% SL`}</button>
+            ))}
+          </span>
+        </div>
+
+        {/* scorecard */}
+        <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card-dark overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs min-w-[820px]">
+              <thead>
+                <tr className="text-left text-[10px] uppercase tracking-wide text-slate-400 border-b border-slate-100 dark:border-slate-800">
+                  <th className="px-3 py-2.5">Category</th>
+                  <th className="px-3 py-2.5 text-right">Avg return</th>
+                  <th className="px-3 py-2.5 text-right">Median</th>
+                  <th className="px-3 py-2.5 text-right">vs NIFTY</th>
+                  <th className="px-3 py-2.5 text-right">Hit rate</th>
+                  <th className="px-3 py-2.5 text-right">Beat NIFTY</th>
+                  <th className="px-3 py-2.5 text-right">Avg max DD</th>
+                  <th className="px-3 py-2.5 text-right">n / cohorts</th>
+                  <th className="px-3 py-2.5">Confidence</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
+                {loading && <tr><td colSpan={9} className="px-4 py-10 text-center text-slate-400">Computing forward returns…</td></tr>}
+                {!loading && view.length === 0 && (
+                  <tr><td colSpan={9} className="px-4 py-10 text-center text-slate-400">
+                    No matured results yet for this view. Cohorts need to age {horizon === '1W' ? '~1 week' : horizon === '2W' ? '~2 weeks' : horizon === '1M' ? '~1 month' : '~3 months'} before they score.
+                  </td></tr>
+                )}
+                {view.map((r, i) => (
+                  <tr key={r.category} className={clsx(i === 0 && 'bg-emerald-50/40 dark:bg-emerald-900/10')}>
+                    <td className="px-3 py-2.5 font-semibold text-slate-900 dark:text-white">{i === 0 && '🏆 '}{r.category}</td>
+                    <td className={clsx('px-3 py-2.5 text-right font-bold tabular-nums', (r.avgRet ?? 0) > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500')}>{num(r.avgRet, true)}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums">{num(r.medianRet, true)}</td>
+                    <td className={clsx('px-3 py-2.5 text-right font-bold tabular-nums', (r.avgExcess ?? 0) > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500')}>{num(r.avgExcess, true)}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums">{r.hitRate ?? '—'}%</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums">{r.beatNiftyPct != null ? `${r.beatNiftyPct}%` : '—'}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-red-500">{num(r.avgMaxDD)}</td>
+                    <td className="px-3 py-2.5 text-right text-slate-400">{r.n} / {r.cohorts}</td>
+                    <td className="px-3 py-2.5">
+                      <span className={clsx('text-[10px] font-bold px-2 py-0.5 rounded',
+                        r.confidence === 'High' ? 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600' :
+                        r.confidence === 'Moderate' ? 'bg-amber-50 dark:bg-amber-900/30 text-amber-600' :
+                        'bg-slate-100 dark:bg-slate-800 text-slate-400')}>{r.confidence}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <p className="text-[10px] leading-relaxed text-slate-400 dark:text-slate-500 px-1 pb-4">
+          Each category is its own paper book (a stock in N categories gets N positions). Returns are price-only vs NIFTY over the same window,
+          survivorship-free (entries stored before outcomes). "vs NIFTY" is the number that matters — raw returns flatter in bull markets.
+          Do not rank categories or switch strategy until confidence reaches Moderate (10+ cohorts, ~2–3 months). Research tool, not advice.
+        </p>
+      </div>
+    </div>
+  )
+}

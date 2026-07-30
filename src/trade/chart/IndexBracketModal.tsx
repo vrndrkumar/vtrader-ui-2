@@ -31,7 +31,10 @@ export function IndexBracketModal({ index, entryLevel, onPlaced, onClose }: {
 }) {
   const accounts = useBrokerStore((s) => s.accounts)
   const selectedIds = useBrokerStore((s) => s.selectedIds)
-  const broker = useMemo(() => accounts.find((a) => selectedIds.includes(a.id)) ?? accounts[0], [accounts, selectedIds])
+  const brokers = useMemo(() => {
+    const sel = accounts.filter((a) => selectedIds.includes(a.id))
+    return sel.length ? sel : accounts.slice(0, 1)
+  }, [accounts, selectedIds])
 
   const [expiry, setExpiry] = useState('')
   const { chain, expiries } = useLiveOptionChain(index, expiry)
@@ -63,14 +66,15 @@ export function IndexBracketModal({ index, entryLevel, onPlaced, onClose }: {
   const symbolName = contract?.symbol
   const premium = contract?.ltp
   const entryNum = Number(entry)
-  const valid = !!broker && !!symbolName && Number.isFinite(entryNum) && entryNum > 0 && !busy
+  const valid = brokers.length > 0 && !!symbolName && Number.isFinite(entryNum) && entryNum > 0 && !busy
 
   const place = async () => {
-    if (!broker || !symbolName || !Number.isFinite(entryNum)) return
+    if (!brokers.length || !symbolName || !Number.isFinite(entryNum)) return
     setBusy(true)
     try {
-      await saveIndexBracket({
-        brokerName: broker.brokerName,
+      // One OCO bracket per selected broker (fan-out).
+      await Promise.all(brokers.map((b) => saveIndexBracket({
+        brokerName: b.brokerName,
         indexName: index,
         symbolName,
         product: 'MARGIN',
@@ -80,8 +84,8 @@ export function IndexBracketModal({ index, entryLevel, onPlaced, onClose }: {
         entryTriggerPrice: +entryNum.toFixed(2),
         stopLoss: sl.trim() && Number(sl) > 0 ? { triggerPrice: +Number(sl).toFixed(2) } : undefined,
         target: tgt.trim() && Number(tgt) > 0 ? { triggerPrice: +Number(tgt).toFixed(2) } : undefined,
-      })
-      toast.success(`Index bracket placed · ${opt} ${strike} ${side}`)
+      })))
+      toast.success(`Index bracket placed · ${opt} ${strike} ${side} · ${brokers.length} broker${brokers.length > 1 ? 's' : ''}`)
       onPlaced?.()
       onClose()
     } catch {
@@ -181,7 +185,7 @@ export function IndexBracketModal({ index, entryLevel, onPlaced, onClose }: {
             <div className="flex justify-between"><span>Fill</span><span>MKT on trigger</span></div>
           </div>
 
-          {!broker && <p className="text-[12px] text-amber-600">Select a broker to place orders.</p>}
+          {!brokers.length && <p className="text-[12px] text-amber-600">Select a broker to place orders.</p>}
 
           <button disabled={!valid} onClick={place}
             className={clsx('w-full h-10 rounded-xl text-sm font-bold text-white transition-colors', valid ? 'bg-brand-600 hover:bg-brand-700' : 'bg-slate-300 dark:bg-slate-700 cursor-not-allowed')}>

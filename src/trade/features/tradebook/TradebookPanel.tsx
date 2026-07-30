@@ -131,7 +131,9 @@ export function TradebookPanel() {
   const counts = useMemo(() => orderStatusCounts(ordBySym), [ordBySym])
   const orders = useMemo(() => store.orderStatus === 'ALL' ? ordBySym : ordBySym.filter((o) => o.status === store.orderStatus), [ordBySym, store.orderStatus])
 
-  const netPnl = useMemo(() => openPositions.reduce((a, p) => a + totalPnl(p), 0), [openPositions])
+  // Net P&L = realized + unrealized across ALL positions (closed contribute their
+  // realized P&L; open contribute realized + live unrealized). Not just open.
+  const netPnl = useMemo(() => positions.reduce((a, p) => a + totalPnl(p), 0), [positions])
   const liveOrders = counts.OPEN + counts.PENDING
   const brokerOpts = useMemo(() => brokers.map((b) => b.displayName), [brokers])
   const indices = useMemo(() => [...new Set([...store.positions, ...store.orders].map((r) => r.indexName).filter(Boolean))], [store.positions, store.orders])

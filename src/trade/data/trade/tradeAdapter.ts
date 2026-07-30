@@ -8,6 +8,7 @@ import { useTradeStore, type Side } from '../../store/tradeStore'
 import { useMarketStore } from '../../store/marketStore'
 import { useBrokerStore } from '@/store/brokerStore'
 import { saveOcoMonitor } from '@/api/trade'
+import { roundTick } from '@/services/orders/tick'
 import { setOrderLineDragEnd } from '../../chart/orderOverlays'
 
 export function placeMarket(
@@ -58,8 +59,8 @@ export function syncOcoMonitor(positionId: string) {
   }).then(() => toast.success('OCO monitor saved')).catch(() => toast.error('Failed to save OCO monitor'))
 }
 
-export function modifyStop(id: string, price: number) { useTradeStore.getState().updatePosition(id, { stopLoss: +price.toFixed(2) }) }
-export function modifyTarget(id: string, price: number) { useTradeStore.getState().updatePosition(id, { target: +price.toFixed(2) }) }
+export function modifyStop(id: string, price: number) { useTradeStore.getState().updatePosition(id, { stopLoss: roundTick(price) }) }
+export function modifyTarget(id: string, price: number) { useTradeStore.getState().updatePosition(id, { target: roundTick(price) }) }
 export function modifyStopQty(id: string, qty: number) { useTradeStore.getState().updatePosition(id, { stopQty: Math.max(1, Math.round(qty)) }) }
 export function modifyTargetQty(id: string, qty: number) { useTradeStore.getState().updatePosition(id, { targetQty: Math.max(1, Math.round(qty)) }) }
 export function clearStop(id: string) { useTradeStore.getState().updatePosition(id, { stopLoss: undefined, stopQty: undefined }) }

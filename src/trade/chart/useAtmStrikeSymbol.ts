@@ -4,10 +4,11 @@ import { getExpiries, getExpiryVersion, getStrikeRow, subscribeExpiry, subscribe
 import type { ChartSymbol } from '../types/market'
 
 /**
- * Default strike-chart symbol: the ATM Call of the nearest live expiry, built
- * from the realtime cache. Returns null until option-chain data exists.
+ * ATM strike-chart symbol (Call by default, or Put) of the nearest live expiry,
+ * built from the realtime cache and reactive to the index spot. Returns null
+ * until option-chain data exists.
  */
-export function useAtmStrikeSymbol(index: string): ChartSymbol | null {
+export function useAtmStrikeSymbol(index: string, type: 'CE' | 'PE' = 'CE'): ChartSymbol | null {
   const q = useQuote(index)
   const spot = q?.ltp ?? 0
 
@@ -17,11 +18,12 @@ export function useAtmStrikeSymbol(index: string): ChartSymbol | null {
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   return useMemo(() => {
-    if (!expiry || spot <= 0) return null
+    if (!index || !expiry || spot <= 0) return null
     const step = index === 'SENSEX' ? 100 : 50
     const atm = Math.round(spot / step) * step
-    const ce = getStrikeRow(index, expiry, atm)?.CE
-    if (!ce) return null
-    return { key: ce.symbol, candleSymbol: ce.symbol, display: `${index} ${atm} CE`, kind: 'OPTION' }
-  }, [index, expiry, ver, idxKey, spot])
+    const row = getStrikeRow(index, expiry, atm)
+    const contract = type === 'PE' ? row?.PE : row?.CE
+    if (!contract) return null
+    return { key: contract.symbol, candleSymbol: contract.symbol, display: `${index} ${atm} ${type}`, kind: 'OPTION' }
+  }, [index, expiry, ver, idxKey, spot, type])
 }

@@ -7,7 +7,6 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { clsx } from 'clsx'
-import toast from 'react-hot-toast'
 import type { ChartEngine } from './ChartEngine'
 import { useTradeStore, type Position } from '../store/tradeStore'
 import { useTradebookStore } from '../features/tradebook/tradebookStore'
@@ -16,6 +15,7 @@ import { lotSizeFor } from '@/services/orders/lotSize'
 import { clearStop, clearTarget, exitPosition, modifyStop, modifyStopQty, modifyTarget, modifyTargetQty, syncOcoMonitor } from '../data/trade/tradeAdapter'
 import { useIndexBracketStore } from '../store/indexBracketStore'
 import { useBrokerStore } from '@/store/brokerStore'
+import { submitOrder } from '@/services/orders/placeOrder'
 
 type Leg = 'sl' | 'tp'
 type DragTarget =
@@ -51,6 +51,9 @@ const pnlBadge = (n: number) => n >= 0
 
 /** Invert the chart's price→y mapping (robust even without convertFromPixel). */
 function yToPriceVia(eng: ChartEngine, y: number, ref: number): number | null {
+  // Chart's real y→price mapping first (matches the axis); linear approx only as fallback.
+  const exact = eng.yToPrice(y)
+  if (exact != null && exact > 0) return +exact.toFixed(2)
   const p0 = ref > 0 ? ref : 100
   const p1 = p0 * 1.01
   const y0 = eng.priceToY(p0)
@@ -59,7 +62,7 @@ function yToPriceVia(eng: ChartEngine, y: number, ref: number): number | null {
     const slope = (y1 - y0) / (p1 - p0)
     return +(p0 + (y - y0) / slope).toFixed(2)
   }
-  return eng.yToPrice(y)
+  return null
 }
 
 export function ChartOrderLayer({ engineRef, symbolKey, ltp }: {
@@ -162,8 +165,21 @@ export function ChartOrderLayer({ engineRef, symbolKey, ltp }: {
   }, [symMon, symbolKey])
 
   const onExit = (p: Position) => {
-    if (p.id.startsWith('tb:')) useTradebookStore.getState().squareOff(p.id.slice(3))
-    else exitPosition(p.id)
+    // Mirrored live position → square off through the tradebook (MKT close).
+    if (p.id.startsWith('tb:')) { useTradebookStore.getState().squareOff(p.id.slice(3)); exitPosition(p.id); return }
+    // Non-mirrored running position (e.g. restored from an OCO when the live
+    // position isn't loaded) → place a real MKT closing order on its broker,
+    // just like the side-panel exit — not merely clear the line.
+    const qty = Math.abs(p.netQty)
+    const broker = useBrokerStore.getState().accounts.find((a) => a.id === p.brokerId)
+    if (qty > 0 && broker) {
+      const indexName = p.symbolKey.split('_')[0]
+      const side: 'BUY' | 'SELL' = p.netQty > 0 ? 'SELL' : 'BUY'
+      const lots = Math.max(1, Math.round(qty / lotSizeFor(indexName)))
+      void submitOrder({ symbolName: p.symbolKey, indexName, side, priceType: 'MKT', display: p.display }, [{ broker, lots }])
+        .then(() => useTradebookStore.getState().reload())
+    }
+    exitPosition(p.id)
   }
 
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -236,19 +252,10 @@ export function ChartOrderLayer({ engineRef, symbolKey, ltp }: {
     return () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', end); window.removeEventListener('pointercancel', end) }
   }, [engineRef])
 
-  // One-cancels-other: a hit SL/Target closes the position (skipped mid-drag).
-  useEffect(() => {
-    if (!ltp || draggingRef.current) return
-    for (const p of rows) {
-      const long = p.netQty > 0
-      if (p.stopLoss != null && ((long && ltp <= p.stopLoss) || (!long && ltp >= p.stopLoss))) {
-        onExit(p); toast(`Stop-loss hit · ${p.display}`, { icon: '🛑' })
-      } else if (p.target != null && ((long && ltp >= p.target) || (!long && ltp <= p.target))) {
-        onExit(p); toast.success(`Target hit · ${p.display}`)
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ltp])
+  // SL/Target execution is owned entirely by the SERVER OCO monitor (same as the
+  // index chart) — it fires the exit, cancels the sibling, and pushes a WS event
+  // that clears the lines here. We deliberately do NOT fire an exit on the client
+  // (that used to double up with the OCO monitor and place extra orders).
 
   const refCb = (id: string) => (el: HTMLDivElement | null) => { if (el) elMap.current.set(id, el); else elMap.current.delete(id) }
 

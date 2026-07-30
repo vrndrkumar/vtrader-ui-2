@@ -53,27 +53,34 @@ const kindOf = (r: Record<string, unknown>) => (r.monitorType === 'INDEX' ? 'IND
 
 interface State {
   all: Record<string, unknown>[]
-  byIndex: Record<string, IndexBracket[]>
+  byIndex: Record<string, IndexBracket[]>   // INDEX brackets, keyed by index
+  bySymbol: Record<string, IndexBracket[]>  // SYMBOL brackets with a PENDING entry, keyed by strike
   /** Reload ALL active monitors (index arg kept for call-site compatibility). */
   reload: (index?: string) => Promise<void>
-  /** The active SYMBOL OCO monitor for a strike, if any. */
+  /** The active SYMBOL OCO monitor for a strike, if any (SL/Target on a position). */
   symbolMonitor: (symbol: string) => Record<string, unknown> | undefined
 }
 
 export const useIndexBracketStore = create<State>((set, get) => ({
   all: [],
   byIndex: {},
+  bySymbol: {},
   reload: async () => {
     try {
       const rows = await getOcoMonitors({}) // ALL active monitors for the user
       const byIndex: Record<string, IndexBracket[]> = {}
+      const bySymbol: Record<string, IndexBracket[]> = {}
       for (const r of rows) {
         if (kindOf(r) === 'INDEX') {
-          const idx = String(r.indexName ?? '')
-          ;(byIndex[idx] ??= []).push(norm(r))
+          ;(byIndex[String(r.indexName ?? '')] ??= []).push(norm(r))
+        } else if (r.entryStatus != null && r.entryStatus !== 'FILLED') {
+          // SYMBOL bracket whose triggered entry hasn't filled yet — show it on
+          // the strike chart. Once FILLED, the position + SL/Target render via the
+          // order layer, so it drops out of here (no double render).
+          ;(bySymbol[String(r.symbolName ?? '')] ??= []).push(norm(r))
         }
       }
-      set({ all: rows, byIndex })
+      set({ all: rows, byIndex, bySymbol })
     } catch { /* keep prior state on error */ }
   },
   symbolMonitor: (symbol) => get().all.find((r) => kindOf(r) === 'SYMBOL' && r.symbolName === symbol),

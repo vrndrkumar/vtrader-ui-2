@@ -10,8 +10,11 @@ import { useEffect, useState } from 'react'
 import { clsx } from 'clsx'
 import type { ChartEngine } from './ChartEngine'
 import type { ChartSymbol } from '../types/market'
-import { quickPlace } from '@/services/orders/placeOrder'
+import toast from 'react-hot-toast'
+import { saveSymbolBracket } from '@/api/trade'
+import { useBrokerStore } from '@/store/brokerStore'
 import { useTradebookStore } from '../features/tradebook/tradebookStore'
+import { useIndexBracketStore } from '../store/indexBracketStore'
 
 const AXIS_W = 54 // approx price-axis width — keep the pill clear of it so the axis can be scale-dragged
 
@@ -44,10 +47,15 @@ export function ChartPlusOrder({ engineRef, containerRef, symbol, ltp, qty }: {
   const priceFromY = (y: number): number | null => {
     const eng = engineRef.current
     if (!eng) return null
+    // Use the chart's real y→price mapping (same as the axis label). Only fall
+    // back to a linear approximation around the LTP if that's unavailable — the
+    // approximation drifts far from the LTP (that was the wrong "+" price).
+    const exact = eng.yToPrice(y)
+    if (exact != null && exact > 0) return +exact.toFixed(2)
     const base = ltp > 0 ? ltp : 100
     const y0 = eng.priceToY(base); const y1 = eng.priceToY(base * 1.01)
     if (y0 != null && y1 != null && y1 !== y0) return +(base + (y - y0) / ((y1 - y0) / (base * 0.01))).toFixed(2)
-    return eng.yToPrice(y)
+    return null
   }
 
   const openMenu = () => {
@@ -57,8 +65,17 @@ export function ChartPlusOrder({ engineRef, containerRef, symbol, ltp, qty }: {
   }
 
   const index = symbol.key.split('_')[0]
-  const place = (side: 'BUY' | 'SELL', stop: boolean, price: number) => {
-    void quickPlace({ symbolName: symbol.candleSymbol, indexName: index, side, stop, price, qty }).then(() => useTradebookStore.getState().reload())
+  const place = (side: 'BUY' | 'SELL', _stop: boolean, price: number) => {
+    const bs = useBrokerStore.getState()
+    const brokers = bs.accounts.filter((a) => bs.selectedIds.includes(a.id))
+    if (!brokers.length) { toast.error('Select a broker first'); setMenu(null); setCursorY(null); return }
+    // Triggered strike entry → one OCO SYMBOL bracket PER selected broker (the
+    // monitor watches the option premium and places on hit — uniform with index).
+    void Promise.all(brokers.map((b) =>
+      saveSymbolBracket({ brokerName: b.brokerName, indexName: index, symbolName: symbol.candleSymbol, entrySide: side, entryQuantity: qty, entryTriggerPrice: price }),
+    ))
+      .then(() => { void useIndexBracketStore.getState().reload(); void useTradebookStore.getState().reload() })
+      .catch(() => toast.error('Failed to place entry'))
     setMenu(null); setCursorY(null)
   }
 

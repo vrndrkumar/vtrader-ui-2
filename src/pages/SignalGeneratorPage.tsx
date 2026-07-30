@@ -8,6 +8,8 @@ import {
   deleteSignal,
   toggleSignal,
 } from '@/api/signal'
+import { getStrategyConfigs } from '@/api/strategy'
+import type { StrategyConfig } from '@/types/strategy'
 import type {
   Signal,
   TradeType,
@@ -20,7 +22,6 @@ import { parseTradeDetails } from '@/types/signal'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const SIGNAL_STRATEGY_CODES = ['INTRADAY_MANUAL', 'DELTA_MANUAL']
 
 const SYM_MAP: Record<string, string> = {
   NIFTY: 'Nifty 50',
@@ -56,7 +57,7 @@ interface FormState {
 }
 
 const DEFAULT_FORM: FormState = {
-  strategyCode: 'INTRADAY_MANUAL',
+  strategyCode: '',
   indexName: '',
   symbolName: '',
   tradeType: 'LONG',
@@ -390,10 +391,12 @@ function EditModal({
   signal,
   onClose,
   onSaved,
+  strategyOptions,
 }: {
   signal: Signal
   onClose: () => void
   onSaved: () => void
+  strategyOptions: StrategyConfig[]
 }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -417,7 +420,7 @@ function EditModal({
           </button>
         </div>
         <div className="p-5">
-          <EditSignalForm signal={signal} onSaved={onSaved} onClose={onClose} />
+          <EditSignalForm signal={signal} onSaved={onSaved} onClose={onClose} strategyOptions={strategyOptions} />
         </div>
       </div>
     </div>
@@ -428,10 +431,12 @@ function EditSignalForm({
   signal,
   onSaved,
   onClose,
+  strategyOptions,
 }: {
   signal: Signal
   onSaved: () => void
   onClose: () => void
+  strategyOptions: StrategyConfig[]
 }) {
   const [form, setForm] = useState<FormState>(() => buildFormFromSignal(signal))
   const [loading, setLoading] = useState(false)
@@ -475,7 +480,10 @@ function EditSignalForm({
     <form onSubmit={handleSubmit} className="space-y-4">
       <div className="grid grid-cols-2 gap-3">
         <FieldSelect label="Strategy" value={form.strategyCode} onChange={(e) => set('strategyCode', e.target.value)}>
-          {SIGNAL_STRATEGY_CODES.map((c) => <option key={c} value={c}>{c}</option>)}
+          <option value="">Select Strategy</option>
+          {strategyOptions.map((s) => (
+            <option key={s.strategyCode} value={s.strategyCode}>{s.strategyName}</option>
+          ))}
         </FieldSelect>
         <FieldSelect label="Index" value={form.indexName} onChange={(e) => set('indexName', e.target.value)}>
           <option value="">Select Index</option>
@@ -711,7 +719,7 @@ function SignalRow({
 
 // ─── All Signals Tab ──────────────────────────────────────────────────────────
 
-function AllSignalsTab() {
+function AllSignalsTab({ strategyOptions }: { strategyOptions: StrategyConfig[] }) {
   const [signals, setSignals] = useState<Signal[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -815,7 +823,9 @@ function AllSignalsTab() {
             className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white px-3 py-2 text-sm focus:outline-none appearance-none"
           >
             <option value="">All Strategies</option>
-            {SIGNAL_STRATEGY_CODES.map((c) => <option key={c} value={c}>{c}</option>)}
+            {strategyOptions.map((s) => (
+              <option key={s.strategyCode} value={s.strategyCode}>{s.strategyName}</option>
+            ))}
           </select>
           <select
             value={filterIndex}
@@ -904,6 +914,7 @@ function AllSignalsTab() {
           signal={editSignal}
           onClose={() => setEditSignal(null)}
           onSaved={() => { setEditSignal(null); load() }}
+          strategyOptions={strategyOptions}
         />
       )}
       {deleteSignal_ && (
@@ -919,7 +930,7 @@ function AllSignalsTab() {
 
 // ─── Create Tab ───────────────────────────────────────────────────────────────
 
-function CreateTab({ onCreated }: { onCreated: () => void }) {
+function CreateTab({ onCreated, strategyOptions }: { onCreated: () => void; strategyOptions: StrategyConfig[] }) {
   const [form, setForm] = useState<FormState>(DEFAULT_FORM)
   const [success, setSuccess] = useState<number | null>(null)
   const [loading, setLoading] = useState(false)
@@ -930,6 +941,13 @@ function CreateTab({ onCreated }: { onCreated: () => void }) {
     setError(null)
     setSuccess(null)
   }
+
+  // Auto-select first strategy when options load (only if none selected yet)
+  useEffect(() => {
+    if (strategyOptions.length > 0 && !form.strategyCode) {
+      set('strategyCode', strategyOptions[0].strategyCode)
+    }
+  }, [strategyOptions])
 
   useEffect(() => {
     if (form.indexName && SYM_MAP[form.indexName]) {
@@ -968,7 +986,10 @@ function CreateTab({ onCreated }: { onCreated: () => void }) {
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <FieldSelect label="Strategy" value={form.strategyCode} onChange={(e) => set('strategyCode', e.target.value)}>
-              {SIGNAL_STRATEGY_CODES.map((c) => <option key={c} value={c}>{c}</option>)}
+              <option value="">Select Strategy</option>
+              {strategyOptions.map((s) => (
+                <option key={s.strategyCode} value={s.strategyCode}>{s.strategyName}</option>
+              ))}
             </FieldSelect>
             <FieldSelect label="Index" value={form.indexName} onChange={(e) => set('indexName', e.target.value)}>
               <option value="">Select Index</option>
@@ -1084,6 +1105,13 @@ export default function SignalGeneratorPage() {
   const { user } = useAuth()
   const [tab, setTab] = useState<Tab>('create')
   const [listKey, setListKey] = useState(0)
+  const [strategyOptions, setStrategyOptions] = useState<StrategyConfig[]>([])
+
+  useEffect(() => {
+    getStrategyConfigs()
+      .then(setStrategyOptions)
+      .catch(() => {/* silently ignore — dropdowns will just be empty */})
+  }, [])
 
   if (user?.role !== 'ADMIN') {
     return (
@@ -1144,9 +1172,9 @@ export default function SignalGeneratorPage() {
 
       {/* Tab Content */}
       {tab === 'create' ? (
-        <CreateTab onCreated={() => setListKey((k) => k + 1)} />
+        <CreateTab onCreated={() => setListKey((k) => k + 1)} strategyOptions={strategyOptions} />
       ) : (
-        <AllSignalsTab key={listKey} />
+        <AllSignalsTab key={listKey} strategyOptions={strategyOptions} />
       )}
     </div>
   )

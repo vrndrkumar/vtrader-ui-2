@@ -27,23 +27,28 @@ const strikeLabel = (sym: string) => sym.split('_').slice(-2).join(' ')
 const colorOf = (k: Kind) => (COLORS as Record<string, string>)[k] ?? '#6366f1'
 
 function yToPrice(eng: ChartEngine, y: number, ref: number): number | null {
+  // Chart's real y→price mapping first (matches the axis); linear approx only as fallback.
+  const exact = eng.yToPrice(y)
+  if (exact != null && exact > 0) return +exact.toFixed(2)
   const p0 = ref > 0 ? ref : 100
   const p1 = p0 * 1.01
   const y0 = eng.priceToY(p0); const y1 = eng.priceToY(p1)
   if (y0 != null && y1 != null && y1 !== y0) return +(p0 + (y - y0) / ((y1 - y0) / (p1 - p0))).toFixed(2)
-  return eng.yToPrice(y)
+  return null
 }
 
-export function IndexBracketLayer({ engineRef, index, ltp }: {
+export function IndexBracketLayer({ engineRef, index, symbol, ltp }: {
   engineRef: React.MutableRefObject<ChartEngine | null>
-  index: string
+  index?: string        // INDEX chart → renders INDEX brackets for this index
+  symbol?: string       // strike chart → renders pending SYMBOL brackets for this strike
   ltp: number
 }) {
-  const brackets = useIndexBracketStore((s) => s.byIndex[index]) ?? EMPTY
+  const scope = symbol ?? index ?? ''
+  const brackets = useIndexBracketStore((s) => (symbol ? s.bySymbol[symbol] : s.byIndex[index ?? ''])) ?? EMPTY
   const reload = useIndexBracketStore((s) => s.reload)
   const tbPositions = useTradebookStore((s) => s.positions) ?? EMPTY_POS
   const quotes = useMarketStore((s) => s.quotes)
-  useEffect(() => { void reload(index) }, [index, reload])
+  useEffect(() => { void reload(scope) }, [scope, reload])
 
   const posFor = (sym: string) => tbPositions.find((p) => p.symbol === sym && p.status === 'OPEN')
 
@@ -62,12 +67,15 @@ export function IndexBracketLayer({ engineRef, index, ltp }: {
     return pos.realized + (live - pos.avgPrice) * netQty(pos)
   }
 
-  const step = lotSizeFor(index)
+  const step = lotSizeFor(symbol ? symbol.split('_')[0] : (index ?? ''))
   const wrapRef = useRef<HTMLDivElement>(null)
   const elMap = useRef(new Map<string, HTMLDivElement>())
   const priceMap = useRef(new Map<string, number>())
   const ovRef = useRef<Record<string, number>>({})
   const dragRef = useRef<{ id: string | number; leg: Leg } | null>(null)
+  // rep bracket id → ALL bracket ids in its group (same strike+level across
+  // brokers), so one on-chart line drives every broker's bracket in lockstep.
+  const groupIdsRef = useRef<Map<string | number, (string | number)[]>>(new Map())
   const [, setTick] = useState(0)
   const rerender = () => setTick((t) => t + 1)
   const [dragging, setDragging] = useState<string | null>(null)
@@ -126,7 +134,8 @@ export function IndexBracketLayer({ engineRef, index, ltp }: {
         d.leg === 'entry' ? { entryTriggerPrice: +price.toFixed(2) }
           : d.leg === 'sl' ? { stopLoss: { triggerPrice: +price.toFixed(2) } }
             : { target: { triggerPrice: +price.toFixed(2) } }
-      updateIndexBracket(d.id, patch).then(() => reload(index)).catch(() => toast.error('Update failed'))
+      const ids = groupIdsRef.current.get(d.id) ?? [d.id]
+      Promise.all(ids.map((id) => updateIndexBracket(id, patch))).then(() => reload(scope)).catch(() => toast.error('Update failed'))
         .finally(() => { delete ovRef.current[key]; rerender() })
     }
     window.addEventListener('pointermove', move)
@@ -150,23 +159,46 @@ export function IndexBracketLayer({ engineRef, index, ltp }: {
     dragRef.current = { id: b.id, leg }; setDragging(`${b.id}:${leg}`)
     rerender()
   }
+  const idsOf = (id: string | number) => groupIdsRef.current.get(id) ?? [id]
   const removeLeg = (id: string | number, leg: 'sl' | 'tgt') => {
-    updateIndexBracket(id, leg === 'sl' ? { stopLoss: null } : { target: null }).then(() => reload(index)).catch(() => toast.error('Failed'))
+    Promise.all(idsOf(id).map((x) => updateIndexBracket(x, leg === 'sl' ? { stopLoss: null } : { target: null })))
+      .then(() => reload(scope)).catch(() => toast.error('Failed'))
   }
-  const cancel = (id: string | number) => {
-    cancelIndexBracket(id).then(() => { toast.success('Bracket cancelled'); void reload(index) }).catch(() => toast.error('Cancel failed'))
+  // × behaviour, across ALL brokers in the group: pending bracket → cancel the
+  // monitor(s); FILLED (running position) → cancel the monitor(s) then square off
+  // every broker's position for the strike (MKT), like the exit button.
+  const closeOrCancel = (b: IndexBracket) => {
+    const armed = b.entryStatus === 'FILLED'
+    Promise.all(idsOf(b.id).map((x) => cancelIndexBracket(x)))
+      .then(() => {
+        if (armed) tbPositions.filter((p) => p.symbol === b.symbolName && p.status === 'OPEN').forEach((p) => useTradebookStore.getState().squareOff(p.id))
+        toast.success(armed ? 'Position closed · bracket cancelled' : 'Bracket cancelled')
+        void reload(scope)
+      })
+      .catch(() => toast.error('Failed'))
   }
   const setQty = (b: IndexBracket, leg: Leg, qty: number) => {
     let patch: IndexBracketPatch
     if (leg === 'entry') patch = { entryQuantity: qty }
     else if (leg === 'sl') patch = { stopLoss: { triggerPrice: Number(eff(b, 'sl')), quantity: qty } }
     else patch = { target: { triggerPrice: Number(eff(b, 'tgt')), quantity: qty } }
-    updateIndexBracket(b.id, patch).then(() => reload(index)).catch(() => toast.error('Failed'))
+    Promise.all(idsOf(b.id).map((x) => updateIndexBracket(x, patch))).then(() => reload(scope)).catch(() => toast.error('Failed'))
   }
+
+  // Group brackets that are the same strike + entry level across brokers; render
+  // ONE line per group and drive every broker's bracket from it.
+  const groupsMap = new Map<string, IndexBracket[]>()
+  for (const b of brackets) {
+    const k = `${b.symbolName}|${b.entryTriggerPrice}`
+    const arr = groupsMap.get(k)
+    if (arr) arr.push(b); else groupsMap.set(k, [b])
+  }
+  const groupReps = [...groupsMap.values()].map((g) => g[0])
+  groupIdsRef.current = new Map(groupReps.map((rep) => [rep.id, (groupsMap.get(`${rep.symbolName}|${rep.entryTriggerPrice}`) ?? [rep]).map((x) => x.id)]))
 
   return (
     <div ref={wrapRef} className="absolute inset-0 z-10 overflow-hidden pointer-events-none">
-      {brackets.map((b) => {
+      {groupReps.map((b) => {
         const armed = b.entryStatus === 'FILLED'
         const pos = armed ? posFor(b.symbolName) : undefined
         const long = pos ? netQty(pos) > 0 : b.direction === 'LONG'
@@ -188,7 +220,7 @@ export function IndexBracketLayer({ engineRef, index, ltp }: {
                   dim={!armed} dragging={dragging === `${b.id}:entry`}
                   onDown={armed ? undefined : startDrag(b.id, 'entry')}
                   onSetQty={armed ? undefined : (q) => setQty(b, 'entry', q)}
-                  onRemove={() => cancel(b.id)} removeTitle="Cancel bracket"
+                  onRemove={() => closeOrCancel(b)} removeTitle={armed ? 'Close position' : 'Cancel bracket'}
                   chips={<>
                     {sl == null && <Chip color={COLORS.sl} label="SL" onDown={startChip(b, 'sl')} />}
                     {tg == null && <Chip color={COLORS.tp} label="Target" onDown={startChip(b, 'tgt')} />}

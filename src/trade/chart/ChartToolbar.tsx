@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { clsx } from 'clsx'
 import { useChartLayoutStore, applySymbol, applyTimeframe, type SyncState } from '../store/chartLayoutStore'
 import { getLayout, layoutsByCount } from './layouts'
+import { useIndexOptionSync } from './useIndexOptionSync'
 import { LayoutIcon } from './LayoutIcon'
 import { useWatchlistStore } from '../store/watchlistStore'
 import { SYMBOLS, indexChartSymbol, TIMEFRAMES, type ChartSymbol } from '../types/market'
@@ -41,6 +42,9 @@ function LayoutMenu() {
   const setShowIndexOrders = useChartLayoutStore((s) => s.setShowIndexOrders)
   const barCountdown = useChartLayoutStore((s) => s.barCountdown)
   const setBarCountdown = useChartLayoutStore((s) => s.setBarCountdown)
+  const syncOptions = useChartLayoutStore((s) => s.syncOptions)
+  const setSyncOptions = useChartLayoutStore((s) => s.setSyncOptions)
+  useIndexOptionSync()
   const [open, setOpen] = useState(false)
   const current = getLayout(layoutId)
 
@@ -93,6 +97,10 @@ function LayoutMenu() {
               <div className="flex items-center justify-between px-3 py-1.5">
                 <span className="text-sm text-slate-700 dark:text-slate-200">Countdown to bar close</span>
                 <Toggle on={barCountdown} onChange={setBarCountdown} />
+              </div>
+              <div className="flex items-center justify-between px-3 py-1.5">
+                <span className="text-sm text-slate-700 dark:text-slate-200">Sync options with index<span className="block text-[10px] text-slate-400">Load ATM Call/Put when the index is switched</span></span>
+                <Toggle on={syncOptions} onChange={setSyncOptions} />
               </div>
             </div>
           </div>

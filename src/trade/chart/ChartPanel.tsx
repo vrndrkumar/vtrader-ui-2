@@ -176,6 +176,7 @@ export function ChartPanel({ panelId }: { panelId: string }) {
       {config?.symbol?.kind === 'OPTION' && quote && <ChartPlusOrder engineRef={engineRef} containerRef={rootRef} symbol={config.symbol} ltp={quote.ltp} qty={orderQty} />}
       {config?.symbol?.kind === 'INDEX' && quote && <IndexPlusOrder engineRef={engineRef} containerRef={rootRef} index={config.symbol.key} ltp={quote.ltp} />}
       {config?.symbol?.kind === 'INDEX' && showIndexOrders && <IndexBracketLayer engineRef={engineRef} index={config.symbol.key} ltp={quote?.ltp ?? 0} />}
+      {config?.symbol?.kind === 'OPTION' && showIndexOrders && <IndexBracketLayer engineRef={engineRef} symbol={config.symbol.key} ltp={quote?.ltp ?? 0} />}
       {config?.symbol && barCountdown && quote && <BarCountdown engineRef={engineRef} ltp={quote.ltp} timeframe={config.timeframe} />}
       {loading && config?.symbol && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">

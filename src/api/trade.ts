@@ -1,12 +1,15 @@
 import { axiosPrivate } from './axios'
 import type { PlaceOrderRequest } from '@/services/orders/types'
+import { roundTick } from '@/services/orders/tick'
 
 // ── Place Order ──────────────────────────────────────────────────────────────
 // POST /trade/place-order
 // Auth header is attached by the shared axiosPrivate interceptor.
 
 export async function placeOrderApi(payload: PlaceOrderRequest): Promise<unknown> {
-  const { data } = await axiosPrivate.post('/trade/place-order', payload)
+  // Enforce tick size on any order/limit/trigger price (broker rejects otherwise).
+  const body = { ...payload, price: roundTick(payload.price), triggerPrice: roundTick(payload.triggerPrice) }
+  const { data } = await axiosPrivate.post('/trade/place-order', body)
   return data
 }
 
@@ -59,7 +62,8 @@ export interface UpdateOrderRequest {
 }
 
 export async function updateOrderApi(payload: UpdateOrderRequest): Promise<unknown> {
-  const { data } = await axiosPrivate.put('/trade/update-order', payload)
+  const body = { ...payload, price: roundTick(payload.price), triggerPrice: roundTick(payload.triggerPrice) }
+  const { data } = await axiosPrivate.put('/trade/update-order', body)
   return data
 }
 
@@ -89,7 +93,13 @@ export interface OcoMonitorRequest {
 }
 
 export async function saveOcoMonitor(payload: OcoMonitorRequest): Promise<unknown> {
-  const { data } = await axiosPrivate.post('/trade/oco-monitor', payload)
+  // SL/Target limit prices are strike premiums → round to the tick size.
+  const body: OcoMonitorRequest = {
+    ...payload,
+    stopLoss: payload.stopLoss ? { ...payload.stopLoss, limitPrice: roundTick(payload.stopLoss.limitPrice) } : undefined,
+    target: payload.target ? { ...payload.target, limitPrice: roundTick(payload.target.limitPrice) } : undefined,
+  }
+  const { data } = await axiosPrivate.post('/trade/oco-monitor', body)
   return data
 }
 
@@ -134,6 +144,34 @@ export async function getOcoMonitors(params: { monitorType?: string; indexName?:
   if (params.symbolName) q.set('symbolName', params.symbolName)
   const { data } = await axiosPrivate.get(`/trade/oco-monitor?${q.toString()}`)
   return toRows(data)
+}
+
+/** A SYMBOL triggered-entry bracket (strike `+`): entry + optional SL/Target all
+ *  trigger on the OPTION PREMIUM. Same endpoint; no monitorType → backend routes
+ *  to a SYMBOL bracket because an entry leg is present. Premium levels tick-rounded. */
+export interface SymbolBracketRequest {
+  brokerName: string
+  indexName: string
+  symbolName: string
+  product?: string
+  entrySide: 'BUY' | 'SELL'
+  entryQuantity: number
+  entryTriggerPrice: number                                  // premium level
+  entryDir?: 'ABOVE' | 'BELOW'
+  stopLoss?: { triggerPrice: number; quantity?: number }     // premium level
+  target?: { triggerPrice: number; quantity?: number }       // premium level
+}
+
+export async function saveSymbolBracket(payload: SymbolBracketRequest): Promise<{ id?: number | string } & Record<string, unknown>> {
+  const body: SymbolBracketRequest = {
+    ...payload,
+    entryTriggerPrice: roundTick(payload.entryTriggerPrice),
+    stopLoss: payload.stopLoss ? { ...payload.stopLoss, triggerPrice: roundTick(payload.stopLoss.triggerPrice) } : undefined,
+    target: payload.target ? { ...payload.target, triggerPrice: roundTick(payload.target.triggerPrice) } : undefined,
+  }
+  const { data } = await axiosPrivate.post('/trade/oco-monitor', body)
+  const row = (data && typeof data === 'object' && 'data' in data) ? (data as Record<string, unknown>).data : data
+  return (row ?? {}) as { id?: number | string } & Record<string, unknown>
 }
 
 export async function cancelIndexBracket(id: number | string): Promise<unknown> {
