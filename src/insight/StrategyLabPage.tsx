@@ -8,13 +8,15 @@ const BASE = (import.meta.env.VITE_INSIGHT_API as string | undefined) ??
 const client = axios.create({ baseURL: BASE })
 
 interface Row {
-  category: string; horizon: string; topN: number; sl: number
+  category: string; horizon: string; topN: number; sl: number; provisional?: boolean
   n: number; cohorts: number; confidence: string
   avgRet: number | null; medianRet: number | null; hitRate: number | null
   avgExcess: number | null; beatNiftyPct: number | null; avgMaxDD: number | null
 }
+const HZ_LABEL: Record<string, string> = { WEEKLY: 'Weekly', BIWEEKLY: 'Bi-weekly', MONTHLY: 'Monthly' }
 interface Scorecard {
   cohorts: Array<{ key: string; startDate: string; engine: string; niftyStart: number | null }>
+  scope?: string
   horizons: string[]; slScenarios: number[]; categories: string[]; rows: Row[]; note: string | null
 }
 interface Holding {
@@ -31,7 +33,7 @@ export default function StrategyLabPage() {
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState<string | null>(null)
   const [capturing, setCapturing] = useState(false)
-  const [horizon, setHorizon] = useState('1W')
+  const [horizon, setHorizon] = useState('WEEKLY')
   const [topN, setTopN] = useState(10)
   const [sl, setSl] = useState(0)
   const [openCohort, setOpenCohort] = useState<string | null>(null)
@@ -47,13 +49,14 @@ export default function StrategyLabPage() {
     finally { setHoldingsLoading(false) }
   }
 
-  const load = async () => {
+  const [scope, setScope] = useState<string>('ALL') // 'ALL' or a cohort key
+  const load = async (sc = scope) => {
     setLoading(true); setErr(null)
-    try { setData((await client.get<Scorecard>('/paper/scorecard')).data) }
+    try { setData((await client.get<Scorecard>('/paper/scorecard', { params: sc === 'ALL' ? {} : { cohort: sc } })).data) }
     catch (e: unknown) { setErr((e as { response?: { data?: { error?: string } } })?.response?.data?.error ?? (e as Error).message) }
     finally { setLoading(false) }
   }
-  useEffect(() => { void load() }, [])
+  useEffect(() => { void load('ALL') }, [])
 
   const capture = async () => {
     setCapturing(true)
@@ -163,10 +166,20 @@ export default function StrategyLabPage() {
 
         {/* controls */}
         <div className="flex flex-wrap items-center gap-2">
+          {data && data.cohorts.length > 0 && (
+            <select
+              value={scope}
+              onChange={(e) => { setScope(e.target.value); void load(e.target.value) }}
+              className="px-2.5 py-2 rounded-lg text-xs font-semibold bg-white dark:bg-card-dark border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200"
+            >
+              <option value="ALL">All cohorts (aggregate)</option>
+              {data.cohorts.map((c) => <option key={c.key} value={c.key}>{c.key} · {c.startDate}</option>)}
+            </select>
+          )}
           <span className="flex rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
-            {(data?.horizons ?? ['1W', '2W', '1M', '3M']).map((h) => (
+            {(data?.horizons ?? ['WEEKLY', 'BIWEEKLY', 'MONTHLY']).map((h) => (
               <button key={h} onClick={() => setHorizon(h)}
-                className={clsx('px-3 py-1.5 text-xs font-bold', horizon === h ? 'bg-brand-600 text-white' : 'bg-white dark:bg-card-dark text-slate-500 dark:text-slate-400')}>{h}</button>
+                className={clsx('px-3 py-1.5 text-xs font-bold', horizon === h ? 'bg-brand-600 text-white' : 'bg-white dark:bg-card-dark text-slate-500 dark:text-slate-400')}>{HZ_LABEL[h] ?? h}</button>
             ))}
           </span>
           <span className="flex rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
@@ -204,12 +217,15 @@ export default function StrategyLabPage() {
                 {loading && <tr><td colSpan={9} className="px-4 py-10 text-center text-slate-400">Computing forward returns…</td></tr>}
                 {!loading && view.length === 0 && (
                   <tr><td colSpan={9} className="px-4 py-10 text-center text-slate-400">
-                    No matured results yet for this view. Cohorts need to age {horizon === '1W' ? '~1 week' : horizon === '2W' ? '~2 weeks' : horizon === '1M' ? '~1 month' : '~3 months'} before they score.
+                    No results yet for this view — the target Friday hasn't been reached. Weekly cohorts settle at their Friday close (provisional from ~15:15, final after ~16:00).
                   </td></tr>
                 )}
                 {view.map((r, i) => (
                   <tr key={r.category} className={clsx(i === 0 && 'bg-emerald-50/40 dark:bg-emerald-900/10')}>
-                    <td className="px-3 py-2.5 font-semibold text-slate-900 dark:text-white">{i === 0 && '🏆 '}{r.category}</td>
+                    <td className="px-3 py-2.5 font-semibold text-slate-900 dark:text-white">
+                      {i === 0 && '🏆 '}{r.category}
+                      {r.provisional && <span className="ml-1.5 text-[9px] font-bold text-amber-500" title="Friday close still forming — updates through the session, final after ~16:00">LIVE</span>}
+                    </td>
                     <td className={clsx('px-3 py-2.5 text-right font-bold tabular-nums', (r.avgRet ?? 0) > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500')}>{num(r.avgRet, true)}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums">{num(r.medianRet, true)}</td>
                     <td className={clsx('px-3 py-2.5 text-right font-bold tabular-nums', (r.avgExcess ?? 0) > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500')}>{num(r.avgExcess, true)}</td>

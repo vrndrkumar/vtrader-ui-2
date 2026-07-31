@@ -12,8 +12,23 @@ import { ENGINE_VERSION } from './engines.js'
 
 const INVEST = 10000
 const TOP_N = 20 // capture top-20 per category; UI slices to 5/10/20
-export const HORIZONS = { '1W': 5, '2W': 10, '1M': 21, '3M': 63 } // trading days
+// Calendar-anchored: every cohort is entered Monday 09:30 and evaluated at the
+// FRIDAY close (15:30) of the target week — Monday & Friday both inclusive.
+// value = how many Fridays ahead (0 = this week's Friday).
+export const HORIZONS = { WEEKLY: 0, BIWEEKLY: 1, MONTHLY: 3 }
 export const SL_SCENARIOS = [0, 5, 10] // %; 0 = no stop
+
+const dateStr = (c) => new Date(c.time * 1000).toISOString().slice(0, 10)
+const istToday = () => new Date(Date.now() + 5.5 * 3600e3).toISOString().slice(0, 10)
+
+/** The Friday date `weekOffset` weeks after the cohort's start week. */
+export function targetFriday(startDate, weekOffset) {
+  const d = new Date(startDate + 'T00:00:00Z')
+  const dow = d.getUTCDay() // Mon=1 … Fri=5
+  const t = new Date(d)
+  t.setUTCDate(d.getUTCDate() + (5 - dow) + weekOffset * 7)
+  return t.toISOString().slice(0, 10)
+}
 // dashboard keys we attribute (label → getDashboard field)
 const CATEGORIES = {
   'Top Picks': 'topPicks',
@@ -111,17 +126,20 @@ const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null)
 const pct = (v, d = 2) => (v == null ? null : +v.toFixed(d))
 
 /**
- * Evaluate one holding across all horizons and SL scenarios (price only;
- * benchmark excess is added by the caller from cohort NIFTY).
+ * Evaluate one holding at each calendar horizon (this/next/4th Friday close).
+ * Entry = cohort start price, exit = close on the target Friday (or the latest
+ * available session if it's today and still forming → provisional). Price only;
+ * benchmark excess is added by the caller.
  */
-export function evalHolding(entryPrice, entryDate, daily) {
+export function evalHolding(entryPrice, startDate, daily, today = istToday()) {
   if (!(entryPrice > 0) || !daily?.length) return null
-  const fwd = daily.filter((c) => new Date(c.time * 1000).toISOString().slice(0, 10) > entryDate)
   const out = {}
-  for (const [hName, hBars] of Object.entries(HORIZONS)) {
-    if (fwd.length < hBars) { out[hName] = { status: 'in-progress' }; continue }
-    const win = fwd.slice(0, hBars)
-    const exit = win[hBars - 1]
+  for (const [hName, off] of Object.entries(HORIZONS)) {
+    const fri = targetFriday(startDate, off)
+    if (fri > today) { out[hName] = { status: 'in-progress', targetDate: fri }; continue }
+    const win = daily.filter((c) => { const d = dateStr(c); return d > startDate && d <= fri })
+    if (!win.length) { out[hName] = { status: 'in-progress', targetDate: fri }; continue }
+    const exit = win[win.length - 1]
     const minLow = Math.min(...win.map((c) => c.low))
     const maxDD = ((minLow - entryPrice) / entryPrice) * 100
     const scen = {}
@@ -135,7 +153,7 @@ export function evalHolding(entryPrice, entryDate, daily) {
       }
       scen[sl] = +ret.toFixed(2)
     }
-    out[hName] = { status: 'matured', exitDate: new Date(exit.time * 1000).toISOString().slice(0, 10), scen, maxDD: +maxDD.toFixed(2) }
+    out[hName] = { status: 'matured', provisional: fri === today, targetDate: fri, exitDate: dateStr(exit), scen, maxDD: +maxDD.toFixed(2) }
   }
   return out
 }
@@ -181,19 +199,27 @@ export async function getCohortHoldings(cohortKey) {
   return { cohortKey, startDate: entryDate, engine: cohort.engine_version, niftyStart: cohort.nifty_start, holdings: rows }
 }
 
-export async function computeScorecard() {
+export async function computeScorecard(cohortKey = null) {
   const pool = getPool()
-  const [cohorts] = await pool.query('SELECT * FROM paper_cohort ORDER BY start_date')
-  if (!cohorts.length) return { cohorts: [], categories: [], note: 'No cohorts yet — capture one to begin.' }
-  const [holdings] = await pool.query('SELECT * FROM paper_holding')
+  const [allCohorts] = await pool.query('SELECT * FROM paper_cohort ORDER BY start_date')
+  if (!allCohorts.length) return { cohorts: [], categories: [], rows: [], note: 'No cohorts yet — capture one to begin.' }
+  // scope: one cohort, or all aggregated
+  const cohorts = cohortKey ? allCohorts.filter((c) => c.cohort_key === cohortKey) : allCohorts
+  if (!cohorts.length) return { cohorts: [], categories: [], rows: [], note: `Cohort ${cohortKey} not found.` }
+  const idSet = new Set(cohorts.map((c) => c.id))
+  const [allHoldings] = await pool.query('SELECT * FROM paper_holding')
+  const holdings = allHoldings.filter((h) => idSet.has(h.cohort_id))
 
-  // fetch NIFTY once
+  const today = istToday()
+  // fetch NIFTY once; return = start → close on the target Friday
   const niftyDaily = await fetchDaily(config.benchmarkSymbol, '2024-01-01').catch(() => [])
-  const niftyReturn = (startClose, entryDate, hBars) => {
+  const niftyReturn = (startClose, startDate, off) => {
     if (startClose == null) return null
-    const fwd = niftyDaily.filter((c) => new Date(c.time * 1000).toISOString().slice(0, 10) > entryDate)
-    if (fwd.length < hBars) return null
-    return +(((fwd[hBars - 1].close - startClose) / startClose) * 100).toFixed(2)
+    const fri = targetFriday(startDate, off)
+    if (fri > today) return null
+    const win = niftyDaily.filter((c) => { const d = dateStr(c); return d > startDate && d <= fri })
+    if (!win.length) return null
+    return +(((win[win.length - 1].close - startClose) / startClose) * 100).toFixed(2)
   }
 
   // dedup symbol candle fetches
@@ -207,11 +233,12 @@ export async function computeScorecard() {
   // accumulate per category × horizon × topN × SL
   const buckets = new Map() // key "cat|horizon|topN|sl" -> {rets:[], excess:[], dd:[], cohortsSet:Set}
   const bk = (cat, h, topN, sl) => `${cat}|${h}|${topN}|${sl}`
-  const push = (cat, h, topN, sl, ret, excess, dd, cohortKey) => {
+  const push = (cat, h, topN, sl, ret, excess, dd, cohortKey, provisional) => {
     const k = bk(cat, h, topN, sl)
-    if (!buckets.has(k)) buckets.set(k, { rets: [], excess: [], dd: [], cohorts: new Set() })
+    if (!buckets.has(k)) buckets.set(k, { rets: [], excess: [], dd: [], cohorts: new Set(), provisional: false })
     const b = buckets.get(k)
     b.rets.push(ret); if (excess != null) b.excess.push(excess); if (dd != null) b.dd.push(dd); b.cohorts.add(cohortKey)
+    if (provisional) b.provisional = true
   }
 
   for (const h of holdings) {
@@ -219,17 +246,17 @@ export async function computeScorecard() {
     if (!cohort || h.entry_price == null) continue
     const entryDate = new Date(cohort.start_date).toISOString().slice(0, 10)
     const daily = candleBySym.get(h.symbol_code)
-    const ev = evalHolding(Number(h.entry_price), entryDate, daily)
+    const ev = evalHolding(Number(h.entry_price), entryDate, daily, today)
     if (!ev) continue
-    for (const [hName, hBars] of Object.entries(HORIZONS)) {
+    for (const [hName, off] of Object.entries(HORIZONS)) {
       const cell = ev[hName]
       if (!cell || cell.status !== 'matured') continue
-      const nRet = niftyReturn(cohort.nifty_start != null ? Number(cohort.nifty_start) : null, entryDate, hBars)
+      const nRet = niftyReturn(cohort.nifty_start != null ? Number(cohort.nifty_start) : null, entryDate, off)
       for (const topN of [5, 10, 20]) {
         if (h.rank_in_cat > topN) continue
         for (const sl of SL_SCENARIOS) {
           const ret = cell.scen[sl]
-          push(h.category, hName, topN, sl, ret, nRet != null ? +(ret - nRet).toFixed(2) : null, cell.maxDD, cohort.cohort_key)
+          push(h.category, hName, topN, sl, ret, nRet != null ? +(ret - nRet).toFixed(2) : null, cell.maxDD, cohort.cohort_key, cell.provisional)
         }
       }
     }
@@ -240,7 +267,7 @@ export async function computeScorecard() {
   for (const [k, b] of buckets) {
     const [category, horizon, topN, sl] = k.split('|')
     rows.push({
-      category, horizon, topN: Number(topN), sl: Number(sl),
+      category, horizon, topN: Number(topN), sl: Number(sl), provisional: b.provisional,
       n: b.rets.length, cohorts: b.cohorts.size, confidence: conf(b.cohorts.size),
       avgRet: pct(mean(b.rets)), medianRet: pct(median(b.rets)),
       hitRate: pct((b.rets.filter((r) => r > 0).length / (b.rets.length || 1)) * 100, 0),
@@ -249,9 +276,11 @@ export async function computeScorecard() {
     })
   }
   return {
-    cohorts: cohorts.map((c) => ({ key: c.cohort_key, startDate: new Date(c.start_date).toISOString().slice(0, 10), engine: c.engine_version, niftyStart: c.nifty_start })),
+    // always list ALL cohorts (for the selector); rows are scoped to `scope`
+    cohorts: allCohorts.map((c) => ({ key: c.cohort_key, startDate: new Date(c.start_date).toISOString().slice(0, 10), engine: c.engine_version, niftyStart: c.nifty_start })),
+    scope: cohortKey ?? 'ALL',
     horizons: Object.keys(HORIZONS), slScenarios: SL_SCENARIOS, categories: Object.keys(CATEGORIES),
     rows,
-    note: cohorts.length < 10 ? `Only ${cohorts.length} cohort(s) so far — results are provisional (confidence rises at 10+ cohorts / ~2–3 months). Do NOT switch strategy on this yet.` : null,
+    note: !cohortKey && allCohorts.length < 10 ? `Only ${allCohorts.length} cohort(s) so far — treat as illustrative (confidence rises at 10+ cohorts / ~2–3 months). Do NOT switch strategy yet.` : cohortKey ? `Single-cohort view (${cohortKey}) — one week is a data point, not a verdict.` : null,
   }
 }

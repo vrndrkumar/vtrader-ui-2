@@ -11,8 +11,13 @@ export function IndexStrip() {
   // Keep every configured index subscribed (ref-counted; reserved card either way).
   useEffect(() => {
     realtime.start()
+    const codes = STRIP_INDICES.map((i) => i.code)
+    // Keep index prev-close + price matched to the broker at every phase
+    // (pre-open / live / post-close): sync now, then refresh on an interval.
+    realtime.primeIndices(codes)
+    const poll = setInterval(() => realtime.primeIndices(codes), 5_000)
     const unsubs = STRIP_INDICES.map((i) => realtime.subscribeIndexTick(i.code))
-    return () => unsubs.forEach((u) => u())
+    return () => { clearInterval(poll); unsubs.forEach((u) => u()) }
   }, [])
 
   return (

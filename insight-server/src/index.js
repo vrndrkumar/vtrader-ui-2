@@ -251,18 +251,20 @@ app.post('/analyze/retry-failed', async (_req, res) => {
 })
 
 // ── Strategy Lab: paper-portfolio category attribution (admin analysis) ──────
-let scorecardCache = null
 app.post('/paper/capture', async (req, res) => {
   try { res.json(await capturePaperCohort(req.query.force === '1')) } catch (e) { res.status(500).json({ error: e.message }) }
 })
 app.get('/paper/cohort/:key/holdings', async (req, res) => {
   try { res.json(await getCohortHoldings(String(req.params.key))) } catch (e) { res.status(502).json({ error: e.message }) }
 })
-app.get('/paper/scorecard', async (_req, res) => {
+const scorecardCacheByScope = new Map() // scope -> { at, data }
+app.get('/paper/scorecard', async (req, res) => {
+  const scope = req.query.cohort ? String(req.query.cohort) : 'ALL'
   try {
-    if (scorecardCache && Date.now() - scorecardCache.at < 15 * 60 * 1000) return res.json(scorecardCache.data)
-    const data = await computeScorecard()
-    scorecardCache = { at: Date.now(), data }
+    const hit = scorecardCacheByScope.get(scope)
+    if (hit && Date.now() - hit.at < 15 * 60 * 1000) return res.json(hit.data)
+    const data = await computeScorecard(scope === 'ALL' ? null : scope)
+    scorecardCacheByScope.set(scope, { at: Date.now(), data })
     res.json(data)
   } catch (e) { res.status(502).json({ error: e.message }) }
 })
@@ -358,14 +360,19 @@ ensurePaperSchema()
   .catch((e) => console.error('⚠ paper schema init failed:', e.message))
 
 function schedulePaperCapture() {
-  // 09:30 IST = 04:00 UTC; fire on Mondays (or the first weekday if Mon is off)
-  const check = () => {
-    const ist = new Date(Date.now() + 5.5 * 3600e3)
-    if (ist.getUTCDay() === 1 && ist.getUTCHours() === 9 && ist.getUTCMinutes() < 40) {
-      capturePaperCohort(false).then((r) => console.log('weekly paper cohort:', JSON.stringify(r))).catch((e) => console.error('weekly paper capture:', e.message))
-    }
-  }
-  setInterval(check, 30 * 60 * 1000) // every 30 min; the once-per-week window guards duplicates
+  // Precise timer to the next Monday 09:30 IST (reliable across restarts, unlike
+  // polling). ISO-week keying prevents duplicate cohorts if it double-fires.
+  const nowIst = new Date(Date.now() + 5.5 * 3600e3)
+  const target = new Date(nowIst)
+  const daysToMon = (8 - nowIst.getUTCDay()) % 7 || 7 // next Monday (never today→0)
+  target.setUTCDate(nowIst.getUTCDate() + daysToMon)
+  target.setUTCHours(9, 30, 0, 0)
+  const waitMs = target.getTime() - nowIst.getTime()
+  console.log(`weekly paper cohort scheduled for ${target.toUTCString().replace('GMT', 'IST')} (${Math.round(waitMs / 3600000)}h away)`)
+  setTimeout(() => {
+    capturePaperCohort(false).then((r) => console.log('weekly paper cohort:', JSON.stringify(r))).catch((e) => console.error('weekly paper capture:', e.message))
+    schedulePaperCapture() // re-arm for the following Monday
+  }, waitMs)
 }
 
 // Startup self-check: the console ALWAYS states whether fundamentals work,

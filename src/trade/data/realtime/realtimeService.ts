@@ -24,13 +24,21 @@ function currentUserId(): string | number | null {
 import { applyOptionUpdate, exportSnapshot, importSnapshot } from './optionChainCache'
 import { loadSnapshot, saveSnapshot, todayStamp, type RtSnapshot } from './persistence'
 import { getDailyMarks } from './dailyMarks'
+import { fetchIndexQuotes } from './indexQuotes'
 import { useMarketStore } from '../../store/marketStore'
 
 const SAVE_INTERVAL_MS = 5_000
 
 const lastTickTs = new Map<string, number>()          // index -> last exchange_timestamp
+const lastTickWall = new Map<string, number>()        // index -> wall-clock (ms) of last LIVE tick
 const prevClose = new Map<string, number>()           // index -> previous session close (change% baseline)
 const lastTicks: Record<string, { ltp: number; ts: number }> = {}
+// Indices whose last price came from the authoritative quotes API. A later
+// candle/persisted seed must NOT overwrite it (only live WS ticks may).
+const apiSeeded = new Set<string>()
+// If no live tick for this long, the market isn't actively ticking (pre-open /
+// closed) → the quotes-API `lp` (prior close / official close) drives the price.
+const LIVE_STALE_MS = 8_000
 
 let started = false
 let dirty = false
@@ -51,6 +59,7 @@ function handleIndexTick(p: IndexTickPayload) {
   const prev = lastTickTs.get(p.index) ?? 0
   if (ts && ts <= prev) return // dedup / out-of-order
   lastTickTs.set(p.index, ts)
+  lastTickWall.set(p.index, Date.now()) // for the live/stale decision in the API poll
   lastTicks[p.index] = { ltp: p.ltp, ts }
   dirty = true
   emitQuote(p.index, p.ltp, ts || Date.now(), p.bidPrice, p.askPrice)
@@ -66,6 +75,9 @@ function handleIndexTick(p: IndexTickPayload) {
 // if it's newer than the most recent candle, otherwise the candle close wins
 // (prevents a stale persisted tick from masking the latest close).
 function seedFromMarks(key: string, marks: { lastClose: number; prevClose: number; lastTs: number }) {
+  // The batched quotes API is authoritative for indices — never let a candle
+  // seed overwrite its baseline or last price.
+  if (apiSeeded.has(key)) return
   prevClose.set(key, marks.prevClose)
   const t = lastTicks[key]
   if (!t || t.ts < marks.lastTs) {
@@ -81,6 +93,43 @@ async function primeIndex(index: string) {
   if (prevClose.has(index)) return
   const marks = await getDailyMarks(index, 'INDEX')
   if (marks) seedFromMarks(index, marks)
+}
+
+/**
+ * Sync the strip indices from the batched quotes API — the SAME source & logic a
+ * professional broker uses: change = current − previous close, at every phase.
+ * Called on mount AND on an interval so it stays correct all day:
+ *   • Previous close  → always from the API (authoritative; rolls over each
+ *     morning to the new prior-session close).
+ *   • Current price   → live WS ticks while the market is actively ticking; when
+ *     ticks go quiet (pre-open / after close), the API `lp` (prior close /
+ *     official close) drives it — exactly what the broker shows.
+ * Symbols the feed can't resolve (BTC, INDIA VIX, …) are absent from the result
+ * and keep their candle fallback.
+ */
+async function primeIndicesFromApi(codes: string[]) {
+  try {
+    const marks = await fetchIndexQuotes(codes)
+    const now = Date.now()
+    for (const m of marks) {
+      apiSeeded.add(m.code)
+      prevClose.set(m.code, m.prevClose) // authoritative baseline (rolls over each morning)
+      const live = now - (lastTickWall.get(m.code) ?? 0) < LIVE_STALE_MS
+      if (live) {
+        // Market is actively ticking → WS drives the price. Just re-emit the
+        // current tick so change% reflects any refreshed previous close.
+        const t = lastTicks[m.code]
+        if (t) emitQuote(m.code, t.ltp, t.ts)
+      } else {
+        // Pre-open / closed → the API `lp` is the authoritative price the broker
+        // shows (prior close before open, official close after). Its `tt` is only
+        // a day-stamp, so don't gate on it.
+        const ts = Math.max(lastTicks[m.code]?.ts ?? 0, m.ts)
+        lastTicks[m.code] = { ltp: m.ltp, ts }
+        emitQuote(m.code, m.ltp, ts)
+      }
+    }
+  } catch { /* ignore — per-index candle fallback still applies */ }
 }
 
 /** Same as primeIndex but for an option strike symbol (2-month candle range). */
@@ -118,8 +167,9 @@ async function restore() {
   // Always hydrate for instant display; newer live messages overwrite by ts.
   if (snap.contracts?.length) importSnapshot(snap.contracts)
   for (const [index, t] of Object.entries(snap.ticks ?? {})) {
-    lastTicks[index] = t
     lastTickTs.set(index, t.ts)
+    if (apiSeeded.has(index)) continue // authoritative API price already shown — don't restore a stale tick over it
+    lastTicks[index] = t
     emitQuote(index, t.ltp, t.ts) // change% corrected once primeIndex() loads prevClose
   }
 }
@@ -146,6 +196,10 @@ export const realtime = {
     if (uid != null) wsManager.subscribeChannel(ocoChannel(uid))
     setupPersistence()
   },
+
+  /** Seed authoritative previous-close + last price for many indices at once
+   *  (batched quotes API). Call with the strip's codes on mount. */
+  primeIndices(codes: string[]): void { void primeIndicesFromApi(codes) },
 
   /** Ref-counted server subscription for an index's tick stream. */
   subscribeIndexTick(index: string): () => void {
