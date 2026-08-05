@@ -69,3 +69,29 @@ const MANUAL = new Set(['', 'MANUAL', 'MANUAL_TRADE'])
 export function isManual(groupName?: string): boolean {
   return MANUAL.has((groupName ?? '').toUpperCase())
 }
+
+// ── Strategy badge colours (deterministic hash → distinct palette) ────────────
+// Each unique group_name gets a stable colour across sessions.
+// Manual stays grey; everything else gets a unique colour from the palette.
+const STRATEGY_PALETTE = [
+  'bg-violet-50   text-violet-600  dark:bg-violet-900/20  dark:text-violet-400',
+  'bg-sky-50      text-sky-600     dark:bg-sky-900/20     dark:text-sky-400',
+  'bg-emerald-50  text-emerald-600 dark:bg-emerald-900/20 dark:text-emerald-400',
+  'bg-rose-50     text-rose-600    dark:bg-rose-900/20    dark:text-rose-400',
+  'bg-amber-50    text-amber-600   dark:bg-amber-900/20   dark:text-amber-400',
+  'bg-cyan-50     text-cyan-600    dark:bg-cyan-900/20    dark:text-cyan-400',
+  'bg-orange-50   text-orange-600  dark:bg-orange-900/20  dark:text-orange-400',
+  'bg-pink-50     text-pink-600    dark:bg-pink-900/20    dark:text-pink-400',
+  'bg-teal-50     text-teal-600    dark:bg-teal-900/20    dark:text-teal-400',
+  'bg-indigo-50   text-indigo-600  dark:bg-indigo-900/20  dark:text-indigo-400',
+] as const
+
+export function strategyBadgeCls(groupName?: string): string {
+  if (isManual(groupName)) {
+    return 'bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-400'
+  }
+  const key = (groupName ?? '').toUpperCase()
+  let h = 0
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0
+  return STRATEGY_PALETTE[h % STRATEGY_PALETTE.length]
+}

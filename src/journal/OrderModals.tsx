@@ -5,7 +5,7 @@ import { syncOrder, updateOrder } from '@/api/reports'
 import { getBrokerMasterList } from '@/api/broker'
 import { useHasRegisteredBrokers } from '@/hooks/useHasRegisteredBrokers'
 import type { Trade, TradeOrder } from '@/types/reports'
-import { StrategySelect } from './StrategySelect'
+import { GroupCombobox } from './StrategySelect'
 import { SymbolSearch } from './SymbolSearch'
 
 const apiGroup = (g: string) => g || 'MANUAL'
@@ -65,21 +65,19 @@ function BrokerSelect({ value, onChange, brokers }: {
   )
 }
 
-/** Strategy select — locked to MANUAL when user has no registered brokers */
+/** Strategy / group field — free-text combobox with template + past-group suggestions */
 function GroupSelect({ value, onChange, disabled }: {
   value: string; onChange: (v: string) => void; disabled: boolean
 }) {
   if (disabled) {
     return (
       <div>
-        <select disabled value="MANUAL" className={clsx(inputCls, 'opacity-50 cursor-not-allowed')}>
-          <option value="MANUAL">Manual</option>
-        </select>
+        <GroupCombobox value="MANUAL" onChange={() => {}} disabled className={inputCls} />
         <p className="mt-0.5 text-[10px] text-slate-400">Register a broker first to assign strategies.</p>
       </div>
     )
   }
-  return <StrategySelect value={value} onChange={onChange} className={inputCls} includeManual />
+  return <GroupCombobox value={value} onChange={onChange} className={inputCls} />
 }
 
 function Shell({ title, onClose, children, onSubmit, submitLabel, busy }: {

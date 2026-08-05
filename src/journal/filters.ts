@@ -109,7 +109,7 @@ export function applyFilters(
     if (f.source === 'MANUAL' && !isManual(t.group_name)) return false
     if (f.source === 'IMPORTED' && isManual(t.group_name)) return false
     const e = entryOf(t.trade_id)
-    if (f.tags.length && !(e?.tags ?? []).some((tag) => f.tags.includes(tag.name))) return false
+    if (f.tags.length && !(t.tags ?? []).some((tag) => f.tags.includes(tag.name))) return false
     if (f.hasNotes === 'YES' && !(e?.notes?.trim())) return false
     if (f.hasNotes === 'NO' && e?.notes?.trim()) return false
     if (f.review !== 'ALL' && reviewOf(t.trade_id) !== f.review) return false

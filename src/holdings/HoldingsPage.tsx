@@ -2,7 +2,7 @@
 // Derives non-options positions from trade history and presents a premium
 // portfolio experience with real AI insight from the Stock Master API.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { clsx } from 'clsx'
 import { toast } from 'react-hot-toast'
@@ -11,10 +11,10 @@ import {
   CartesianGrid, Tooltip, AreaChart, Area, Legend,
 } from 'recharts'
 import { getTrades, getTradeOrders } from '@/api/reports'
+import { getHoldingQuotes } from '@/api/quotes'
+import type { QuoteData } from '@/api/quotes'
 import type { Trade, TradeOrder } from '@/types/reports'
-import { parseInstrument } from '@/journal/utils'
-import { useMarketStore } from '@/trade/store/marketStore'
-import { realtime } from '@/trade/data/realtime/realtimeService'
+import { parseInstrument, strategyBadgeCls, isManual } from '@/journal/utils'
 import { searchInsightSymbols, fetchStockInsight } from '@/insight/api'
 import type { InsightSymbol, StockInsightResponse } from '@/insight/types'
 import { BadgeChip, ConvictionStars, RiskChip, LifecycleStepper } from '@/insight/components/Badges'
@@ -65,10 +65,11 @@ type MarketCap = 'Large' | 'Mid' | 'Small'
 
 interface Holding {
   tradeId: string
-  symbol: string        // raw trade symbol, e.g. POKARNA_EQ
-  ticker: string        // display label, e.g. POKARNA
-  insightSymbol: string // Insight API format, e.g. POKARNA-EQ
+  symbol: string        // raw symbol from trade API, e.g. NSE:TCS-EQ or BSE:SENSEXBEES-A (shown as-is in UI)
+  ticker: string        // short label for avatar/charts only, e.g. TCS
+  insightSymbol: string // Insight API format, e.g. TCS-EQ
   brokerName: string
+  groupName: string     // strategy / group from trade
   quantity: number
   avgBuyPrice: number
   investedValue: number
@@ -86,6 +87,8 @@ interface Holding {
 
 interface EnrichedHolding extends Holding {
   ltp: number
+  dayChangePct: number  // from batch quote API (chp)
+  dayChange: number     // from batch quote API (ch)
   currentValue: number
   totalPnl: number
   returnsPct: number
@@ -109,13 +112,19 @@ function deriveHoldings(trades: Trade[]): Holding[] {
       return kind !== 'CE' && kind !== 'PE'
     })
     .map(t => {
-      // Strip exchange prefix (NSE:, BSE:, NFO: etc.) before any processing
+      // Strip exchange prefix only for ticker (avatar initials / charts)
+      // The raw t.symbol_name is preserved in h.symbol and shown in the UI as-is
+      const isNSE = /^NSE:/i.test(t.symbol_name) || !/^[A-Z0-9]{2,}:/i.test(t.symbol_name)
       const cleanName = t.symbol_name.replace(/^[A-Z0-9]+:/i, '')
       const { underlying } = parseInstrument(cleanName)
-      // ticker = short display name (e.g. NIFTYBEES)
+      // ticker = short label used for avatar initials and charts only
       const ticker = underlying.replace(/_EQ$/i, '').replace(/_FUT$/i, '').toUpperCase()
-      // insightSymbol = Insight API format: NIFTYBEES_EQ → NIFTYBEES-EQ
-      const insightSymbol = cleanName.replace(/_/g, '-').toUpperCase()
+      // insightSymbol = what gets sent to Stock Master + quote API
+      // NSE: strip prefix + convert underscores → TCS-EQ
+      // Others: keep full symbol as-is → BSE:SENSEXBEES-A
+      const insightSymbol = isNSE
+        ? cleanName.replace(/_/g, '-').toUpperCase()
+        : t.symbol_name.toUpperCase()
       const qty = Math.abs(t.total_quantity)
       return {
         tradeId: t.trade_id,
@@ -123,6 +132,7 @@ function deriveHoldings(trades: Trade[]): Holding[] {
         ticker,
         insightSymbol,
         brokerName: t.broker_name,
+        groupName: t.group_name || 'MANUAL',
         quantity: qty,
         avgBuyPrice: t.avg_entry_price,
         investedValue: qty * t.avg_entry_price,
@@ -143,7 +153,7 @@ function deriveHoldings(trades: Trade[]): Holding[] {
 /** Merges Stock Master data into holdings, then computes live metrics. */
 function enrichHoldings(
   holdings: Holding[],
-  quotes: Record<string, { ltp: number }>,
+  quotes: Record<string, QuoteData>,
   master: Map<string, InsightSymbol>,
 ): EnrichedHolding[] {
   // First pass: apply master data + live prices
@@ -155,14 +165,17 @@ function enrichHoldings(
     const category  = info?.category  ?? h.category
     const color     = sectorColor(sector)
 
-    const qLtp = quotes[h.symbol]?.ltp ?? quotes[h.ticker]?.ltp ?? 0
-    const ltp = qLtp > 0
-      ? qLtp
+    // Look up by insightSymbol (e.g. TCS-EQ) — what the batch quote API returns
+    const q = quotes[h.insightSymbol]
+    const ltp = q?.ltp && q.ltp > 0
+      ? q.ltp
       : (h.investedValue + h.unrealizedPnlFallback) / Math.max(1, h.quantity)
+    const dayChangePct = q?.chp ?? 0
+    const dayChange    = q?.ch  ?? 0
     const currentValue = h.quantity * ltp
     const totalPnl = (currentValue - h.investedValue) + h.realizedPnl
 
-    return { ...h, sector, industry, companyName, category, color, ltp, currentValue, totalPnl }
+    return { ...h, sector, industry, companyName, category, color, ltp, dayChangePct, dayChange, currentValue, totalPnl }
   })
 
   const totalPortfolioValue = rows.reduce((s, r) => s + r.currentValue, 0)
@@ -171,7 +184,8 @@ function enrichHoldings(
     const returnsPct    = r.investedValue > 0 ? (r.totalPnl / r.investedValue) * 100 : 0
     const allocationPct = totalPortfolioValue > 0 ? (r.currentValue / totalPortfolioValue) * 100 : 0
     const { signal, cls, confidence } = computeAISignal(returnsPct, allocationPct)
-    return { ...r, returnsPct, allocationPct, signal, signalCls: cls, confidence }
+    return { ...r, returnsPct, allocationPct, signal, signalCls: cls, confidence,
+             dayChangePct: r.dayChangePct, dayChange: r.dayChange }
   })
 }
 
@@ -508,17 +522,32 @@ function HoldingsTable({
   selected: string | null
 }) {
   const [search, setSearch] = useState('')
+  const [sectorFilter, setSectorFilter] = useState('')
+  const [strategyFilter, setStrategyFilter] = useState('')
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({ key: 'value', dir: 'desc' })
 
   const toggleSort = (key: SortKey) => {
     setSort(s => s.key === key ? { key, dir: s.dir === 'desc' ? 'asc' : 'desc' } : { key, dir: 'desc' })
   }
 
+  // Derived filter options from current holdings
+  const sectorOptions = useMemo(() => {
+    const sectors = [...new Set(holdings.map(h => h.sector).filter(s => s && s !== 'Other'))].sort()
+    if (holdings.some(h => h.sector === 'Other')) sectors.push('Other')
+    return sectors
+  }, [holdings])
+
+  const strategyOptions = useMemo(() => {
+    return [...new Set(holdings.map(h => h.groupName).filter(Boolean))].sort()
+  }, [holdings])
+
   const sortedFiltered = useMemo(() => {
     const q = search.toLowerCase()
     let rows = q
       ? holdings.filter(h => h.ticker.toLowerCase().includes(q) || h.companyName.toLowerCase().includes(q) || h.sector.toLowerCase().includes(q))
       : holdings
+    if (sectorFilter) rows = rows.filter(h => h.sector === sectorFilter)
+    if (strategyFilter) rows = rows.filter(h => h.groupName === strategyFilter)
     const dir = sort.dir === 'desc' ? -1 : 1
     rows = [...rows].sort((a, b) => {
       switch (sort.key) {
@@ -532,7 +561,7 @@ function HoldingsTable({
       }
     })
     return rows
-  }, [holdings, search, sort])
+  }, [holdings, search, sectorFilter, strategyFilter, sort])
 
   const Th = ({ label, sortKey, right }: { label: string; sortKey?: SortKey; right?: boolean }) => (
     <th
@@ -556,8 +585,8 @@ function HoldingsTable({
 
   return (
     <div className="bg-white dark:bg-card-dark rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden">
-      <div className="flex items-center gap-3 px-5 py-4 border-b border-slate-100 dark:border-slate-800">
-        <div className="relative flex-1 max-w-xs">
+      <div className="flex flex-wrap items-center gap-2 px-5 py-4 border-b border-slate-100 dark:border-slate-800">
+        <div className="relative flex-1 min-w-[160px] max-w-xs">
           <svg className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4-4" /></svg>
           <input
             value={search} onChange={e => setSearch(e.target.value)}
@@ -565,7 +594,35 @@ function HoldingsTable({
             className="w-full pl-8 pr-3 py-2 text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-white/5 text-slate-800 dark:text-slate-200 placeholder:text-slate-400 focus:outline-none focus:border-brand-400 transition-colors"
           />
         </div>
-        <span className="text-xs text-slate-400">{sortedFiltered.length} positions</span>
+        {sectorOptions.length > 0 && (
+          <select
+            value={sectorFilter} onChange={e => setSectorFilter(e.target.value)}
+            className="h-9 px-2.5 rounded-xl text-sm border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-white/5 text-slate-700 dark:text-slate-300 focus:outline-none focus:border-brand-400"
+          >
+            <option value="">All sectors</option>
+            {sectorOptions.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        )}
+        {strategyOptions.length > 0 && (
+          <select
+            value={strategyFilter} onChange={e => setStrategyFilter(e.target.value)}
+            className="h-9 px-2.5 rounded-xl text-sm border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-white/5 text-slate-700 dark:text-slate-300 focus:outline-none focus:border-brand-400"
+          >
+            <option value="">All strategies</option>
+            {strategyOptions.map(g => (
+              <option key={g} value={g}>{isManual(g) ? 'Manual' : g}</option>
+            ))}
+          </select>
+        )}
+        {(sectorFilter || strategyFilter) && (
+          <button
+            onClick={() => { setSectorFilter(''); setStrategyFilter('') }}
+            className="h-9 px-2.5 rounded-xl text-xs text-slate-400 hover:text-rose-500 border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-white/5 transition-colors"
+          >
+            Clear filters
+          </button>
+        )}
+        <span className="ml-auto text-xs text-slate-400">{sortedFiltered.length} positions</span>
       </div>
 
       <div className="overflow-x-auto">
@@ -573,6 +630,8 @@ function HoldingsTable({
           <thead className="sticky top-0 bg-slate-50/90 dark:bg-white/[0.02] backdrop-blur border-b border-slate-100 dark:border-slate-800">
             <tr>
               <Th label="Company" sortKey="name" />
+              <Th label="Sector" />
+              <Th label="Strategy" />
               <Th label="Qty" />
               <Th label="Avg Price" right />
               <Th label="LTP" right />
@@ -588,9 +647,9 @@ function HoldingsTable({
             {loading
               ? Array.from({ length: 5 }).map((_, i) => (
                 <tr key={i} className="border-t border-slate-50 dark:border-slate-800/50">
-                  {Array.from({ length: 10 }).map((__, j) => (
+                  {Array.from({ length: 12 }).map((__, j) => (
                     <td key={j} className="px-4 py-4">
-                      <div className={clsx('animate-pulse rounded-xl bg-slate-100 dark:bg-white/5 h-3')} style={{ width: [140, 40, 60, 60, 80, 90, 70, 60, 50, 80][j] }} />
+                      <div className={clsx('animate-pulse rounded-xl bg-slate-100 dark:bg-white/5 h-3')} style={{ width: [140, 80, 70, 40, 60, 60, 80, 90, 70, 60, 50, 80][j] }} />
                     </td>
                   ))}
                 </tr>
@@ -598,7 +657,7 @@ function HoldingsTable({
               : sortedFiltered.length === 0
               ? (
                 <tr>
-                  <td colSpan={10} className="py-16 text-center">
+                  <td colSpan={12} className="py-16 text-center">
                     <div className="flex flex-col items-center gap-2 text-slate-400">
                       <svg viewBox="0 0 24 24" className="h-10 w-10 opacity-30" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M19 21H5a2 2 0 01-2-2V7a2 2 0 012-2h14a2 2 0 012 2v12a2 2 0 01-2 2z" /><path d="M16 3v4M8 3v4M3 11h18" /></svg>
                       <p className="text-sm font-medium">{search ? 'No matching holdings' : 'No open holdings found'}</p>
@@ -634,16 +693,34 @@ function HoldingRow({ h, isSelected, onSelect }: { h: EnrichedHolding; isSelecte
           <div className="min-w-0">
             <p className="font-semibold text-slate-800 dark:text-slate-100 leading-tight truncate">{h.companyName}</p>
             <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">
-              <span className="font-bold">{h.ticker}</span>
-              {h.sector !== 'Other' && <> · {h.sector}</>}
+              <span className="font-bold">{h.symbol}</span>
               {h.category && <span className="ml-1 px-1 py-0.5 rounded text-[9px] font-bold bg-slate-100 dark:bg-white/10 text-slate-500">{h.category}</span>}
             </p>
           </div>
         </div>
       </td>
+      {/* Sector */}
+      <td className="px-4 py-3.5">
+        <span className="inline-block px-2 py-0.5 rounded-md text-[11px] font-medium bg-slate-100 dark:bg-white/10 text-slate-500 dark:text-slate-400 whitespace-nowrap">
+          {h.sector !== 'Other' ? h.sector : '—'}
+        </span>
+      </td>
+      {/* Strategy / Group */}
+      <td className="px-4 py-3.5">
+        <span className={clsx('inline-block px-2 py-0.5 rounded-md text-[11px] font-medium whitespace-nowrap', strategyBadgeCls(h.groupName))}>
+          {isManual(h.groupName) ? 'Manual' : h.groupName}
+        </span>
+      </td>
       <td className="px-4 py-3.5 tabular-nums text-slate-600 dark:text-slate-400">{h.quantity.toLocaleString('en-IN')}</td>
       <td className="px-4 py-3.5 tabular-nums text-right text-slate-600 dark:text-slate-400">{fmtINR(h.avgBuyPrice)}</td>
-      <td className="px-4 py-3.5 tabular-nums text-right font-semibold text-slate-800 dark:text-slate-200">{fmtINR(h.ltp)}</td>
+      <td className="px-4 py-3.5 text-right">
+        <p className="tabular-nums font-semibold text-slate-800 dark:text-slate-200">{fmtINR(h.ltp)}</p>
+        {h.dayChangePct !== 0 && (
+          <p className={clsx('text-[10px] tabular-nums', h.dayChangePct >= 0 ? 'text-emerald-500' : 'text-rose-500')}>
+            {h.dayChangePct >= 0 ? '+' : ''}{h.dayChangePct.toFixed(2)}%
+          </p>
+        )}
+      </td>
       <td className="px-4 py-3.5 tabular-nums text-right text-slate-500 dark:text-slate-500">{fmtINR(h.investedValue, true)}</td>
       <td className="px-4 py-3.5 tabular-nums text-right font-semibold text-slate-800 dark:text-slate-200">{fmtINR(h.currentValue, true)}</td>
       <td className="px-4 py-3.5 tabular-nums text-right">
@@ -709,7 +786,7 @@ function HoldingDetailPanel({ h, onClose }: { h: EnrichedHolding; onClose: () =>
             <div className="min-w-0">
               <h3 className="text-base font-bold text-slate-900 dark:text-white truncate leading-tight">{h.companyName}</h3>
               <p className="text-[11px] text-slate-400 mt-0.5">
-                {h.ticker}
+                {h.symbol}
                 {h.sector !== 'Other' && <> · {h.sector}</>}
                 {h.industry !== 'Unknown' && h.industry !== h.sector && <> · {h.industry}</>}
                 {h.category && <span className="ml-1 px-1 rounded text-[9px] font-bold bg-slate-100 dark:bg-white/10 text-slate-500">{h.category}</span>}
@@ -1365,9 +1442,20 @@ function ComingSoonTab({ icon, title, description, features }: {
 function useHoldings() {
   const [allTrades, setAllTrades]     = useState<Trade[]>([])
   const [stockMaster, setStockMaster] = useState<Map<string, InsightSymbol>>(new Map())
+  const [quotes, setQuotes]           = useState<Record<string, QuoteData>>({})
   const [loading, setLoading]         = useState(true)
-  const quotes                        = useMarketStore(s => s.quotes)
-  const symbolsRef                    = useRef<string[]>([])
+
+  /** Fetch live quotes for a set of insightSymbols (e.g. ["TCS-EQ", "WIPRO-EQ"]).
+   *  Called after the trade list loads, and again on every manual refresh. */
+  const loadQuotes = useCallback(async (symbols: string[]) => {
+    if (!symbols.length) return
+    try {
+      const data = await getHoldingQuotes(symbols)
+      setQuotes(data)
+    } catch {
+      // Quote failures are non-fatal — holdings still show with fallback LTP
+    }
+  }, [])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -1377,48 +1465,36 @@ function useHoldings() {
 
       // Derive holdings from open non-options trades
       const rawHoldings = deriveHoldings(trades)
-      // Use insightSymbol (e.g. POKARNA-EQ) — not ticker (POKARNA) — for the API
       const uniqueInsightSymbols = [...new Set(rawHoldings.map(h => h.insightSymbol))]
 
-      // Batch-fetch Stock Master for real sector/industry/name
+      // Run Stock Master + live quotes in parallel for all holdings
       const masterMap = new Map<string, InsightSymbol>()
-      await Promise.allSettled(
-        uniqueInsightSymbols.map(sym =>
-          searchInsightSymbols(sym)
-            .then(results => {
-              // Exact match on symbol_code (case-insensitive)
-              const match = results.find(r => r.symbol_code.toUpperCase() === sym)
-              if (match) masterMap.set(sym, match)
-            })
-            .catch(() => { /* ignore individual failures */ }),
+      await Promise.allSettled([
+        // Batch-fetch Stock Master for sector/industry/name
+        Promise.allSettled(
+          uniqueInsightSymbols.map(sym =>
+            searchInsightSymbols(sym)
+              .then(results => {
+                const match = results.find(r => r.symbol_code.toUpperCase() === sym)
+                if (match) masterMap.set(sym, match)
+              })
+              .catch(() => { /* ignore individual failures */ }),
+          ),
         ),
-      )
+        // Batch-fetch live LTP for all symbols — API returns only what it knows, rest are ignored
+        loadQuotes(uniqueInsightSymbols),
+      ])
       setStockMaster(masterMap)
     } catch {
       toast.error('Failed to load holdings')
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [loadQuotes])
 
   useEffect(() => { load() }, [load])
 
   const holdings = useMemo(() => deriveHoldings(allTrades), [allTrades])
-
-  // Subscribe to live ticks for all equity holdings
-  useEffect(() => {
-    const symbols = holdings.map(h => h.symbol)
-    if (JSON.stringify(symbols) === JSON.stringify(symbolsRef.current)) return
-    symbolsRef.current = symbols
-    if (!symbols.length) return
-    realtime.start()
-    const unsubs = symbols.flatMap(s => [
-      realtime.subscribeSymbolTick(s, { prime: false }),
-      realtime.subscribeSymbolTick(s.replace(/_EQ$/i, ''), { prime: false }),
-    ])
-    return () => unsubs.forEach(u => u())
-  }, [holdings])
-
   const enriched = useMemo(() => enrichHoldings(holdings, quotes, stockMaster), [holdings, quotes, stockMaster])
 
   return { enriched, loading, reload: load }

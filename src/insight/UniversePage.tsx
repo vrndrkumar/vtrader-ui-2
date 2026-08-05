@@ -211,6 +211,9 @@ export default function UniversePage() {
               Research intelligence — which stocks deserve investigation because they may be early. Not trading advice.{' '}
               <Link to="/insight/guide" className="text-brand-600 dark:text-brand-400 font-semibold hover:underline">
                 How to read the reports →
+              </Link>{' · '}
+              <Link to="/insight/transitions" className="text-brand-600 dark:text-brand-400 font-semibold hover:underline">
+                Transitions →
               </Link>
             </p>
           </div>

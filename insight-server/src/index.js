@@ -5,7 +5,8 @@ import { searchSymbols, listAllSymbols, getSymbol } from './db.js'
 import { buildReport } from './report.js'
 import {
   ensureSchema, getLatestAnalysis, getHistory, queryUniverse, getFacets,
-  getDashboard, getRankContext, getStandout, getFailures, getFailureSymbols,
+  getDashboard, getRankContext, getStandout, getFailures, getFailureSymbols, pruneOldSnapshots,
+  queryTransitions, getTransitionFacets, backfillTransitions,
 } from './analysisStore.js'
 import { conviction as convictionOf } from './engines.js'
 import { analyseSymbol, startBatch, stopBatch, jobStatus } from './batch.js'
@@ -17,7 +18,7 @@ import {
 } from './cri.js'
 const criState = () => ({ ...criCaptureState })
 import { ensureFundamentalsSchema, getFundamentals, fundamentalsHealth, prefetchFundamentals, prefetchState } from './fundamentals.js'
-import { ensurePaperSchema, capturePaperCohort, computeScorecard, getCohortHoldings } from './paper.js'
+import { ensurePaperSchema, capturePaperCohort, computeScorecard, getCohortHoldings, computeTransitionScorecard, computeTransitionOutcomes, transComputeState } from './paper.js'
 import { srZones } from './structure.js'
 
 const app = express()
@@ -67,12 +68,40 @@ app.get('/universe', async (req, res) => {
   }
 })
 
+// Transition log — browse badge changes (X→Y) by date/params. Small table.
+app.get('/transitions', async (req, res) => {
+  try { res.json(await queryTransitions(req.query)) } catch (e) { res.status(502).json({ error: `Transitions unavailable (${e.code || e.message})` }) }
+})
+app.get('/transitions/facets', async (_req, res) => {
+  try { res.json(await getTransitionFacets()) } catch (e) { res.status(502).json({ error: e.message }) }
+})
+// One-time back-fill from recent history (bounded, safe). Populates the log
+// with badge changes that already happened before logging was deployed.
+app.post('/transitions/backfill', async (req, res) => {
+  try { res.json(await backfillTransitions(Number(req.query.days) || 21)) } catch (e) { res.status(502).json({ error: e.message }) }
+})
+// Transition attribution for Strategy Lab (reads precomputed outcomes — fast)
+app.get('/paper/transition-scorecard', async (_req, res) => {
+  try { res.json(await computeTransitionScorecard()) } catch (e) { res.status(502).json({ error: e.message }) }
+})
+// Background: precompute forward outcomes for matured transitions
+app.post('/paper/transition-compute', async (_req, res) => {
+  try { res.json(await computeTransitionOutcomes()) } catch (e) { res.status(500).json({ error: e.message }) }
+})
+app.get('/paper/transition-compute/status', (_req, res) => res.json({ ...transComputeState }))
+
 app.get('/universe/facets', async (_req, res) => {
   try {
     res.json(await getFacets())
   } catch (e) {
     res.status(502).json({ error: e.message })
   }
+})
+
+// Maintenance: prune old snapshots (keeps latest + recent history)
+app.post('/admin/prune', async (req, res) => {
+  try { res.json({ pruned: await pruneOldSnapshots(Number(req.query.keepDays) || 90) }) }
+  catch (e) { res.status(500).json({ error: e.message }) }
 })
 
 app.get('/dashboard', async (_req, res) => {
@@ -337,6 +366,8 @@ function scheduleNightly() {
       // then prefetch fundamentals for the fresh candidate set
       setTimeout(() => captureOutcomes().catch((e) => console.error('post-nightly CRI capture:', e.message)), 2 * 60 * 60 * 1000)
       setTimeout(() => prefetchFundamentals().catch((e) => console.error('post-nightly fundamentals prefetch:', e.message)), 2.5 * 60 * 60 * 1000)
+      setTimeout(() => pruneOldSnapshots(90).catch((e) => console.error('post-nightly prune:', e.message)), 3 * 60 * 60 * 1000)
+      setTimeout(() => computeTransitionOutcomes().catch((e) => console.error('post-nightly transition outcomes:', e.message)), 3.5 * 60 * 60 * 1000)
     } catch (e) {
       console.error('nightly batch failed to start:', e.message)
     }

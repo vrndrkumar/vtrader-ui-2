@@ -2,13 +2,17 @@ import { useEffect, useMemo, useState } from 'react'
 import { clsx } from 'clsx'
 import { getTrades } from '@/api/reports'
 import type { Trade } from '@/types/reports'
+import { getAllTags } from '@/api/tags'
+import type { UserTag } from '@/api/tags'
 import { useJournalStore } from './journalStore'
-import { useStrategyLabel } from './useStrategies'
+import { useStrategyLabel, registerKnownGroups } from './useStrategies'
 import { JournalFilters } from './JournalFilters'
 import { TradeReviewDrawer } from './TradeReviewDrawer'
 import { AddStandaloneOrderModal } from './OrderModals'
 import { applyFilters, defaultFilters, type Filters } from './filters'
-import { fmtPnl, fmtDate, fmtDuration, parseInstrument, INSTRUMENT_META, REVIEW_META, isManual } from './utils'
+import { fmtPnl, fmtDate, fmtDuration, parseInstrument, INSTRUMENT_META, REVIEW_META, strategyBadgeCls } from './utils'
+import { TagChip } from './TagCombobox'
+import { BulkActionBar } from './BulkActionBar'
 
 const pnlOf = (t: Trade) => (t.realized_pnl ?? 0) + (t.unrealized_pnl ?? 0)
 const PAGE_SIZES = [25, 50, 100]
@@ -58,15 +62,20 @@ export default function JournalPage() {
   const [size, setSize] = useState(25)
   const [syncedAt, setSyncedAt] = useState<Date | null>(null)
   const [addingOrder, setAddingOrder] = useState(false)
+  const [allTags, setAllTags] = useState<UserTag[]>([])
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
   const entries = useJournalStore((s) => s.entries)
   const strategyLabel = useStrategyLabel()
   const reviewOf = (id: string) => entries[id]?.reviewStatus ?? 'NEW'
 
+  useEffect(() => { getAllTags().then(setAllTags).catch(() => {}) }, [])
+
   const fetchTrades = () => {
     setLoading(true)
     getTrades({ fromDate: filters.from, toDate: filters.to })
-      .then(setTrades).catch(() => setTrades([]))
+      .then((data) => { setTrades(data); registerKnownGroups(data.map((t) => t.group_name).filter(Boolean)) })
+      .catch(() => setTrades([]))
       .finally(() => { setLoading(false); setSyncedAt(new Date()) })
   }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -97,13 +106,28 @@ export default function JournalPage() {
   }, [filtered, entries])
 
   const brokers = useMemo(() => [...new Set(trades.map((t) => t.broker_name).filter(Boolean))], [trades])
-  const tagOptions = useMemo(() => [...new Set(Object.values(entries).flatMap((e) => e.tags.map((t) => t.name)))], [entries])
+  // tagOptions: all server-side user tags (from GET /tags), refreshed once on mount
+  const tagOptions = allTags
 
   const pages = Math.max(1, Math.ceil(sorted.length / size))
   const cur = Math.min(page, pages)
   const slice = sorted.slice((cur - 1) * size, cur * size)
-  const changeFilters = (f: Filters) => { setFilters(f); setPage(1) }
+  const changeFilters = (f: Filters) => { setFilters(f); setPage(1); setSelectedIds(new Set()) }
   const sortBy = (k: 'date' | 'pnl') => { if (sortKey === k) setDir((d) => -d); else { setSortKey(k); setDir(-1) } }
+
+  const toggleSelect = (id: string) =>
+    setSelectedIds((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next })
+  const pageIds = slice.map((t) => t.trade_id)
+  const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedIds.has(id))
+  const somePageSelected = pageIds.some((id) => selectedIds.has(id)) && !allPageSelected
+  const toggleSelectPage = () =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (allPageSelected) pageIds.forEach((id) => next.delete(id))
+      else pageIds.forEach((id) => next.add(id))
+      return next
+    })
+  const selectedTrades = useMemo(() => sorted.filter((t) => selectedIds.has(t.trade_id)), [sorted, selectedIds])
 
   return (
     <div className="h-full overflow-y-auto bg-slate-50 dark:bg-surface-dark">
@@ -144,6 +168,16 @@ export default function JournalPage() {
               <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-white/[0.03] text-[11px] uppercase tracking-wide text-slate-400">
                 <tr>
                   <th className="w-1" />
+                  <th className="w-10 pl-3 py-2.5">
+                    <input
+                      type="checkbox"
+                      checked={allPageSelected}
+                      ref={(el) => { if (el) el.indeterminate = somePageSelected }}
+                      onChange={toggleSelectPage}
+                      className="h-3.5 w-3.5 rounded cursor-pointer accent-brand-500"
+                      aria-label="Select all on this page"
+                    />
+                  </th>
                   <th className="text-left font-medium px-3 py-2.5">Symbol</th>
                   <th className="text-left font-medium px-3 py-2.5">Strategy</th>
                   <th className="text-left font-medium px-3 py-2.5">Broker</th>
@@ -157,10 +191,10 @@ export default function JournalPage() {
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={10} className="px-4 py-12 text-center text-slate-400">Loading trades…</td></tr>
+                  <tr><td colSpan={11} className="px-4 py-12 text-center text-slate-400">Loading trades…</td></tr>
                 ) : slice.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="px-4 py-16 text-center">
+                    <td colSpan={11} className="px-4 py-16 text-center">
                       {trades.length === 0 ? (
                         /* True empty — no trades at all */
                         <div className="flex flex-col items-center gap-3 max-w-xs mx-auto">
@@ -187,9 +221,36 @@ export default function JournalPage() {
                   const im = INSTRUMENT_META[ins.kind]
                   const rs = reviewOf(t.trade_id)
                   const e = entries[t.trade_id]
+                  const isSelected = selectedIds.has(t.trade_id)
                   return (
-                    <tr key={t.trade_id} onClick={() => setSelected(t)} className="border-t border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-white/5 cursor-pointer group">
+                    <tr
+                      key={t.trade_id}
+                      onClick={() => setSelected(t)}
+                      className={clsx(
+                        'border-t border-slate-100 dark:border-slate-800 cursor-pointer group',
+                        isSelected
+                          ? 'bg-brand-50/60 dark:bg-brand-900/10 hover:bg-brand-50 dark:hover:bg-brand-900/20'
+                          : 'hover:bg-slate-50 dark:hover:bg-white/5',
+                      )}
+                    >
                       <td className={clsx('w-1 p-0', win ? 'bg-green-500' : 'bg-red-500')} />
+                      <td
+                        className="w-10 pl-3 py-2.5"
+                        onClick={(e) => { e.stopPropagation(); toggleSelect(t.trade_id) }}
+                      >
+                        <div className={clsx(
+                          'h-3.5 w-3.5 rounded border-2 flex items-center justify-center transition-all',
+                          isSelected
+                            ? 'bg-brand-500 border-brand-500'
+                            : 'border-slate-300 dark:border-slate-600 opacity-0 group-hover:opacity-100',
+                        )}>
+                          {isSelected && (
+                            <svg viewBox="0 0 10 10" className="h-2 w-2" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round">
+                              <path d="M1.5 5.5l2.5 2.5 5-5" />
+                            </svg>
+                          )}
+                        </div>
+                      </td>
                       <td className="px-3 py-2.5">
                         <div className="flex items-center gap-2">
                           <span className={clsx('px-1.5 py-0.5 rounded text-[9px] font-bold', im.cls)}>{im.label}</span>
@@ -199,7 +260,7 @@ export default function JournalPage() {
                           </div>
                         </div>
                       </td>
-                      <td className="px-3 py-2.5"><span className={clsx('inline-block px-2 py-0.5 rounded-md text-[11px] font-medium', isManual(t.group_name) ? 'bg-slate-100 text-slate-500 dark:bg-white/10' : 'bg-brand-50 text-brand-600 dark:bg-brand-900/20')}>{strategyLabel(t.group_name)}</span></td>
+                      <td className="px-3 py-2.5"><span className={clsx('inline-block px-2 py-0.5 rounded-md text-[11px] font-medium', strategyBadgeCls(t.group_name))}>{strategyLabel(t.group_name)}</span></td>
                       <td className="px-3 py-2.5 text-[11px] text-slate-500">{t.broker_name}</td>
                       <td className="px-3 py-2.5 text-right tabular-nums text-slate-600 dark:text-slate-300">{t.total_quantity}</td>
                       <td className={clsx('px-3 py-2.5 text-right tabular-nums font-bold', win ? 'text-green-600' : 'text-red-600')}>{fmtPnl(pnl)}</td>
@@ -207,11 +268,13 @@ export default function JournalPage() {
                       <td className="px-3 py-2.5"><span className={clsx('text-[10px] font-semibold px-1.5 py-0.5 rounded', t.status !== 'CLOSED' ? 'bg-amber-50 text-amber-600 dark:bg-amber-900/20' : 'bg-slate-100 text-slate-500 dark:bg-white/10')}>{t.status}</span></td>
                       <td className="px-3 py-2.5 text-[11px] text-slate-500 whitespace-nowrap">{fmtDate(t.first_placed_time)}</td>
                       <td className="px-3 py-2.5">
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-1.5">
                           <span className={clsx('inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded', REVIEW_META[rs].cls)}><span className={clsx('h-1.5 w-1.5 rounded-full', REVIEW_META[rs].dot)} />{REVIEW_META[rs].label}</span>
                           {e?.notes?.trim() && <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 text-slate-400" fill="none" stroke="currentColor" strokeWidth="2" aria-label="Has notes"><path d="M4 5h16M4 12h16M4 19h10" /></svg>}
-                          {(e?.tags.length ?? 0) > 0 && <span className="text-[10px] text-slate-400">#{e!.tags.length}</span>}
                           {(e?.rating ?? 0) > 0 && <span className="text-[10px] text-amber-400">★{e!.rating}</span>}
+                          {(t.tags ?? []).map((tag) => (
+                            <TagChip key={tag.name} name={tag.name} color={tag.metadata.colorCode} size="sm" />
+                          ))}
                         </div>
                       </td>
                     </tr>
@@ -224,8 +287,16 @@ export default function JournalPage() {
         </div>
       </div>
 
-      {selected && <TradeReviewDrawer trade={selected} onClose={() => setSelected(null)} onChanged={fetchTrades} />}
+      {selected && <TradeReviewDrawer trade={selected} allTags={allTags} onClose={() => setSelected(null)} onChanged={fetchTrades} />}
       {addingOrder && <AddStandaloneOrderModal onClose={() => setAddingOrder(false)} onSaved={() => { setAddingOrder(false); fetchTrades() }} />}
+
+      <BulkActionBar
+        count={selectedIds.size}
+        trades={selectedTrades}
+        allTags={allTags}
+        onClear={() => setSelectedIds(new Set())}
+        onDone={fetchTrades}
+      />
     </div>
   )
 }

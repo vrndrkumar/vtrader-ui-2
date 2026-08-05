@@ -1,3 +1,11 @@
+// ── Tag (embedded in trade response + returned by GET /tags) ─────────────────
+
+export interface TradeTag {
+  id: number
+  name: string
+  metadata: { colorCode: string }
+}
+
 // ── Trade (from vtrader_ledger via GET /trades) ─────────────────────────────
 
 export interface Trade {
@@ -15,6 +23,8 @@ export interface Trade {
   first_placed_time: string
   last_updated_time: string | null
   order_count: number
+  tradeNote?: string | null
+  tags?: TradeTag[]
   orders?: TradeOrder[]
 }
 

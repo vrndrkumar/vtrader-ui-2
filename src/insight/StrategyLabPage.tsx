@@ -28,7 +28,41 @@ interface HoldingsResp { cohortKey: string; startDate: string; engine: string; h
 
 const num = (v: number | null, s = false) => (v == null ? '—' : `${s && v > 0 ? '+' : ''}${v}${'%'}`)
 
+interface TransRow {
+  from: string; to: string; pair: string; horizon: string; n: number; symbols: number
+  avgRet: number | null; medianRet: number | null; hitRate: number | null
+  avgExcess: number | null; beatNiftyPct: number | null; avgMaxDD: number | null; confidence: string
+}
+interface TransScore { horizons: string[]; pairs: string[]; rows: TransRow[]; note: string | null; pending?: number }
+
 export default function StrategyLabPage() {
+  const [tab, setTab] = useState<'category' | 'transition'>('category')
+  const [trans, setTrans] = useState<TransScore | null>(null)
+  const [transLoading, setTransLoading] = useState(false)
+  const [computing, setComputing] = useState(false)
+  const [computeMsg, setComputeMsg] = useState<string | null>(null)
+  const [tHorizon, setTHorizon] = useState('1W')
+  const loadTrans = async () => {
+    setTransLoading(true)
+    try { setTrans((await client.get<TransScore>('/paper/transition-scorecard')).data) }
+    catch { /* ignore */ } finally { setTransLoading(false) }
+  }
+  const computeTrans = async () => {
+    setComputing(true); setComputeMsg('Starting…')
+    try {
+      await client.post('/paper/transition-compute')
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 2500))
+        const { data } = await client.get('/paper/transition-compute/status')
+        setComputeMsg(`Computing outcomes: ${data.done}/${data.total} symbols · ${data.stored} stored`)
+        if (!data.running) break
+      }
+      await loadTrans()
+      setComputeMsg(null)
+    } catch { setComputeMsg('Compute failed — check server logs.') } finally { setComputing(false) }
+  }
+  useEffect(() => { if (tab === 'transition' && !trans) void loadTrans() /* eslint-disable-next-line */ }, [tab])
+
   const [data, setData] = useState<Scorecard | null>(null)
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState<string | null>(null)
@@ -82,13 +116,75 @@ export default function StrategyLabPage() {
               Paper-trade attribution — which dashboard category actually pays, measured forward vs NIFTY. ₹10k/stock, no costs.
             </p>
           </div>
-          <button onClick={() => void capture()} disabled={capturing}
-            className="px-3.5 py-2 rounded-xl text-xs font-bold bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
-            {capturing ? 'Capturing…' : 'Capture cohort now'}
-          </button>
+          {tab === 'category' && (
+            <button onClick={() => void capture()} disabled={capturing}
+              className="px-3.5 py-2 rounded-xl text-xs font-bold bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
+              {capturing ? 'Capturing…' : 'Capture cohort now'}
+            </button>
+          )}
         </div>
 
-        {data?.note && (
+        {/* tab switcher */}
+        <span className="flex rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden w-fit">
+          {(['category', 'transition'] as const).map((t) => (
+            <button key={t} onClick={() => setTab(t)}
+              className={clsx('px-3.5 py-1.5 text-xs font-bold', tab === t ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900' : 'bg-white dark:bg-card-dark text-slate-500 dark:text-slate-400')}>
+              {t === 'category' ? 'Category attribution' : 'Transition attribution (X→Y)'}
+            </button>
+          ))}
+        </span>
+
+        {/* ── TRANSITION ATTRIBUTION TAB ── */}
+        {tab === 'transition' && (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center gap-3 justify-between">
+              <p className="text-xs text-slate-500 dark:text-slate-400 max-w-xl">Which badge change (X → Y) pays, and how fast — forward returns vs NIFTY from the transition day. Answers "which move should I bet on."</p>
+              <button onClick={() => void computeTrans()} disabled={computing}
+                className="shrink-0 px-3.5 py-2 rounded-xl text-xs font-bold bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
+                {computing ? (computeMsg ?? 'Computing…') : 'Compute outcomes'}
+              </button>
+            </div>
+            {computeMsg && computing && <div className="text-[11px] text-slate-500 dark:text-slate-400">{computeMsg}</div>}
+            {trans?.note && <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-4 py-3 text-xs text-amber-700 dark:text-amber-400">⚠ {trans.note}</div>}
+            <span className="flex rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden w-fit">
+              {(trans?.horizons ?? ['1W', '2W', '1M']).map((h) => (
+                <button key={h} onClick={() => setTHorizon(h)} className={clsx('px-3 py-1.5 text-xs font-bold', tHorizon === h ? 'bg-brand-600 text-white' : 'bg-white dark:bg-card-dark text-slate-500 dark:text-slate-400')}>{h}</button>
+              ))}
+            </span>
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card-dark overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs min-w-[760px]">
+                  <thead><tr className="text-left text-[10px] uppercase tracking-wide text-slate-400 border-b border-slate-100 dark:border-slate-800">
+                    <th className="px-3 py-2.5">Transition (X → Y)</th><th className="px-3 py-2.5 text-right">Avg return</th><th className="px-3 py-2.5 text-right">Median</th>
+                    <th className="px-3 py-2.5 text-right">vs NIFTY</th><th className="px-3 py-2.5 text-right">Hit rate</th><th className="px-3 py-2.5 text-right">Avg max DD</th>
+                    <th className="px-3 py-2.5 text-right">n / stocks</th><th className="px-3 py-2.5">Confidence</th>
+                  </tr></thead>
+                  <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
+                    {transLoading && <tr><td colSpan={8} className="px-4 py-10 text-center text-slate-400">Computing forward returns per transition…</td></tr>}
+                    {!transLoading && (trans?.rows.filter((r) => r.horizon === tHorizon).length ?? 0) === 0 && (
+                      <tr><td colSpan={8} className="px-4 py-10 text-center text-slate-400">No transition results yet — the log fills forward as nightly analyses record badge changes, and needs ~1 week to mature the first returns.</td></tr>
+                    )}
+                    {(trans?.rows.filter((r) => r.horizon === tHorizon).sort((a, b) => (b.avgExcess ?? -99) - (a.avgExcess ?? -99)) ?? []).map((r, i) => (
+                      <tr key={r.pair} className={clsx(i === 0 && 'bg-emerald-50/40 dark:bg-emerald-900/10')}>
+                        <td className="px-3 py-2.5 font-semibold text-slate-900 dark:text-white">{i === 0 && '🏆 '}{r.pair}</td>
+                        <td className={clsx('px-3 py-2.5 text-right font-bold tabular-nums', (r.avgRet ?? 0) > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500')}>{r.avgRet != null ? `${r.avgRet > 0 ? '+' : ''}${r.avgRet}%` : '—'}</td>
+                        <td className="px-3 py-2.5 text-right tabular-nums">{r.medianRet != null ? `${r.medianRet}%` : '—'}</td>
+                        <td className={clsx('px-3 py-2.5 text-right font-bold tabular-nums', (r.avgExcess ?? 0) > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500')}>{r.avgExcess != null ? `${r.avgExcess > 0 ? '+' : ''}${r.avgExcess}%` : '—'}</td>
+                        <td className="px-3 py-2.5 text-right tabular-nums">{r.hitRate ?? '—'}%</td>
+                        <td className="px-3 py-2.5 text-right tabular-nums text-red-500">{r.avgMaxDD != null ? `${r.avgMaxDD}%` : '—'}</td>
+                        <td className="px-3 py-2.5 text-right text-slate-400">{r.n} / {r.symbols}</td>
+                        <td className="px-3 py-2.5"><span className={clsx('text-[10px] font-bold px-2 py-0.5 rounded', r.confidence === 'High' ? 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600' : r.confidence === 'Moderate' ? 'bg-amber-50 dark:bg-amber-900/30 text-amber-600' : 'bg-slate-100 dark:bg-slate-800 text-slate-400')}>{r.confidence}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <p className="text-[10px] text-slate-400 px-1">Ranked by outperformance vs NIFTY. "n" = transition events, "stocks" = distinct symbols. Don't trust a pair until it reaches 10+ stocks (Moderate). Forward-only, survivorship-free.</p>
+          </div>
+        )}
+
+        {tab === 'category' && data?.note && (
           <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-4 py-3 text-xs text-amber-700 dark:text-amber-400">
             ⚠ {data.note}
           </div>
@@ -96,7 +192,7 @@ export default function StrategyLabPage() {
         {err && <div className="rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-xs text-red-700 dark:text-red-400">{err}</div>}
 
         {/* cohorts strip */}
-        {data && data.cohorts.length > 0 && (
+        {tab === 'category' && data && data.cohorts.length > 0 && (
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card-dark px-4 py-3">
             <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400 mb-1.5">Cohorts ({data.cohorts.length})</div>
             <div className="flex flex-wrap gap-1.5">
@@ -165,7 +261,7 @@ export default function StrategyLabPage() {
         )}
 
         {/* controls */}
-        <div className="flex flex-wrap items-center gap-2">
+        {tab === 'category' && <div className="flex flex-wrap items-center gap-2">
           {data && data.cohorts.length > 0 && (
             <select
               value={scope}
@@ -194,23 +290,23 @@ export default function StrategyLabPage() {
                 className={clsx('px-3 py-1.5 text-xs font-bold', sl === s ? 'bg-brand-600 text-white' : 'bg-white dark:bg-card-dark text-slate-500 dark:text-slate-400')}>{s === 0 ? 'No SL' : `${s}% SL`}</button>
             ))}
           </span>
-        </div>
+        </div>}
 
         {/* scorecard */}
-        <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card-dark overflow-hidden">
+        {tab === 'category' && <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card-dark overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-xs min-w-[820px]">
               <thead>
                 <tr className="text-left text-[10px] uppercase tracking-wide text-slate-400 border-b border-slate-100 dark:border-slate-800">
                   <th className="px-3 py-2.5">Category</th>
-                  <th className="px-3 py-2.5 text-right">Avg return</th>
-                  <th className="px-3 py-2.5 text-right">Median</th>
-                  <th className="px-3 py-2.5 text-right">vs NIFTY</th>
-                  <th className="px-3 py-2.5 text-right">Hit rate</th>
-                  <th className="px-3 py-2.5 text-right">Beat NIFTY</th>
-                  <th className="px-3 py-2.5 text-right">Avg max DD</th>
-                  <th className="px-3 py-2.5 text-right">n / cohorts</th>
-                  <th className="px-3 py-2.5">Confidence</th>
+                  <th className="px-3 py-2.5 text-right" title="Average price move of the stocks in this category over the window.">Avg return ⓘ</th>
+                  <th className="px-3 py-2.5 text-right" title="The middle stock's return — ignores outliers. If higher than Avg, a few laggards dragged the average down.">Median ⓘ</th>
+                  <th className="px-3 py-2.5 text-right" title="Category return MINUS NIFTY return = outperformance. NOT NIFTY's own growth. +1% means it beat the index by 1 point. This is the number that matters.">vs NIFTY ⓘ</th>
+                  <th className="px-3 py-2.5 text-right" title="% of the category's stocks that ended positive.">Hit rate ⓘ</th>
+                  <th className="px-3 py-2.5 text-right" title="% of the category's stocks that individually beat NIFTY's return.">Beat NIFTY ⓘ</th>
+                  <th className="px-3 py-2.5 text-right" title="Average worst dip below entry during the window — the 'heat' you'd sit through, even if it recovered.">Avg max DD ⓘ</th>
+                  <th className="px-3 py-2.5 text-right" title="n = number of stock-positions counted (follows the Top 5/10/20 toggle). cohorts = number of weeks aggregated.">n / cohorts ⓘ</th>
+                  <th className="px-3 py-2.5" title="How trustworthy the result is. Low = under 10 weeks (a data point, not a verdict). Moderate = 10+. High = 25+.">Confidence ⓘ</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
@@ -244,13 +340,24 @@ export default function StrategyLabPage() {
               </tbody>
             </table>
           </div>
-        </div>
+        </div>}
 
-        <p className="text-[10px] leading-relaxed text-slate-400 dark:text-slate-500 px-1 pb-4">
+        {tab === 'category' && <details className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card-dark">
+          <summary className="cursor-pointer px-4 py-2.5 text-xs font-bold text-slate-700 dark:text-slate-200">How to read these numbers ▾</summary>
+          <div className="px-4 pb-4 text-[11px] text-slate-500 dark:text-slate-400 space-y-1.5 leading-relaxed">
+            <p><b>vs NIFTY</b> = category return − NIFTY return (outperformance). It is <b>not</b> NIFTY's growth. If Avg return is +1.7% and vs NIFTY is +1.1%, then NIFTY grew ~0.6% and this category beat it by 1.1 points. This is the column that matters — beating a rising market is what counts.</p>
+            <p><b>Avg vs Median:</b> Avg is the mean; Median is the middle stock. Median above Avg ⇒ a few big losers dragged the mean down (most stocks did fine).</p>
+            <p><b>Hit rate</b> = % of stocks that went up. <b>Beat NIFTY</b> = % of stocks that individually beat the index.</p>
+            <p><b>Max DD</b> (drawdown) = worst dip below entry during the window — the pain you'd sit through even if it recovered.</p>
+            <p><b>n / cohorts:</b> n = positions counted (changes with the Top 5/10/20 toggle); cohorts = number of weeks. <b>LIVE tag</b> = Friday still settling, numbers still moving; once it disappears the row is locked forever.</p>
+          </div>
+        </details>}
+
+        {tab === 'category' && <p className="text-[10px] leading-relaxed text-slate-400 dark:text-slate-500 px-1 pb-4">
           Each category is its own paper book (a stock in N categories gets N positions). Returns are price-only vs NIFTY over the same window,
           survivorship-free (entries stored before outcomes). "vs NIFTY" is the number that matters — raw returns flatter in bull markets.
           Do not rank categories or switch strategy until confidence reaches Moderate (10+ cohorts, ~2–3 months). Research tool, not advice.
-        </p>
+        </p>}
       </div>
     </div>
   )

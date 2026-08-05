@@ -70,6 +70,41 @@ export async function ensurePaperSchema() {
       KEY idx_symbol (symbol_code)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `)
+  // Locked results — once a horizon's Friday candle is OFFICIAL (final), we
+  // snapshot the exits so the number can never move again (settlement drift).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS paper_lock (
+      cohort_id BIGINT NOT NULL,
+      horizon VARCHAR(12) NOT NULL,
+      exit_date DATE NULL,
+      nifty_exit DECIMAL(14,2) NULL,
+      locked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (cohort_id, horizon)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS paper_exit (
+      cohort_id BIGINT NOT NULL,
+      horizon VARCHAR(12) NOT NULL,
+      symbol_code VARCHAR(50) NOT NULL,
+      exit_close DECIMAL(14,2) NULL,
+      min_low DECIMAL(14,2) NULL,
+      PRIMARY KEY (cohort_id, horizon, symbol_code)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `)
+  // Precomputed forward outcomes per transition (immutable once stored).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS transition_outcome (
+      transition_id BIGINT NOT NULL,
+      horizon VARCHAR(12) NOT NULL,
+      ret DECIMAL(10,2) NULL,
+      excess DECIMAL(10,2) NULL,
+      dd DECIMAL(10,2) NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (transition_id, horizon),
+      KEY idx_tid (transition_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `)
 }
 
 const isoWeekKey = (d = new Date()) => {
@@ -158,6 +193,111 @@ export function evalHolding(entryPrice, startDate, daily, today = istToday()) {
   return out
 }
 
+// ── Transition attribution: which badge change (X→Y) pays, and how fast ──────
+// Forward outcomes are precomputed ONCE per transition into transition_outcome
+// (a background job), then the scorecard aggregates stored numbers instantly —
+// never fetches candles in the request (that hung with 5k+ transitions).
+const T_HZ = { '1W': 5, '2W': 10, '1M': 21 }
+const _dateStr = (c) => new Date(c.time * 1000).toISOString().slice(0, 10)
+function fwdReturn(daily, entryDate, entryPrice, bars) {
+  const fwd = daily.filter((c) => _dateStr(c) > entryDate)
+  if (fwd.length < bars) return null
+  const win = fwd.slice(0, bars)
+  const minLow = Math.min(...win.map((c) => c.low))
+  return { ret: ((win[bars - 1].close - entryPrice) / entryPrice) * 100, dd: ((minLow - entryPrice) / entryPrice) * 100 }
+}
+
+export const transComputeState = { running: false, total: 0, done: 0, stored: 0, startedAt: null, finishedAt: null }
+
+/** Background: compute + store forward outcomes for matured transitions. */
+export async function computeTransitionOutcomes(maxSymbols = 2000) {
+  if (transComputeState.running) return transComputeState
+  const pool = getPool()
+  const [trans] = await pool.query(`
+    SELECT t.id, t.symbol_code, t.transition_date, t.price
+      FROM stock_transition t
+     WHERE t.price IS NOT NULL AND t.transition_date <= (CURDATE() - INTERVAL 5 DAY)
+       AND (SELECT COUNT(*) FROM transition_outcome o WHERE o.transition_id = t.id) < 3
+     ORDER BY t.transition_date ASC`)
+  Object.assign(transComputeState, { running: true, total: trans.length, done: 0, stored: 0, startedAt: new Date().toISOString(), finishedAt: null })
+  ;(async () => {
+    const niftyDaily = await fetchDaily(config.benchmarkSymbol, '2025-01-01').catch(() => [])
+    const bySym = new Map()
+    for (const t of trans) { if (!bySym.has(t.symbol_code)) bySym.set(t.symbol_code, []); bySym.get(t.symbol_code).push(t) }
+    let sdone = 0
+    for (const [sym, list] of bySym) {
+      if (sdone >= maxSymbols) break
+      const daily = await fetchDaily(sym, '2025-01-01').catch(() => [])
+      for (const t of list) {
+        const entryDate = new Date(t.transition_date).toISOString().slice(0, 10)
+        const entry = Number(t.price)
+        if (!(entry > 0)) continue
+        for (const [hName, bars] of Object.entries(T_HZ)) {
+          const r = fwdReturn(daily, entryDate, entry, bars)
+          if (!r) continue
+          const nEntry = niftyDaily.filter((c) => _dateStr(c) <= entryDate).slice(-1)[0]?.close
+          const nr = nEntry ? fwdReturn(niftyDaily, entryDate, nEntry, bars) : null
+          await pool.query(
+            'INSERT IGNORE INTO transition_outcome (transition_id, horizon, ret, excess, dd) VALUES (?, ?, ?, ?, ?)',
+            [t.id, hName, +r.ret.toFixed(2), nr ? +(r.ret - nr.ret).toFixed(2) : null, +r.dd.toFixed(2)],
+          ).then(() => transComputeState.stored++).catch(() => {})
+        }
+      }
+      sdone++; transComputeState.done = sdone
+      await new Promise((res) => setTimeout(res, 150))
+    }
+    transComputeState.running = false
+    transComputeState.finishedAt = new Date().toISOString()
+    console.log(`transition outcomes computed: ${transComputeState.stored} stored across ${sdone} symbols`)
+  })()
+  return transComputeState
+}
+
+/** Scorecard — aggregates STORED outcomes only (fast, no candle fetches). */
+export async function computeTransitionScorecard() {
+  const pool = getPool()
+  const [rows] = await pool.query(`
+    SELECT t.from_badge AS f, t.to_badge AS tb, o.horizon, o.ret, o.excess, o.dd, t.symbol_code AS sym
+      FROM transition_outcome o JOIN stock_transition t ON t.id = o.transition_id`)
+  const [[{ pending }]] = await pool.query(
+    'SELECT COUNT(*) AS pending FROM stock_transition WHERE price IS NOT NULL AND transition_date <= (CURDATE() - INTERVAL 5 DAY) AND (SELECT COUNT(*) FROM transition_outcome o WHERE o.transition_id = stock_transition.id) < 3',
+  )
+  const median = (a) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)] }
+  const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null)
+  const pct = (v, d = 2) => (v == null ? null : +v.toFixed(d))
+  const buckets = new Map()
+  for (const r of rows) {
+    const key = `${r.f}|${r.tb}|${r.horizon}`
+    if (!buckets.has(key)) buckets.set(key, { rets: [], excess: [], dd: [], symbols: new Set() })
+    const b = buckets.get(key)
+    b.rets.push(Number(r.ret)); b.dd.push(Number(r.dd)); b.symbols.add(r.sym)
+    if (r.excess != null) b.excess.push(Number(r.excess))
+  }
+  const out = []
+  for (const [k, b] of buckets) {
+    const [from, to, horizon] = k.split('|')
+    out.push({
+      from, to, pair: `${from} → ${to}`, horizon,
+      n: b.rets.length, symbols: b.symbols.size,
+      avgRet: pct(mean(b.rets)), medianRet: pct(median(b.rets)),
+      hitRate: pct((b.rets.filter((r) => r > 0).length / (b.rets.length || 1)) * 100, 0),
+      avgExcess: pct(mean(b.excess)),
+      beatNiftyPct: b.excess.length ? pct((b.excess.filter((e) => e > 0).length / b.excess.length) * 100, 0) : null,
+      avgMaxDD: pct(mean(b.dd)),
+      confidence: b.symbols.size >= 25 ? 'High' : b.symbols.size >= 10 ? 'Moderate' : 'Low',
+    })
+  }
+  return {
+    horizons: Object.keys(T_HZ),
+    pairs: [...new Set(out.map((r) => r.pair))],
+    rows: out,
+    pending,
+    note: out.length === 0
+      ? (pending > 0 ? `${pending} matured transitions await computing — click "Compute outcomes" to populate.` : 'No matured transitions yet (need 5+ sessions after the change).')
+      : pending > 0 ? `${pending} more transitions await computing (click "Compute outcomes" to add them). Don't trust a pair below Moderate (10+ stocks).` : null,
+  }
+}
+
 /** Holdings of one cohort with entry price, derived qty, and live return. */
 export async function getCohortHoldings(cohortKey) {
   const pool = getPool()
@@ -211,16 +351,8 @@ export async function computeScorecard(cohortKey = null) {
   const holdings = allHoldings.filter((h) => idSet.has(h.cohort_id))
 
   const today = istToday()
-  // fetch NIFTY once; return = start → close on the target Friday
+  // fetch NIFTY once (benchmark for excess return, per target Friday)
   const niftyDaily = await fetchDaily(config.benchmarkSymbol, '2024-01-01').catch(() => [])
-  const niftyReturn = (startClose, startDate, off) => {
-    if (startClose == null) return null
-    const fri = targetFriday(startDate, off)
-    if (fri > today) return null
-    const win = niftyDaily.filter((c) => { const d = dateStr(c); return d > startDate && d <= fri })
-    if (!win.length) return null
-    return +(((win[win.length - 1].close - startClose) / startClose) * 100).toFixed(2)
-  }
 
   // dedup symbol candle fetches
   const symbols = [...new Set(holdings.map((h) => h.symbol_code))]
@@ -229,34 +361,89 @@ export async function computeScorecard(cohortKey = null) {
     candleBySym.set(s, await fetchDaily(s, '2025-06-01').catch(() => []))
   }
 
-  const cohortById = new Map(cohorts.map((c) => [c.id, c]))
-  // accumulate per category × horizon × topN × SL
-  const buckets = new Map() // key "cat|horizon|topN|sl" -> {rets:[], excess:[], dd:[], cohortsSet:Set}
-  const bk = (cat, h, topN, sl) => `${cat}|${h}|${topN}|${sl}`
-  const push = (cat, h, topN, sl, ret, excess, dd, cohortKey, provisional) => {
-    const k = bk(cat, h, topN, sl)
+  // existing locks/exits (immutable once written)
+  const [lockRows] = await pool.query('SELECT * FROM paper_lock')
+  const [exitRows] = await pool.query('SELECT * FROM paper_exit')
+  const lockMap = new Map(lockRows.map((l) => [`${l.cohort_id}|${l.horizon}`, l]))
+  const exitMap = new Map(exitRows.map((e) => [`${e.cohort_id}|${e.horizon}|${e.symbol_code}`, e]))
+
+  const windowExit = (daily, startDate, fri) => {
+    const win = daily.filter((c) => { const d = dateStr(c); return d > startDate && d <= fri })
+    if (!win.length) return null
+    const exit = win[win.length - 1]
+    return { close: exit.close, minLow: Math.min(...win.map((c) => c.low)), final: exit.final !== false }
+  }
+
+  const holdingsByCohort = new Map()
+  for (const h of holdings) {
+    if (!holdingsByCohort.has(h.cohort_id)) holdingsByCohort.set(h.cohort_id, [])
+    holdingsByCohort.get(h.cohort_id).push(h)
+  }
+
+  const buckets = new Map() // "cat|horizon|topN|sl" -> {rets,excess,dd,cohorts,provisional}
+  const push = (cat, hz, topN, sl, ret, excess, dd, cohortKey, provisional) => {
+    const k = `${cat}|${hz}|${topN}|${sl}`
     if (!buckets.has(k)) buckets.set(k, { rets: [], excess: [], dd: [], cohorts: new Set(), provisional: false })
     const b = buckets.get(k)
     b.rets.push(ret); if (excess != null) b.excess.push(excess); if (dd != null) b.dd.push(dd); b.cohorts.add(cohortKey)
     if (provisional) b.provisional = true
   }
 
-  for (const h of holdings) {
-    const cohort = cohortById.get(h.cohort_id)
-    if (!cohort || h.entry_price == null) continue
+  for (const cohort of cohorts) {
     const entryDate = new Date(cohort.start_date).toISOString().slice(0, 10)
-    const daily = candleBySym.get(h.symbol_code)
-    const ev = evalHolding(Number(h.entry_price), entryDate, daily, today)
-    if (!ev) continue
+    const niftyStart = cohort.nifty_start != null ? Number(cohort.nifty_start) : null
+    const cHold = holdingsByCohort.get(cohort.id) ?? []
     for (const [hName, off] of Object.entries(HORIZONS)) {
-      const cell = ev[hName]
-      if (!cell || cell.status !== 'matured') continue
-      const nRet = niftyReturn(cohort.nifty_start != null ? Number(cohort.nifty_start) : null, entryDate, off)
-      for (const topN of [5, 10, 20]) {
-        if (h.rank_in_cat > topN) continue
-        for (const sl of SL_SCENARIOS) {
-          const ret = cell.scen[sl]
-          push(h.category, hName, topN, sl, ret, nRet != null ? +(ret - nRet).toFixed(2) : null, cell.maxDD, cohort.cohort_key, cell.provisional)
+      const fri = targetFriday(entryDate, off)
+      if (fri > today) continue // horizon not reached → in-progress
+
+      const lockKey = `${cohort.id}|${hName}`
+      let niftyExit = null
+      let provisional = false
+      const exitBySym = new Map()
+
+      if (lockMap.has(lockKey)) {
+        // LOCKED — use the immutable snapshot, no recompute
+        niftyExit = lockMap.get(lockKey).nifty_exit != null ? Number(lockMap.get(lockKey).nifty_exit) : null
+        for (const h of cHold) {
+          const e = exitMap.get(`${cohort.id}|${hName}|${h.symbol_code}`)
+          if (e) exitBySym.set(h.symbol_code, { close: Number(e.exit_close), minLow: Number(e.min_low) })
+        }
+      } else {
+        // compute from candles; lock only when EVERY exit bar is official (final)
+        const nE = windowExit(niftyDaily, entryDate, fri)
+        niftyExit = nE?.close ?? null
+        let allFinal = nE ? nE.final : false
+        for (const h of cHold) {
+          const we = windowExit(candleBySym.get(h.symbol_code) ?? [], entryDate, fri)
+          if (we) { exitBySym.set(h.symbol_code, { close: we.close, minLow: we.minLow }); if (!we.final) allFinal = false }
+          else allFinal = false
+        }
+        if (allFinal && niftyExit != null) {
+          await pool.query('INSERT IGNORE INTO paper_lock (cohort_id, horizon, exit_date, nifty_exit) VALUES (?, ?, ?, ?)', [cohort.id, hName, fri, niftyExit]).catch(() => {})
+          for (const [sym, e] of exitBySym) {
+            await pool.query('INSERT IGNORE INTO paper_exit (cohort_id, horizon, symbol_code, exit_close, min_low) VALUES (?, ?, ?, ?, ?)', [cohort.id, hName, sym, e.close, e.minLow]).catch(() => {})
+          }
+        } else {
+          provisional = true // still settling → LIVE, not yet locked
+        }
+      }
+
+      const niftyRet = niftyStart && niftyExit ? +(((niftyExit - niftyStart) / niftyStart) * 100).toFixed(2) : null
+      for (const h of cHold) {
+        const entry = h.entry_price != null ? Number(h.entry_price) : null
+        const e = exitBySym.get(h.symbol_code)
+        if (!(entry > 0) || !e) continue
+        const dd = +(((e.minLow - entry) / entry) * 100).toFixed(2)
+        for (const topN of [5, 10, 20]) {
+          if (h.rank_in_cat > topN) continue
+          for (const sl of SL_SCENARIOS) {
+            let ret
+            if (sl === 0) ret = ((e.close - entry) / entry) * 100
+            else { const stop = entry * (1 - sl / 100); ret = e.minLow <= stop ? -sl : ((e.close - entry) / entry) * 100 }
+            ret = +ret.toFixed(2)
+            push(h.category, hName, topN, sl, ret, niftyRet != null ? +(ret - niftyRet).toFixed(2) : null, dd, cohort.cohort_key, provisional)
+          }
         }
       }
     }

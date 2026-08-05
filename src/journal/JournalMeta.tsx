@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { clsx } from 'clsx'
 import { useJournalEntry, useJournalStore, type ReviewStatus } from './journalStore'
-import { REVIEW_META, tagColor } from './utils'
+import { REVIEW_META } from './utils'
 
 const REVIEWS: ReviewStatus[] = ['NEW', 'REVIEWED', 'FLAGGED']
 
@@ -32,15 +32,6 @@ export function JournalMeta({ tradeId }: { tradeId: string }) {
   const entry = useJournalEntry(tradeId)
   const update = useJournalStore((s) => s.update)
   const setMeta = useJournalStore((s) => s.setMeta)
-  const [tagInput, setTagInput] = useState('')
-
-  const addTag = () => {
-    const name = tagInput.trim()
-    if (!name || entry.tags.some((t) => t.name.toLowerCase() === name.toLowerCase())) { setTagInput(''); return }
-    update(tradeId, { tags: [...entry.tags, { name, color: tagColor(name) }] })
-    setTagInput('')
-  }
-  const removeTag = (name: string) => update(tradeId, { tags: entry.tags.filter((t) => t.name !== name) })
 
   const sections: { id: string; title: string; node: React.ReactNode }[] = [
     {
@@ -59,23 +50,6 @@ export function JournalMeta({ tradeId }: { tradeId: string }) {
               </button>
             ))}
           </div>
-        </div>
-      ),
-    },
-    {
-      id: 'tags', title: 'Tags',
-      node: (
-        <div>
-          <div className="flex flex-wrap gap-1.5 mb-2">
-            {entry.tags.map((t) => (
-              <span key={t.name} className="inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full text-[11px] font-medium text-white" style={{ background: t.color }}>
-                {t.name}
-                <button onClick={() => removeTag(t.name)} className="hover:opacity-70"><svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 6l12 12M18 6L6 18" /></svg></button>
-              </span>
-            ))}
-            {entry.tags.length === 0 && <span className="text-xs text-slate-400">No tags yet</span>}
-          </div>
-          <input value={tagInput} onChange={(e) => setTagInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addTag() }} placeholder="Add a tag + Enter (e.g. breakout, revenge, FOMO)" className="w-full h-8 px-2.5 rounded-lg bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-slate-700 text-sm outline-none focus:border-brand-400" />
         </div>
       ),
     },

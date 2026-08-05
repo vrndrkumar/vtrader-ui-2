@@ -42,6 +42,7 @@ async function fetchRaw(symbol, frequency, from, to) {
       low: c.low,
       close: c.close,
       volume: Number.isFinite(c.volume) ? c.volume : 0,
+      final: c.final !== false, // preserve settlement flag; missing → treat as final
     }))
     .sort((a, b) => a.time - b.time)
   // NEVER cache empty results — data may be backfilled at the source at any

@@ -42,15 +42,20 @@ export async function ensureSchema() {
     ['industry_total', 'INT NULL'],
   ]
   const [existing] = await pool.query(
-    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+    `SELECT COLUMN_NAME, CHARACTER_MAXIMUM_LENGTH AS len FROM information_schema.COLUMNS
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'stock_analysis_reports'`,
   )
   const have = new Set(existing.map((r) => r.COLUMN_NAME))
+  const lenOf = new Map(existing.map((r) => [r.COLUMN_NAME, r.len]))
   for (const [name, def] of v3Cols) {
     if (!have.has(name)) await pool.query(`ALTER TABLE stock_analysis_reports ADD COLUMN ${name} ${def}`)
   }
-  // widen summary if it was created at 600 in v2
-  await pool.query('ALTER TABLE stock_analysis_reports MODIFY summary VARCHAR(1200) NULL').catch(() => {})
+  // widen summary ONLY if still narrow (old v2 = 600). Running MODIFY every
+  // startup rebuilds the whole (now large) table and locks all reads — avoid.
+  const sumLen = lenOf.get('summary')
+  if (sumLen != null && sumLen < 1200) {
+    await pool.query('ALTER TABLE stock_analysis_reports MODIFY summary VARCHAR(1200) NULL').catch(() => {})
+  }
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS stock_analysis_failures (
@@ -62,6 +67,26 @@ export async function ensureSchema() {
       PRIMARY KEY (id),
       KEY idx_run (run_label),
       KEY idx_created (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `)
+  // Transition log — ONE row per badge change, written incrementally at save
+  // time. Small + indexed → instant queries (never scans analysis history).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS stock_transition (
+      id BIGINT NOT NULL AUTO_INCREMENT,
+      symbol_code VARCHAR(50) NOT NULL,
+      transition_date DATE NOT NULL,
+      from_badge VARCHAR(40) NULL,
+      to_badge VARCHAR(40) NULL,
+      from_discovery INT NULL,
+      to_discovery INT NULL,
+      price DECIMAL(14,2) NULL,
+      engine_version VARCHAR(24) NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      UNIQUE KEY uq_change (symbol_code, transition_date, from_badge, to_badge),
+      KEY idx_date (transition_date),
+      KEY idx_badges (from_badge, to_badge)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `)
 }
@@ -189,6 +214,16 @@ export async function saveAnalysis(stockRow, analysis) {
     ranks = { market_rank: better + 1, market_total: total }
   } catch { /* ranks optional at save time */ }
 
+  // read the previous latest (indexed lookup) to detect a badge transition
+  let prev = null
+  try {
+    const [[p]] = await pool.query(
+      'SELECT badge, discovery_score FROM stock_analysis_reports WHERE symbol_code = ? AND is_latest = 1 LIMIT 1',
+      [stockRow.symbol_code],
+    )
+    prev = p ?? null
+  } catch { /* non-fatal */ }
+
   await pool.query('UPDATE stock_analysis_reports SET is_latest = 0 WHERE symbol_code = ? AND is_latest = 1', [stockRow.symbol_code])
   await pool.query(
     `INSERT INTO stock_analysis_reports
@@ -219,6 +254,95 @@ export async function saveAnalysis(stockRow, analysis) {
     ],
   )
   latestCache.at = 0 // invalidate
+
+  // log the transition when the badge actually changed (one small row)
+  if (prev && prev.badge && analysis.badge && prev.badge !== analysis.badge) {
+    await pool.query(
+      `INSERT IGNORE INTO stock_transition
+         (symbol_code, transition_date, from_badge, to_badge, from_discovery, to_discovery, price, engine_version)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [stockRow.symbol_code, analysis.features.date, prev.badge, analysis.badge,
+       prev.discovery_score ?? null, analysis.scores.discovery ?? null, analysis.features.price ?? null, analysis.engineVersion],
+    ).catch(() => {})
+  }
+}
+
+// ── Transition log queries (small, indexed → fast) ───────────────────────────
+
+const TSORTS = {
+  date: 't.transition_date DESC, t.id DESC',
+  date_asc: 't.transition_date ASC, t.id ASC',
+  discovery: 't.to_discovery IS NULL, t.to_discovery DESC',
+  name: 's.symbol_name ASC',
+}
+
+export async function queryTransitions(q) {
+  const page = Math.max(1, Number(q.page) || 1)
+  const pageSize = Math.min(100, Math.max(5, Number(q.pageSize) || 25))
+  const where = ['1=1']
+  const params = []
+  if (q.fromBadge) { where.push('t.from_badge = ?'); params.push(q.fromBadge) }
+  if (q.toBadge) { where.push('t.to_badge = ?'); params.push(q.toBadge) }
+  if (q.from) { where.push('t.transition_date >= ?'); params.push(q.from) }
+  if (q.to) { where.push('t.transition_date <= ?'); params.push(q.to) }
+  if (q.symbol) { where.push('t.symbol_code = ?'); params.push(q.symbol) }
+  const base = `FROM stock_transition t LEFT JOIN stock_mstr s ON s.symbol_code = t.symbol_code WHERE ${where.join(' AND ')}`
+  const orderBy = TSORTS[q.sort] ?? TSORTS.date
+  const [[{ total }]] = await getPool().query(`SELECT COUNT(*) AS total ${base}`, params)
+  const [rows] = await getPool().query(
+    `SELECT t.symbol_code, s.symbol_name, s.sector, t.transition_date, t.from_badge, t.to_badge,
+            t.from_discovery, t.to_discovery, t.price, t.engine_version
+       ${base} ORDER BY ${orderBy} LIMIT ? OFFSET ?`,
+    [...params, pageSize, (page - 1) * pageSize],
+  )
+  return { rows, total, page, pageSize }
+}
+
+/**
+ * One-time back-fill of the transition log from RECENT history only.
+ * Bounded to `days` (uses idx_created) so it never full-scans the big table.
+ * Safe to run manually; idempotent (INSERT IGNORE on the unique change key).
+ */
+export async function backfillTransitions(days = 21) {
+  const pool = getPool()
+  const [rows] = await pool.query(`
+    WITH recent AS (
+      SELECT symbol_code, analysis_date, badge, discovery_score, price, created_at,
+             ROW_NUMBER() OVER (PARTITION BY symbol_code, analysis_date ORDER BY created_at DESC) AS rn_day
+        FROM stock_analysis_reports
+       WHERE created_at >= NOW() - INTERVAL ? DAY
+    ),
+    days AS ( SELECT * FROM recent WHERE rn_day = 1 ),
+    seq AS (
+      SELECT symbol_code, analysis_date, badge, discovery_score, price,
+             LAG(badge) OVER (PARTITION BY symbol_code ORDER BY analysis_date) AS prev_badge,
+             LAG(discovery_score) OVER (PARTITION BY symbol_code ORDER BY analysis_date) AS prev_disc
+        FROM days
+    )
+    SELECT symbol_code, analysis_date, prev_badge, badge, prev_disc, discovery_score, price
+      FROM seq
+     WHERE prev_badge IS NOT NULL AND prev_badge <> badge
+  `, [days])
+  let inserted = 0
+  for (const r of rows) {
+    const [res] = await pool.query(
+      `INSERT IGNORE INTO stock_transition
+         (symbol_code, transition_date, from_badge, to_badge, from_discovery, to_discovery, price, engine_version)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'backfill')`,
+      [r.symbol_code, r.analysis_date, r.prev_badge, r.badge, r.prev_disc, r.discovery_score, r.price],
+    ).catch(() => [{ affectedRows: 0 }])
+    inserted += res.affectedRows
+  }
+  console.log(`transition back-fill: scanned ${rows.length} changes over ${days}d, inserted ${inserted}`)
+  return { scanned: rows.length, inserted, days }
+}
+
+export async function getTransitionFacets() {
+  const pool = getPool()
+  const [froms] = await pool.query("SELECT DISTINCT from_badge FROM stock_transition WHERE from_badge IS NOT NULL ORDER BY from_badge")
+  const [tos] = await pool.query("SELECT DISTINCT to_badge FROM stock_transition WHERE to_badge IS NOT NULL ORDER BY to_badge")
+  const [[{ total }]] = await pool.query('SELECT COUNT(*) AS total FROM stock_transition')
+  return { fromBadges: froms.map((r) => r.from_badge), toBadges: tos.map((r) => r.to_badge), total }
 }
 
 export async function getLatestAnalysis(symbolCode) {
@@ -334,10 +458,16 @@ const BADGE_ORDER = {
 
 /** Latest + previous snapshot per symbol, joined with names. */
 async function latestVsPrevious() {
+  // CRITICAL: window ONLY over recent rows (uses idx_created), never the whole
+  // history table — a full-table ROW_NUMBER scan froze the DB. 21 days is more
+  // than enough to have latest + previous per symbol.
   const [rows] = await getPool().query(`
-    WITH ranked AS (
+    WITH recent AS (
+      SELECT * FROM stock_analysis_reports WHERE created_at >= NOW() - INTERVAL 21 DAY
+    ),
+    ranked AS (
       SELECT r.*, ROW_NUMBER() OVER (PARTITION BY symbol_code ORDER BY created_at DESC) AS rn
-        FROM stock_analysis_reports r
+        FROM recent r
     )
     SELECT cur.symbol_code, s.symbol_name, s.sector,
            cur.price, cur.discovery_score, cur.transition_score, cur.momentum_score,
@@ -355,7 +485,12 @@ async function latestVsPrevious() {
   return rows
 }
 
+let dashboardCache = { at: 0, limit: 0, data: null }
 export async function getDashboard(limit = 6) {
+  // cache 5 min — the dashboard runs a window query and is hit on every page load
+  if (dashboardCache.data && dashboardCache.limit === limit && Date.now() - dashboardCache.at < 5 * 60 * 1000) {
+    return dashboardCache.data
+  }
   const rows = await latestVsPrevious()
   const entry = (r, extra = {}) => ({
     symbol_code: r.symbol_code,
@@ -428,7 +563,7 @@ export async function getDashboard(limit = 6) {
     .sort((a, b) => pickScore(b) - pickScore(a))
     .slice(0, 8).map((r) => entry(r))
 
-  return {
+  const data = {
     analyzedCount: rows.length,
     topPicks,
     gemsWithFundamentals,
@@ -442,6 +577,29 @@ export async function getDashboard(limit = 6) {
     upgraded,
     downgraded,
   }
+  dashboardCache = { at: Date.now(), limit, data }
+  return data
+}
+
+/**
+ * Prune old snapshots to keep the table small and fast. Deletes non-latest
+ * rows older than `keepDays` in bounded batches (never locks the table long).
+ * Latest snapshots (is_latest=1) are ALWAYS kept.
+ */
+export async function pruneOldSnapshots(keepDays = 90) {
+  const pool = getPool()
+  let total = 0
+  for (let i = 0; i < 200; i++) { // hard cap on batches per run
+    const [res] = await pool.query(
+      'DELETE FROM stock_analysis_reports WHERE is_latest = 0 AND created_at < NOW() - INTERVAL ? DAY LIMIT 5000',
+      [keepDays],
+    )
+    total += res.affectedRows
+    if (res.affectedRows < 5000) break
+    await new Promise((r) => setTimeout(r, 250)) // breathe between batches
+  }
+  if (total) console.log(`pruned ${total} old analysis snapshots (kept latest + last ${keepDays} days)`)
+  return total
 }
 
 /** Standout bullets for one stock: rank context + history trends. */

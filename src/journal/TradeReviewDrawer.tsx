@@ -1,15 +1,18 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import toast from 'react-hot-toast'
 import { clsx } from 'clsx'
 import { getTradeOrders, assignOrderGroup } from '@/api/reports'
 import type { Trade, TradeOrder } from '@/types/reports'
+import { updateTradeTags } from '@/api/tags'
+import type { UserTag } from '@/api/tags'
 import { fmtPnl, fmtDate, fmtTime, fmtDuration, parseInstrument, INSTRUMENT_META, isManual } from './utils'
 import { useJournalEntry } from './journalStore'
-import { StrategySelect } from './StrategySelect'
+import { GroupCombobox } from './StrategySelect'
 import { useStrategyLabel } from './useStrategies'
 import { useHasRegisteredBrokers } from '@/hooks/useHasRegisteredBrokers'
 import { AddOrderModal, EditOrderModal } from './OrderModals'
 import { JournalMeta } from './JournalMeta'
+import { TagCombobox } from './TagCombobox'
 
 function Metric({ label, value, tone }: { label: string; value: string; tone?: 'green' | 'red' }) {
   return (
@@ -30,13 +33,17 @@ function FutureTile({ icon, label }: { icon: string; label: string }) {
   )
 }
 
-export function TradeReviewDrawer({ trade, onClose, onChanged }: { trade: Trade; onClose: () => void; onChanged: () => void }) {
+export function TradeReviewDrawer({ trade, allTags, onClose, onChanged }: { trade: Trade; allTags: UserTag[]; onClose: () => void; onChanged: () => void }) {
   const [orders, setOrders] = useState<TradeOrder[]>([])
   const [loading, setLoading] = useState(true)
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<TradeOrder | null>(null)
   const [group, setGroup] = useState(trade.group_name || 'MANUAL')
   const [assigning, setAssigning] = useState(false)
+  // Tags — local state; auto-saved 800 ms after last change
+  const initialTagNames = useRef<string[]>((trade.tags ?? []).map((t) => t.name))
+  const [tagNames, setTagNames] = useState<string[]>(initialTagNames.current)
+  const [tagStatus, setTagStatus] = useState<'idle' | 'saving' | 'saved'>('idle')
   const entry = useJournalEntry(trade.trade_id)
   const strategyLabel = useStrategyLabel()
   const hasRegisteredBrokers = useHasRegisteredBrokers()
@@ -70,6 +77,27 @@ export function TradeReviewDrawer({ trade, onClose, onChanged }: { trade: Trade;
     try { await assignOrderGroup({ orderIds: orders.map((o) => o.id), groupName: group || 'MANUAL' }); toast.success('Strategy updated'); refresh() }
     catch { toast.error('Failed to assign strategy') } finally { setAssigning(false) }
   }
+
+  // Auto-save tags 800 ms after last change
+  useEffect(() => {
+    const same = JSON.stringify([...tagNames].sort()) === JSON.stringify([...initialTagNames.current].sort())
+    if (same) return
+    setTagStatus('saving')
+    const t = setTimeout(async () => {
+      try {
+        await updateTradeTags(trade.trade_id, tagNames)
+        initialTagNames.current = [...tagNames]
+        setTagStatus('saved')
+        onChanged()
+        setTimeout(() => setTagStatus('idle'), 2000)
+      } catch {
+        toast.error('Failed to save tags')
+        setTagStatus('idle')
+      }
+    }, 800)
+    return () => clearTimeout(t)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tagNames])
 
   return (
     <div className="fixed inset-0 z-40 flex justify-end">
@@ -158,10 +186,40 @@ export function TradeReviewDrawer({ trade, onClose, onChanged }: { trade: Trade;
             <div className="mb-4">
               <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-2">Strategy</p>
               <div className="flex items-center gap-2">
-                <StrategySelect value={group} onChange={setGroup} disabled={!hasRegisteredBrokers} className="flex-1 h-9 px-2.5 rounded-lg bg-white dark:bg-white/5 border border-slate-200 dark:border-slate-700 text-sm outline-none" />
+                <GroupCombobox
+                  value={group}
+                  onChange={setGroup}
+                  disabled={!hasRegisteredBrokers}
+                  className="flex-1 h-9 px-2.5 rounded-lg bg-white dark:bg-white/5 border border-slate-200 dark:border-slate-700 text-sm outline-none focus:border-brand-400"
+                />
                 <button onClick={applyStrategy} disabled={assigning} className="h-9 px-3 rounded-lg bg-slate-800 dark:bg-white/10 text-white text-xs font-semibold disabled:opacity-50">Apply</button>
               </div>
               <p className="mt-1 text-[10px] text-slate-400">Current: {strategyLabel(trade.group_name)}{isManual(trade.group_name) ? ' (manual)' : ''}</p>
+            </div>
+
+            {/* Tags */}
+            <div className="mb-5">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Tags</p>
+                {tagStatus === 'saving' && (
+                  <span className="flex items-center gap-1 text-[10px] text-slate-400">
+                    <svg className="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 11-6-8.49" /></svg>
+                    Saving…
+                  </span>
+                )}
+                {tagStatus === 'saved' && (
+                  <span className="flex items-center gap-1 text-[10px] text-emerald-500">
+                    <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M20 6L9 17l-5-5" /></svg>
+                    Saved
+                  </span>
+                )}
+              </div>
+              <TagCombobox
+                value={tagNames}
+                onChange={setTagNames}
+                allTags={allTags}
+                placeholder="Search or create a tag…"
+              />
             </div>
 
             <JournalMeta tradeId={trade.trade_id} />
