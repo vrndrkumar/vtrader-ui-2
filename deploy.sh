@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-SERVER="root@164.52.201.122"
+SERVER="root@200.141.15.69"
 UI_REMOTE_PATH="/home/vtrader/vtrader-ui"
 SERVER_REMOTE_PATH="/home/vtrader/insights"
 SERVER_LOCAL_DIR="insight-server"

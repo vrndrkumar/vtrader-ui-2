@@ -13,6 +13,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react'
+import { StrategyDeepDive } from '@/dashboard/StrategyDeepDive'
 import { useOptionInsights } from '@/insight/options/useOptionInsights'
 import type { OptIndex } from '@/insight/options/useOptionInsights'
 import { useNavigate } from 'react-router-dom'
@@ -31,11 +32,7 @@ import type { Trade } from '@/types/reports'
 import type { UserStrategy } from '@/types/strategy'
 import type { RankingEntry, DashboardData } from '@/insight/types'
 import { useTradebookStore } from '@/trade/features/tradebook/tradebookStore'
-import { PositionsTab } from '@/trade/features/tradebook/PositionsTab'
-import { OrdersTab, orderStatusCounts } from '@/trade/features/tradebook/OrdersTab'
-import { totalPnl } from '@/trade/features/tradebook/types'
 import type { Position } from '@/trade/features/tradebook/types'
-import { inr, pnlCls } from '@/trade/features/tradebook/format'
 import { useMarketStore } from '@/trade/store/marketStore'
 import { realtime } from '@/trade/data/realtime/realtimeService'
 
@@ -969,91 +966,6 @@ function PnlChart({ daily, mtdPnl, loading }: { daily: Record<string, number>; m
   )
 }
 
-// ─── insight pick cards ───────────────────────────────────────────────────────
-
-// ─── badge helpers ────────────────────────────────────────────────────────────
-
-const BADGE_CLR: Record<string, string> = {
-  'HIDDEN GEM CANDIDATE': 'text-violet-600 dark:text-violet-400',
-  'EARLY DISCOVERY':      'text-indigo-600 dark:text-indigo-400',
-  'MOMENTUM ESTABLISHED': 'text-emerald-600 dark:text-emerald-400',
-  'BUILDING STRENGTH':    'text-sky-600 dark:text-sky-400',
-  'TRANSITION STARTED':   'text-amber-600 dark:text-amber-400',
-  'LEADERSHIP EMERGING':  'text-teal-600 dark:text-teal-400',
-  'QUIET ACCUMULATION':   'text-slate-500 dark:text-slate-400',
-}
-
-// ─── compact stock picks list ─────────────────────────────────────────────────
-
-function StockPicksList({ picks, loading, onNav }: {
-  picks: RankingEntry[]; loading: boolean; onNav: () => void
-}) {
-  const navigate = useNavigate()
-  return (
-    <div className="bg-white dark:bg-white/[0.025] rounded-2xl border border-slate-200/70 dark:border-white/[0.06] shadow-sm dark:shadow-none overflow-hidden">
-      <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-100 dark:border-white/[0.05]">
-        <div>
-          <p className="text-[13px] font-bold text-slate-800 dark:text-white/80">Top Conviction Picks</p>
-          <p className="text-[10px] text-slate-400 dark:text-white/25 mt-0.5">Highest conviction · Insight engine</p>
-        </div>
-        <button onClick={onNav} className="text-[11px] font-bold text-brand-600 dark:text-brand-400 hover:text-brand-700 transition-colors">
-          View all →
-        </button>
-      </div>
-
-      {loading ? (
-        <div className="divide-y divide-slate-50 dark:divide-white/[0.03]">
-          {Array.from({ length: 5 }, (_, i) => (
-            <div key={i} className="flex items-center gap-3 px-5 py-3.5">
-              <div className="h-4 w-4 rounded bg-slate-100 dark:bg-white/[0.05] animate-pulse shrink-0" />
-              <div className="flex-1 space-y-1.5">
-                <div className="h-3.5 w-24 rounded bg-slate-100 dark:bg-white/[0.05] animate-pulse" />
-                <div className="h-2.5 w-32 rounded bg-slate-100 dark:bg-white/[0.04] animate-pulse" />
-              </div>
-              <div className="h-4 w-8 rounded bg-slate-100 dark:bg-white/[0.05] animate-pulse" />
-            </div>
-          ))}
-        </div>
-      ) : !picks.length ? (
-        <div className="py-10 text-center text-[13px] text-slate-400 dark:text-white/20">No picks yet</div>
-      ) : (
-        <ul className="divide-y divide-slate-50 dark:divide-white/[0.03]">
-          {picks.map((p, i) => {
-            const stars = p.conviction != null ? Math.max(1, Math.min(5, Math.round(p.conviction / 20))) : 0
-            const badgeCls = p.badge ? (BADGE_CLR[p.badge] ?? 'text-slate-400') : 'text-slate-400'
-            return (
-              <li key={p.symbol_code}>
-                <button
-                  onClick={() => navigate(`/insight/${encodeURIComponent(p.symbol_code)}`)}
-                  className="group w-full text-left flex items-center gap-3 px-5 py-3.5 hover:bg-slate-50 dark:hover:bg-white/[0.025] transition-colors"
-                >
-                  <span className="shrink-0 w-5 text-[11px] font-black tabular-nums text-center text-slate-300 dark:text-white/15">{i + 1}</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[13px] font-bold text-slate-900 dark:text-white/90 group-hover:text-brand-600 dark:group-hover:text-brand-400 transition-colors">{p.symbol_code}</span>
-                      <span className="text-[11px]">
-                        <span className="text-amber-400">{'★'.repeat(stars)}</span>
-                        <span className="text-slate-200 dark:text-white/[0.07]">{'★'.repeat(5 - stars)}</span>
-                      </span>
-                    </div>
-                    {p.badge && (
-                      <p className={clsx('text-[9px] font-bold tracking-wide uppercase mt-0.5 truncate', badgeCls)}>{p.badge}</p>
-                    )}
-                  </div>
-                  <div className="shrink-0 text-right">
-                    <p className="text-[13px] font-extrabold text-violet-600 dark:text-violet-400 tabular-nums">D:{p.discovery_score ?? '—'}</p>
-                    {p.sector && <p className="text-[9px] text-slate-400 dark:text-white/20 truncate max-w-[68px] mt-0.5">{p.sector}</p>}
-                  </div>
-                </button>
-              </li>
-            )
-          })}
-        </ul>
-      )}
-    </div>
-  )
-}
-
 // ─── option insight section ───────────────────────────────────────────────────
 
 const IDX_GRADIENT: Record<OptIndex, string> = {
@@ -1212,86 +1124,6 @@ function OptionInsightSection() {
         <MiniOptionCard index="BANKNIFTY" />
         <MiniOptionCard index="SENSEX" />
       </div>
-    </div>
-  )
-}
-
-// ─── tradebook panel ──────────────────────────────────────────────────────────
-
-function DashboardTradebook() {
-  const accounts = useBrokerStore(s => s.accounts)
-  const store    = useTradebookStore()
-  const [tab, setTab] = useState<'positions' | 'orders'>('positions')
-
-  const brokerKey = accounts.map(b => b.id).join(',')
-  useEffect(() => {
-    if (accounts.length > 0) void store.load(accounts)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [brokerKey])
-
-  const openPositions  = useMemo(() => store.positions.filter(p => p.status === 'OPEN'), [store.positions])
-  const counts         = useMemo(() => orderStatusCounts(store.orders), [store.orders])
-  const liveOrderCount = (counts.OPEN ?? 0) + (counts.PENDING ?? 0)
-  const netPnl         = useMemo(() => openPositions.reduce((a, p) => a + totalPnl(p), 0), [openPositions])
-  const filteredOrders = useMemo(
-    () => store.orderStatus === 'ALL' ? store.orders : store.orders.filter(o => o.status === store.orderStatus),
-    [store.orders, store.orderStatus],
-  )
-
-  return (
-    <div className="bg-white dark:bg-white/[0.025] rounded-2xl border border-slate-200/70 dark:border-white/[0.06] shadow-sm dark:shadow-none overflow-hidden">
-      {/* Tab header */}
-      <div className="flex items-center gap-1 px-4 border-b border-slate-100 dark:border-white/[0.05]">
-        <div className="flex items-center h-11">
-          {(['positions', 'orders'] as const).map(t => (
-            <button key={t} onClick={() => setTab(t)}
-              className={clsx(
-                'h-full px-3 text-[13px] font-semibold border-b-2 transition-colors capitalize',
-                tab === t
-                  ? 'border-brand-500 text-slate-800 dark:text-white'
-                  : 'border-transparent text-slate-400 hover:text-slate-600 dark:hover:text-slate-200',
-              )}>
-              {t}
-              <span className={clsx('ml-1.5 text-xs font-medium', tab === t ? 'text-slate-500' : 'text-slate-400')}>
-                {t === 'positions' ? openPositions.length : `${liveOrderCount} live`}
-              </span>
-            </button>
-          ))}
-        </div>
-        <div className="flex-1" />
-        {tab === 'positions' && openPositions.length > 0 && !store.loading && (
-          <span className={clsx('text-[12px] font-bold tabular-nums mr-2', pnlCls(netPnl))}>{inr(netPnl, true)}</span>
-        )}
-        <button onClick={() => void store.reload()} title="Refresh"
-          className="h-7 w-7 grid place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/5 transition-colors">
-          <svg viewBox="0 0 24 24" className={clsx('h-4 w-4', store.loading && 'animate-spin')} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M21 12a9 9 0 11-2.64-6.36M21 3v6h-6" />
-          </svg>
-        </button>
-      </div>
-
-      {/* Body */}
-      {accounts.length === 0 ? (
-        <div className="flex flex-col items-center justify-center h-48 gap-2 text-slate-400 dark:text-white/25">
-          <svg viewBox="0 0 24 24" className="h-8 w-8 opacity-30" fill="none" stroke="currentColor" strokeWidth="1.5">
-            <path d="M3 21h18M9 8h1m5 0h1M9 12h1m5 0h1M9 16h1m5 0h1M5 21V7a2 2 0 012-2h10a2 2 0 012 2v14" />
-          </svg>
-          <p className="text-[13px]">No broker connected</p>
-        </div>
-      ) : store.loading && !store.positions.length && !store.orders.length ? (
-        <div className="flex flex-col items-center justify-center h-48 gap-3 text-slate-400">
-          <svg viewBox="0 0 24 24" className="h-6 w-6 animate-spin" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M21 12a9 9 0 11-2.64-6.36M21 3v6h-6" />
-          </svg>
-          <p className="text-[13px]">Loading positions &amp; orders…</p>
-        </div>
-      ) : (
-        <div style={{ height: 440 }} className="relative overflow-hidden">
-          {tab === 'positions'
-            ? <PositionsTab rows={openPositions} />
-            : <OrdersTab rows={filteredOrders} counts={counts} />}
-        </div>
-      )}
     </div>
   )
 }
@@ -1612,32 +1444,14 @@ export default function DashboardPage() {
         {/* ③ Today's Activity — Manual + Algo boxes */}
         <AlgoStrategyBoxes strategies={d.strategies} trades={d.todayTrades} loading={d.loading} />
 
-        {/* ④ P&L Trend — full width */}
+        {/* ④ Strategy Deep Dive */}
+        <StrategyDeepDive />
+
+        {/* ⑤ P&L Trend — full width */}
         <PnlChart daily={d.daily} mtdPnl={d.mtdPnl} loading={d.loading} />
 
         {/* ⑤ Option Insight */}
         <OptionInsightSection />
-
-        {/* ⑤b Top Conviction Picks */}
-        <StockPicksList picks={d.picks} loading={d.loading} onNav={() => navigate('/insight')} />
-
-        {/* ⑥ Live Positions & Orders */}
-        <div>
-          <div className="flex items-center justify-between mb-4">
-            <SectionHeader
-              title="Live Positions & Orders"
-              sub="Real broker data · SL / Target / Exit / Modify / Cancel"
-              inline
-            />
-            <button
-              onClick={() => navigate('/trade')}
-              className="text-[11px] font-bold text-brand-600 dark:text-brand-400 hover:text-brand-700 transition-colors"
-            >
-              Full trade module →
-            </button>
-          </div>
-          <DashboardTradebook />
-        </div>
 
         <p className="text-center text-[10px] text-slate-300 dark:text-white/12 pb-2 tracking-wider">
           30-DAY WINDOW · UNREALISED P&amp;L INCLUDED · NOT INVESTMENT ADVICE

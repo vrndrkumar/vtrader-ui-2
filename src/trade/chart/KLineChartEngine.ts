@@ -65,7 +65,14 @@ export class KLineChartEngine implements ChartEngine {
   }
 
   setData(candles: Candle[]): void {
-    this.chart?.applyNewData(candles as KLineData[])
+    if (!this.chart) return
+    this.chart.applyNewData(candles as KLineData[])
+    // Snap the viewport back to the latest candles. Without this, a scroll/zoom
+    // left over from the previous timeframe (or symbol) keeps the old visible
+    // window, so the freshly-loaded candles sit off-screen and the chart looks
+    // empty until a manual reload. Runs on the next frame so it applies after
+    // applyNewData has laid out the new series.
+    requestAnimationFrame(() => { try { this.chart?.scrollToRealTime(0) } catch { /* older API */ } })
   }
 
   updateLast(candle: Candle): void {

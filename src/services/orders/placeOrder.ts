@@ -77,15 +77,16 @@ export async function quickPlace(o: { symbolName: string; indexName: string; sid
   return { ok: ok === results.length, results }
 }
 
-/** Place a multi-leg strategy — each leg × each selected broker → place-order. */
+/** Place a multi-leg strategy — each leg × each selected broker → place-order.
+ *  MANDATORY SEQUENCE: all BUY orders are placed (and awaited) first, then all
+ *  SELL orders. This frees margin from the long legs before the shorts go in. */
 export async function submitStrategy(legs: StrategyLegOrder[]): Promise<PlaceOrderOutcome> {
   const brokers = selectedBrokers()
   if (!brokers.length) { toast.error('Select a broker first'); return { ok: false, results: [] } }
   if (!legs.length) { toast.error('Add at least one leg'); return { ok: false, results: [] } }
   await ensureLotSizes()
 
-  const jobs = brokers.flatMap((b) => legs.map((l) => ({ b, l })))
-  const results = await Promise.all(jobs.map<Promise<BrokerOrderResult>>(async ({ b, l }) => {
+  const placeJob = async (b: BrokerAccount, l: StrategyLegOrder): Promise<BrokerOrderResult> => {
     const base = { brokerId: b.id, brokerName: b.brokerName, displayName: b.displayName, qty: l.qty }
     try {
       const raw = await placeOrderApi({
@@ -99,7 +100,15 @@ export async function submitStrategy(legs: StrategyLegOrder[]): Promise<PlaceOrd
     } catch (e) {
       return { ...base, ok: false, message: errMessage(e) }
     }
-  }))
+  }
+
+  const phase = (side: TxnType) => brokers.flatMap((b) => legs.filter((l) => l.side === side).map((l) => ({ b, l })))
+  const buys = phase('BUY')
+  const sells = phase('SELL')
+  // Phase 1: buys first (awaited fully), then Phase 2: sells.
+  const buyResults = buys.length ? await Promise.all(buys.map(({ b, l }) => placeJob(b, l))) : []
+  const sellResults = sells.length ? await Promise.all(sells.map(({ b, l }) => placeJob(b, l))) : []
+  const results = [...buyResults, ...sellResults]
 
   const ok = results.filter((r) => r.ok).length
   if (ok === results.length) toast.success(`Strategy placed · ${legs.length} legs × ${brokers.length} broker${brokers.length > 1 ? 's' : ''}`)

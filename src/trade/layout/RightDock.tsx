@@ -1,16 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
 import { clsx } from 'clsx'
 import { useChartStore } from '../store/chartStore'
 import { useQuote } from '../store/marketStore'
 import { SYMBOLS } from '../types/market'
 import { type OptType, type Side } from '../types/options'
-import { OptionChainTable } from '../features/optionchain/OptionChainTable'
+import { OptionChainTable, buildPositionMap } from '../features/optionchain/OptionChainTable'
+import { useTradebookStore } from '../features/tradebook/tradebookStore'
 import { IndexSelect } from '../features/optionchain/IndexSelect'
 import { useLiveOptionChain } from '../features/optionchain/useOptionChain'
 import { useWatchlistStore } from '../store/watchlistStore'
 import { applySymbol } from '../store/chartLayoutStore'
-import { placeOrder } from '@/services/orders/placeOrder'
+import { placeOrder, submitStrategy } from '@/services/orders/placeOrder'
 import type { PanelKey } from './LeftRail'
 
 // ── Watchlist ────────────────────────────────────────────────────────────────
@@ -97,6 +98,8 @@ function OptionChainPanel() {
   const [expiry, setExpiry] = useState('')
   const { chain, expiries } = useLiveOptionChain(symbolCode, expiry)
   const addWatch = useWatchlistStore((s) => s.add)
+  const tbPositions = useTradebookStore((s) => s.positions)
+  const posMap = useMemo(() => buildPositionMap(tbPositions, symbolCode), [tbPositions, symbolCode])
 
   useEffect(() => { setExpiry('') }, [symbolCode])
   // Default to nearest; also re-select if the current one expired / vanished.
@@ -119,7 +122,18 @@ function OptionChainPanel() {
       <div className="flex-1 min-h-0">
         <OptionChainTable
           chain={chain} expiries={expiries} compact expiry={expiry} onExpiry={setExpiry}
-          onAction={onAction} onWatch={onWatch}
+          onAction={onAction} onWatch={onWatch} positions={posMap}
+          onAdjustConfirm={(moves) => {
+            const legs = moves.flatMap((m) => {
+              const q = Math.abs(m.qty), long = m.qty > 0
+              const sym = (s: number) => `${symbolCode}_${expiry.replace(/\s/g, '')}_${m.optType}_${s}`
+              return [
+                { side: (long ? 'SELL' : 'BUY') as Side, indexName: symbolCode, symbolName: sym(m.fromStrike), priceType: 'MKT' as const, price: 0, qty: q },
+                { side: (long ? 'BUY' : 'SELL') as Side, indexName: symbolCode, symbolName: sym(m.toStrike), priceType: 'MKT' as const, price: 0, qty: q },
+              ]
+            })
+            void submitStrategy(legs).then(() => useTradebookStore.getState().reload())
+          }}
           onChart={(strike, optType) => applySymbol({
             key: `${symbolCode}_${expiry}_${optType}_${strike}`,
             candleSymbol: `${symbolCode}_${expiry}_${optType}_${strike}`,

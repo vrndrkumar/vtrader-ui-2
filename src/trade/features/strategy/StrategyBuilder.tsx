@@ -1,14 +1,15 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import toast from 'react-hot-toast'
 import { clsx } from 'clsx'
 import { useChartStore } from '../../store/chartStore'
 import { useStrategyStore } from '../../store/strategyStore'
 import { useWatchlistStore } from '../../store/watchlistStore'
-import { OptionChainTable } from '../optionchain/OptionChainTable'
+import { OptionChainTable, buildPositionMap } from '../optionchain/OptionChainTable'
+import { IndexSelect } from '../optionchain/IndexSelect'
 import { useLiveOptionChain } from '../optionchain/useOptionChain'
 import { computePayoff, strategyPnlAt, maxDte, avgIv } from './payoff'
 import { PayoffChart } from './PayoffChart'
-import { buildPreset, PRESETS, type PresetName } from './presets'
+import { RunningStrategyBar } from './RunningStrategyBar'
 import { type OptType, type Side, type StrategyLeg } from '../../types/options'
 import type { ChartSymbol } from '../../types/market'
 import { submitStrategy } from '@/services/orders/placeOrder'
@@ -34,6 +35,7 @@ type View = 'graph' | 'table' | 'greeks'
 
 export function StrategyBuilder({ onOpenStrikeChart }: { onOpenStrikeChart?: (cs: ChartSymbol) => void }) {
   const symbolCode = useChartStore((s) => s.symbolCode)
+  const setSymbol = useChartStore((s) => s.setSymbol)
   const [expiry, setExpiry] = useState('')
   const { chain, expiries } = useLiveOptionChain(symbolCode, expiry)
   useEffect(() => { setExpiry('') }, [symbolCode])
@@ -43,32 +45,46 @@ export function StrategyBuilder({ onOpenStrikeChart }: { onOpenStrikeChart?: (cs
   const { legs, product, sameQty, addFromChain, removeLeg, updateLeg, clear, setProduct, setSameQty, setLegs } = useStrategyStore()
   const [tab, setTab] = useState<Tab>('strategy')
   const [view, setView] = useState<View>('graph')
-  const [preset, setPreset] = useState<PresetName | null>(null)
   const [target, setTarget] = useState<number | null>(null)
   const [timeFrac, setTimeFrac] = useState(1) // 1 = today, 0 = expiry
   const [zoomed, setZoomed] = useState(true)
 
-  const payoff = useMemo(() => computePayoff(legs, chain.spot), [legs, chain.spot])
+  // Legs the user has unchecked are excluded from payoff + trade (kept in the list).
+  const [disabled, setDisabled] = useState<Set<string>>(new Set())
+  const enabledLegs = useMemo(() => legs.filter((l) => !disabled.has(l.id)), [legs, disabled])
+  const toggleLeg = (id: string) => setDisabled((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n })
+
+  const payoff = useMemo(() => computePayoff(enabledLegs, chain.spot), [enabledLegs, chain.spot])
   const spot = chain.spot
 
   const addWatch = useWatchlistStore((s) => s.add)
-  const onAction = (strike: number, optType: OptType, side: Side, ltp: number, iv: number) => { addFromChain({ symbolCode, expiry, strike, optType, side, ltp, iv }); setPreset(null) }
+  const onAction = (strike: number, optType: OptType, side: Side, ltp: number, iv: number) => { addFromChain({ symbolCode, expiry, strike, optType, side, ltp, iv }) }
   const onWatch = (strike: number, optType: OptType, ltp: number) => {
     addWatch({ id: `${symbolCode}_${expiry}_${optType}_${strike}`, symbol: `${symbolCode}_${expiry.replace(/\s/g, '')}_${optType}_${strike}`, display: `${symbolCode} ${strike} ${optType}`, ltp })
     toast.success('Added to watchlist')
   }
-  const applyPreset = (name: PresetName) => { setLegs(buildPreset(name, chain)); setPreset(name) }
+  // Load a running strategy (from the selector bar) into the builder.
+  const loadRunning = (runLegs: StrategyLeg[], index: string) => { if (index && index !== symbolCode) setSymbol(index); setDisabled(new Set()); setLegs(runLegs) }
+  // Start a fresh strategy — clear everything so the user builds from scratch.
+  const newStrategy = () => { clear(); setDisabled(new Set()); setTarget(null); setTimeFrac(1) }
+  // Roll a leg to another strike by dragging (exit old strike → enter new).
+  const rollLeg = (leg: StrategyLeg, newStrike: number) => {
+    if (newStrike === leg.strike) return
+    const row = chain.rows.find((r) => r.strike === newStrike)
+    const d = row ? (leg.optType === 'CE' ? row.call : row.put) : undefined
+    updateLeg(leg.id, { strike: newStrike, ...(d ? { ltp: d.ltp, price: d.ltp, iv: d.iv } : {}) })
+  }
   const changeStrike = (leg: StrategyLeg, dir: 1 | -1) => {
     const strike = leg.strike + dir * step
     const row = chain.rows.find((r) => r.strike === strike)
     const d = row ? (leg.optType === 'CE' ? row.call : row.put) : undefined
-    updateLeg(leg.id, { strike, ...(d ? { ltp: d.ltp, price: d.ltp, iv: d.iv } : {}) }); setPreset(null)
+    updateLeg(leg.id, { strike, ...(d ? { ltp: d.ltp, price: d.ltp, iv: d.iv } : {}) })
   }
   const toggleType = (leg: StrategyLeg) => {
     const row = chain.rows.find((r) => r.strike === leg.strike)
     const t: OptType = leg.optType === 'CE' ? 'PE' : 'CE'
     const d = row ? (t === 'CE' ? row.call : row.put) : undefined
-    updateLeg(leg.id, { optType: t, ...(d ? { ltp: d.ltp, price: d.ltp, iv: d.iv } : {}) }); setPreset(null)
+    updateLeg(leg.id, { optType: t, ...(d ? { ltp: d.ltp, price: d.ltp, iv: d.iv } : {}) })
   }
 
   // Live positions / orders for this index.
@@ -76,13 +92,14 @@ export function StrategyBuilder({ onOpenStrikeChart }: { onOpenStrikeChart?: (cs
   const tbOrders = useTradebookStore((s) => s.orders)
   const orderStatus = useTradebookStore((s) => s.orderStatus)
   const posRows = useMemo(() => tbPositions.filter((p) => p.indexName === symbolCode), [tbPositions, symbolCode])
+  const posMap = useMemo(() => buildPositionMap(tbPositions, symbolCode), [tbPositions, symbolCode])
   const indexOrders = useMemo(() => tbOrders.filter((o) => o.indexName === symbolCode), [tbOrders, symbolCode])
   const ordRows = useMemo(() => orderStatus === 'ALL' ? indexOrders : indexOrders.filter((o) => o.status === orderStatus), [indexOrders, orderStatus])
   const ordCounts = useMemo(() => orderStatusCounts(indexOrders), [indexOrders])
 
   const trade = () => {
-    if (!legs.length) return toast.error('Add at least one leg')
-    void submitStrategy(legs.map((l) => ({
+    if (!enabledLegs.length) return toast.error('Select at least one leg')
+    void submitStrategy(enabledLegs.map((l) => ({
       side: l.side, indexName: symbolCode,
       symbolName: `${symbolCode}_${l.expiry.replace(/\s/g, '')}_${l.optType}_${l.strike}`,
       priceType: l.priceType === 'Market' ? 'MKT' : 'LMT', price: l.price, qty: l.qty,
@@ -93,17 +110,15 @@ export function StrategyBuilder({ onOpenStrikeChart }: { onOpenStrikeChart?: (cs
   const lo = payoff.points[0]?.price ?? Math.round(spot * 0.72)
   const hi = payoff.points[payoff.points.length - 1]?.price ?? Math.round(spot * 1.28)
   const effTarget = Math.min(hi, Math.max(lo, target ?? Math.round(spot)))
-  const dteDays = maxDte(legs)
+  const dteDays = maxDte(enabledLegs)
   const daysLeft = Math.max(0, Math.round(dteDays * timeFrac))
-  const sd = spot * (avgIv(legs) / 100) * Math.sqrt(dteDays / 365)
-  const chartData = useMemo(() => payoff.points.map((p) => ({ price: p.price, expiry: p.expiry, projected: strategyPnlAt(legs, p.price, timeFrac) })), [payoff.points, legs, timeFrac])
+  const sd = spot * (avgIv(enabledLegs) / 100) * Math.sqrt(dteDays / 365)
+  const chartData = useMemo(() => payoff.points.map((p) => ({ price: p.price, expiry: p.expiry, projected: strategyPnlAt(enabledLegs, p.price, timeFrac) })), [payoff.points, enabledLegs, timeFrac])
   const bands = useMemo(() => sd > 0 ? [-2, -1, 1, 2].map((k) => ({ price: Math.round(spot + k * sd), label: `${k > 0 ? '+' : ''}${k}SD` })).filter((b) => b.price > lo && b.price < hi) : [], [sd, spot, lo, hi])
-  const projAtTarget = legs.length ? strategyPnlAt(legs, effTarget, timeFrac) : 0
+  const projAtTarget = enabledLegs.length ? strategyPnlAt(enabledLegs, effTarget, timeFrac) : 0
   const pop = popEstimate(payoff.points, spot, sd)
 
-  // Zoom window — fill the view with the meaningful payoff (around strikes/SD),
-  // instead of the full ±28% sampling range.
-  const focus = [effTarget, ...legs.map((l) => l.strike), ...payoff.breakevens].filter((x) => Number.isFinite(x))
+  const focus = [effTarget, ...enabledLegs.map((l) => l.strike), ...payoff.breakevens].filter((x) => Number.isFinite(x))
   const halfW = Math.max(2.5 * (sd || spot * 0.02), spot * 0.03, ...focus.map((x) => Math.abs(x - spot) * 1.25))
   const winLo = Math.max(lo, Math.round(spot - halfW))
   const winHi = Math.min(hi, Math.round(spot + halfW))
@@ -116,10 +131,25 @@ export function StrategyBuilder({ onOpenStrikeChart }: { onOpenStrikeChart?: (cs
 
   return (
     <div className="flex h-full min-h-0">
-      {/* Option chain (left) */}
-      <div className="w-[360px] shrink-0 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-card-dark">
-        <OptionChainTable chain={chain} expiries={expiries} expiry={expiry} onExpiry={setExpiry} onAction={onAction} onWatch={onWatch}
+      {/* Option chain (left) — same header as the trade page: index picker
+          (with live LTP / change%) on top, then the Calls / expiry / Puts table. */}
+      <div className="w-[360px] shrink-0 flex flex-col min-h-0 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-card-dark">
+        <IndexSelect value={symbolCode} onChange={setSymbol} />
+        <div className="flex-1 min-h-0">
+        <OptionChainTable chain={chain} expiries={expiries} expiry={expiry} onExpiry={setExpiry} onAction={onAction} onWatch={onWatch} positions={posMap}
+          onAdjustConfirm={(moves) => {
+            const legs = moves.flatMap((m) => {
+              const q = Math.abs(m.qty), long = m.qty > 0
+              const sym = (s: number) => `${symbolCode}_${expiry.replace(/\s/g, '')}_${m.optType}_${s}`
+              return [
+                { side: (long ? 'SELL' : 'BUY') as Side, indexName: symbolCode, symbolName: sym(m.fromStrike), priceType: 'MKT' as const, price: 0, qty: q },
+                { side: (long ? 'BUY' : 'SELL') as Side, indexName: symbolCode, symbolName: sym(m.toStrike), priceType: 'MKT' as const, price: 0, qty: q },
+              ]
+            })
+            void submitStrategy(legs).then(() => useTradebookStore.getState().reload())
+          }}
           onChart={(strike, optType) => onOpenStrikeChart?.({ key: `${symbolCode}_${expiry}_${optType}_${strike}`, candleSymbol: `${symbolCode}_${expiry}_${optType}_${strike}`, display: `${symbolCode} ${strike} ${optType}`, kind: 'OPTION' })} />
+        </div>
       </div>
 
       {/* Strategy panel (right) */}
@@ -140,20 +170,15 @@ export function StrategyBuilder({ onOpenStrikeChart }: { onOpenStrikeChart?: (cs
         ) : (
           <div className="flex-1 min-h-0 overflow-y-auto">
             <div className="max-w-5xl mx-auto p-4 space-y-4">
-              {/* Presets */}
-              <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 pr-1 shrink-0">Presets</span>
-                {PRESETS.map((p) => (
-                  <button key={p} onClick={() => applyPreset(p)} className={clsx('px-3 h-8 rounded-xl text-xs font-semibold whitespace-nowrap border transition-all active:scale-95', preset === p ? 'bg-gradient-to-r from-brand-600 to-indigo-500 border-transparent text-white shadow' : 'bg-white dark:bg-card-dark border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-brand-300 hover:-translate-y-0.5')}>{p}</button>
-                ))}
-              </div>
+              {/* Running strategy selectors (replaces presets) */}
+              <RunningStrategyBar expiries={expiries} onLoad={loadRunning} />
 
               {/* Builder card */}
               <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card-dark shadow-sm overflow-hidden">
                 <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 dark:border-slate-800">
                   <div>
-                    <p className="text-sm font-bold text-slate-800 dark:text-slate-100">{preset ?? (legs.length ? 'Custom strategy' : 'Build a strategy')}</p>
-                    <p className="text-[11px] text-slate-400">{legs.length ? `${legs.length} leg${legs.length > 1 ? 's' : ''}` : 'Pick a preset or add legs from the chain'}</p>
+                    <p className="text-sm font-bold text-slate-800 dark:text-slate-100">{legs.length ? 'Strategy' : 'Build a strategy'}</p>
+                    <p className="text-[11px] text-slate-400">{legs.length ? `${legs.length} leg${legs.length > 1 ? 's' : ''}` : 'Select a running strategy above, or add legs from the chain'}</p>
                   </div>
                   <div className="flex items-center gap-2">
                     <Segmented value={product} onChange={(v) => setProduct(v)} options={[{ v: 'Normal', l: 'NRML' }, { v: 'MIS', l: 'MIS' }]} />
@@ -163,7 +188,10 @@ export function StrategyBuilder({ onOpenStrikeChart }: { onOpenStrikeChart?: (cs
                         <span className={clsx('absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all', sameQty ? 'left-3.5' : 'left-0.5')} />
                       </span>Same qty
                     </label>
-                    {legs.length > 0 && <button onClick={() => { clear(); setPreset(null) }} className="text-[11px] font-semibold text-slate-400 hover:text-red-500">Clear</button>}
+                    <button onClick={newStrategy} className="flex items-center gap-1 h-7 px-2.5 rounded-lg border border-brand-200 dark:border-brand-800 text-[11px] font-bold text-brand-600 dark:text-brand-400 hover:bg-brand-50 dark:hover:bg-brand-900/20 transition-colors">
+                      <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14" /></svg>New
+                    </button>
+                    {legs.length > 0 && <button onClick={() => clear()} className="text-[11px] font-semibold text-slate-400 hover:text-red-500">Clear</button>}
                   </div>
                 </div>
 
@@ -171,34 +199,41 @@ export function StrategyBuilder({ onOpenStrikeChart }: { onOpenStrikeChart?: (cs
                   <div className="m-4 py-12 text-center rounded-xl border border-dashed border-slate-200 dark:border-slate-700">
                     <svg viewBox="0 0 24 24" className="h-8 w-8 mx-auto mb-2 text-slate-300" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3 12h4l3 8 4-16 3 8h4" /></svg>
                     <p className="text-sm font-medium text-slate-500 dark:text-slate-300">No legs yet</p>
-                    <p className="text-[11px] text-slate-400 mt-0.5">Pick a preset above, or hover a strike and tap <b className="text-brand-600">B</b>/<b className="text-red-600">S</b>.</p>
+                    <p className="text-[11px] text-slate-400 mt-0.5">Select a running strategy above, or hover a strike and tap <b className="text-brand-600">B</b>/<b className="text-red-600">S</b>.</p>
                   </div>
                 ) : (
                   <div className="divide-y divide-slate-100 dark:divide-slate-800">
-                    <div className="grid grid-cols-[64px_1fr_1.2fr_64px_1.1fr_72px_28px] gap-2 px-4 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                    <div className="grid grid-cols-[28px_64px_1fr_1.4fr_64px_1.1fr_72px_28px] gap-2 px-4 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                      <span />
                       <span>B/S</span><span>Expiry</span><span className="text-center">Strike</span><span className="text-center">Type</span><span className="text-center">Qty</span><span className="text-right">Price</span><span />
                     </div>
-                    {legs.map((l) => (
-                      <div key={l.id} className="grid grid-cols-[64px_1fr_1.2fr_64px_1.1fr_72px_28px] gap-2 px-4 py-2 items-center hover:bg-slate-50 dark:hover:bg-white/[0.02]">
-                        <button onClick={() => updateLeg(l.id, { side: l.side === 'BUY' ? 'SELL' : 'BUY' })} className={clsx('h-7 rounded-lg text-xs font-bold transition-transform active:scale-95', l.side === 'BUY' ? 'bg-brand-50 text-brand-600 dark:bg-brand-900/30' : 'bg-red-50 text-red-600 dark:bg-red-900/30')}>{l.side}</button>
-                        <select value={l.expiry} onChange={(e) => updateLeg(l.id, { expiry: e.target.value })} className="h-7 bg-slate-100 dark:bg-white/5 rounded-lg px-2 text-xs font-medium outline-none">
-                          {(expiries.length ? expiries : [l.expiry]).map((e) => <option key={e}>{e}</option>)}
-                        </select>
-                        <div className="flex items-center justify-center gap-1">
-                          <StepBtn onClick={() => changeStrike(l, -1)}>−</StepBtn>
-                          <span className="w-14 text-center tabular-nums font-semibold text-slate-700 dark:text-slate-200">{l.strike}</span>
-                          <StepBtn onClick={() => changeStrike(l, 1)}>+</StepBtn>
+                    {legs.map((l) => {
+                      const off = !disabled.has(l.id)
+                      return (
+                        <div key={l.id} className={clsx('grid grid-cols-[28px_64px_1fr_1.4fr_64px_1.1fr_72px_28px] gap-2 px-4 py-2 items-center hover:bg-slate-50 dark:hover:bg-white/[0.02] transition-opacity', !off && 'opacity-45')}>
+                          {/* Include checkbox */}
+                          <input type="checkbox" checked={off} onChange={() => toggleLeg(l.id)} className="h-4 w-4 accent-brand-600 cursor-pointer justify-self-center" title={off ? 'Exclude from payoff' : 'Include in payoff'} />
+                          <button onClick={() => updateLeg(l.id, { side: l.side === 'BUY' ? 'SELL' : 'BUY' })} className={clsx('h-7 rounded-lg text-xs font-bold transition-transform active:scale-95', l.side === 'BUY' ? 'bg-brand-50 text-brand-600 dark:bg-brand-900/30' : 'bg-red-50 text-red-600 dark:bg-red-900/30')}>{l.side}</button>
+                          <select value={l.expiry} onChange={(e) => updateLeg(l.id, { expiry: e.target.value })} className="h-7 bg-slate-100 dark:bg-white/5 rounded-lg px-2 text-xs font-medium outline-none">
+                            {(expiries.length ? expiries : [l.expiry]).map((e) => <option key={e}>{e}</option>)}
+                          </select>
+                          {/* Strike — drag horizontally to roll */}
+                          <div className="flex items-center justify-center gap-1">
+                            <StepBtn onClick={() => changeStrike(l, -1)}>−</StepBtn>
+                            <StrikeRoller leg={l} step={step} onRoll={rollLeg} />
+                            <StepBtn onClick={() => changeStrike(l, 1)}>+</StepBtn>
+                          </div>
+                          <button onClick={() => toggleType(l)} className={clsx('h-7 rounded-lg text-xs font-bold transition-transform active:scale-95', l.optType === 'CE' ? 'bg-green-50 text-green-600 dark:bg-green-900/30' : 'bg-rose-50 text-rose-600 dark:bg-rose-900/30')}>{l.optType}</button>
+                          <div className="flex items-center justify-center gap-1">
+                            <StepBtn onClick={() => updateLeg(l.id, { qty: Math.max(l.lot, l.qty - l.lot) })}>−</StepBtn>
+                            <span className="w-12 text-center tabular-nums font-medium">{l.qty}</span>
+                            <StepBtn onClick={() => updateLeg(l.id, { qty: l.qty + l.lot })}>+</StepBtn>
+                          </div>
+                          <span className="text-right tabular-nums text-sm text-slate-600 dark:text-slate-300">{l.ltp.toFixed(2)}</span>
+                          <button onClick={() => removeLeg(l.id)} className="h-7 w-7 grid place-items-center rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 justify-self-end transition"><svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14" /></svg></button>
                         </div>
-                        <button onClick={() => toggleType(l)} className={clsx('h-7 rounded-lg text-xs font-bold transition-transform active:scale-95', l.optType === 'CE' ? 'bg-green-50 text-green-600 dark:bg-green-900/30' : 'bg-rose-50 text-rose-600 dark:bg-rose-900/30')}>{l.optType}</button>
-                        <div className="flex items-center justify-center gap-1">
-                          <StepBtn onClick={() => updateLeg(l.id, { qty: Math.max(l.lot, l.qty - l.lot) })}>−</StepBtn>
-                          <span className="w-12 text-center tabular-nums font-medium">{l.qty}</span>
-                          <StepBtn onClick={() => updateLeg(l.id, { qty: l.qty + l.lot })}>+</StepBtn>
-                        </div>
-                        <span className="text-right tabular-nums text-sm text-slate-600 dark:text-slate-300">{l.ltp.toFixed(2)}</span>
-                        <button onClick={() => removeLeg(l.id)} className="h-7 w-7 grid place-items-center rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 justify-self-end transition"><svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14" /></svg></button>
-                      </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 )}
 
@@ -324,6 +359,42 @@ export function StrategyBuilder({ onOpenStrikeChart }: { onOpenStrikeChart?: (cs
 
 function StepBtn({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
   return <button onClick={onClick} className="h-6 w-6 grid place-items-center rounded-lg bg-slate-100 dark:bg-white/5 text-slate-500 hover:bg-slate-200 dark:hover:bg-white/10 transition active:scale-90">{children}</button>
+}
+
+// Drag the strike horizontally to roll the leg to another strike (≈24px per step).
+function StrikeRoller({ leg, step, onRoll }: { leg: StrategyLeg; step: number; onRoll: (leg: StrategyLeg, strike: number) => void }) {
+  const drag = useRef<{ startX: number; base: number; moved: boolean } | null>(null)
+  const [preview, setPreview] = useState<number | null>(null)
+  const PX = 24
+
+  function down(clientX: number) { drag.current = { startX: clientX, base: leg.strike, moved: false } }
+  function move(clientX: number) {
+    if (!drag.current) return
+    const deltaSteps = Math.round((clientX - drag.current.startX) / PX)
+    if (deltaSteps !== 0) drag.current.moved = true
+    setPreview(drag.current.base + deltaSteps * step)
+  }
+  function up() {
+    if (drag.current && preview != null && drag.current.moved) onRoll(leg, preview)
+    drag.current = null; setPreview(null)
+  }
+  const shown = preview ?? leg.strike
+  return (
+    <span
+      onMouseDown={(e) => { e.preventDefault(); down(e.clientX) }}
+      onMouseMove={(e) => move(e.clientX)}
+      onMouseUp={up}
+      onMouseLeave={up}
+      onTouchStart={(e) => down(e.touches[0].clientX)}
+      onTouchMove={(e) => move(e.touches[0].clientX)}
+      onTouchEnd={up}
+      title="Drag to roll to another strike"
+      className={clsx('w-14 text-center tabular-nums font-semibold select-none cursor-ew-resize rounded-md py-0.5 transition-colors',
+        preview != null && preview !== leg.strike ? 'bg-brand-100 dark:bg-brand-900/40 text-brand-700 dark:text-brand-300' : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/10')}
+    >
+      {shown}
+    </span>
+  )
 }
 
 function Segmented<T extends string>({ value, onChange, options }: { value: T; onChange: (v: T) => void; options: { v: T; l: string }[] }) {

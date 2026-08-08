@@ -315,11 +315,11 @@ export default function ReportsPage() {
     if (showSyncing) setSyncing(true)
     else setLoading(true)
     try {
-      const apiGroup = (filters.groupName && filters.groupName !== 'Manual') ? filters.groupName : undefined
+      // Strategy (group) is filtered CLIENT-SIDE so the dropdown always sees every
+      // group — sending groupName to the server would shrink the option list.
       const [data, strats] = await Promise.all([
         getTrades({
           brokerName: filters.brokerName || undefined,
-          groupName:  apiGroup,
           fromDate:   filters.dateFrom || undefined,
           toDate:     filters.dateTo   || undefined,
         }),
@@ -334,7 +334,7 @@ export default function ReportsPage() {
       setLoading(false)
       setSyncing(false)
     }
-  }, [filters.brokerName, filters.groupName, filters.dateFrom, filters.dateTo]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [filters.brokerName, filters.dateFrom, filters.dateTo]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { fetchTrades() }, [fetchTrades])
 
@@ -346,7 +346,9 @@ export default function ReportsPage() {
       if (filters.status === 'CLOSED' && t.status !== 'CLOSED') return false
       if (filters.status === 'OPEN'   && t.status === 'CLOSED') return false
     }
-    if (filters.groupName === 'Manual' && t.group_name && !MANUAL_CODES.has(t.group_name)) return false
+    if (filters.groupName === 'Manual') {
+      if (!t.group_name || !MANUAL_CODES.has(t.group_name)) return false
+    } else if (filters.groupName && t.group_name !== filters.groupName) return false
     if (filters.symbolSearch) {
       const q = filters.symbolSearch.toUpperCase()
       if (!t.symbol_name.toUpperCase().includes(q) && !t.group_name?.toUpperCase().includes(q)) return false
@@ -363,13 +365,14 @@ export default function ReportsPage() {
 
   const brokerOptions = useMemo(() => [...new Set(allTrades.map((t) => t.broker_name))].sort(), [allTrades])
 
+  // Strategy dropdown is built from the DISTINCT group names in the fetched trades
+  // (not from master config). Manual trades are covered by the separate "Manual" option.
   const strategyOptions = useMemo(() => {
-    const fromConfig = strategies.map((s) => ({ groupName: s.strategyCode, label: s.strategyName }))
-    const configCodes = new Set(strategies.map((s) => s.strategyCode))
-    const fromTrades = [...new Set(allTrades.map((t) => t.group_name).filter(Boolean))]
-      .filter((g) => !configCodes.has(g) && !MANUAL_CODES.has(g))
-      .map((g) => ({ groupName: g, label: g }))
-    return [...fromConfig, ...fromTrades]
+    const codeToName = new Map(strategies.map((s) => [s.strategyCode, s.strategyName]))
+    return [...new Set(allTrades.map((t) => t.group_name).filter(Boolean))]
+      .filter((g) => !MANUAL_CODES.has(g))
+      .sort()
+      .map((g) => ({ groupName: g, label: codeToName.get(g) ?? g }))
   }, [strategies, allTrades])
 
   const stats      = useMemo(() => computeStats(filteredTrades), [filteredTrades])

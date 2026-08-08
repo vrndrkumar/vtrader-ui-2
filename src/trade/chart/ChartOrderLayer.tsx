@@ -141,8 +141,14 @@ export function ChartOrderLayer({ engineRef, symbolKey, ltp }: {
   const ocoAll = useIndexBracketStore((s) => s.all)
   const reloadOco = useIndexBracketStore((s) => s.reload)
   useEffect(() => { void reloadOco() }, [reloadOco])
+  // Only a monitor with NO pending triggered-entry belongs here (a real/filled
+  // position, or a classic SL/Target-on-position monitor with no entry leg). A
+  // bracket whose entry is still PENDING/PLACED is drawn by IndexBracketLayer;
+  // picking it up here would synthesize a bogus position line (the "LONG @ ltp"
+  // ghost) for an order that hasn't actually filled.
   const symMon = useMemo(
-    () => ocoAll.find((r) => r.monitorType !== 'INDEX' && r.symbolName === symbolKey),
+    () => ocoAll.find((r) => r.monitorType !== 'INDEX' && r.symbolName === symbolKey
+      && (r.entryStatus == null || r.entryStatus === 'FILLED')),
     [ocoAll, symbolKey],
   )
   useEffect(() => {
@@ -299,23 +305,36 @@ export function ChartOrderLayer({ engineRef, symbolKey, ltp }: {
             <div ref={refCb(`${p.id}:pos`)} className="absolute left-0 right-0 top-0 opacity-0 will-change-transform transition-opacity">
               <div className="absolute left-0 right-0 -translate-y-1/2 flex items-center">
                 <div className="absolute inset-x-0 border-t border-dashed pointer-events-none" style={{ borderColor: long ? COLORS.long : COLORS.short }} />
-                <div className="relative group flex items-center gap-1.5 pl-2 pointer-events-auto">
-                  <button onClick={() => setSel(open ? null : p.id)} className={clsx('relative flex items-center gap-2 h-8 pl-3 pr-2 rounded-r-xl rounded-l-md transition-transform hover:scale-[1.02] active:scale-95', CARD, open && '!border-indigo-400 ring-2 ring-indigo-400/40')}>
-                    <span className={clsx('absolute left-0 top-[20%] bottom-[20%] w-[3px] rounded-r', TYPE[long ? 'long' : 'short'].accent)} />
-                    <span className={clsx('px-2 py-0.5 rounded-md border text-[11px] font-bold tracking-wider tabular-nums', TYPE[long ? 'long' : 'short'].badge)}>{long ? 'LONG' : 'SHORT'} {qty}</span>
-                    <span className={clsx('text-[11px]', AT)}>@</span>
-                    <span className={clsx('text-[13px] font-extrabold tracking-tight tabular-nums', PRICE)}>{p.avgPrice.toFixed(2)}</span>
-                    <span className={clsx('mx-0.5 h-4 w-px', SEP)} />
-                    <span className={clsx('px-2 py-0.5 rounded-md border text-[11px] font-bold tracking-wide tabular-nums', pnlBadge(pnl))}>{money(pnl)}</span>
-                    <svg viewBox="0 0 24 24" className={clsx('h-3.5 w-3.5 transition-transform', AT, open && 'rotate-90')} fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M9 5l7 7-7 7" /></svg>
-                  </button>
+                {/* Compact boxed strip. pb-6/-mb-6 = an invisible hover bridge so
+                    moving down onto the SL/Target drawer keeps the group hovered
+                    without shifting the vertical centering. */}
+                <div className="relative group ml-2 pb-6 -mb-6 pointer-events-auto">
+                  {/* Main pill — click toggles the SL/Target drawer. */}
+                  <div onClick={() => setSel(open ? null : p.id)}
+                    className={clsx('relative z-[2] inline-flex items-stretch h-7 rounded-lg overflow-hidden cursor-pointer transition-transform hover:scale-[1.02] active:scale-95', CARD, open && '!border-indigo-400 ring-2 ring-indigo-400/40')}>
+                    <span className="w-[3px] shrink-0" style={{ background: long ? COLORS.long : COLORS.short }} />
+                    <span className="flex items-center gap-1 px-1.5">
+                      <span className={clsx('px-1.5 py-px rounded border text-[11px] font-bold tabular-nums', TYPE[long ? 'long' : 'short'].badge)}>{long ? 'LONG' : 'SHORT'} {qty}</span>
+                      <span className={clsx('px-1.5 py-px rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-white/5 text-[12px] font-extrabold tabular-nums text-right', PRICE)} style={{ minWidth: 52 }}>{p.avgPrice.toFixed(2)}</span>
+                      {/* Fixed width + right-align so ticking P&L digits change INSIDE the box — the strip never resizes. */}
+                      <span className={clsx('px-1.5 py-px rounded border text-[11px] font-bold tabular-nums text-right', pnlBadge(pnl))} style={{ minWidth: 78 }}>{money(pnl)}</span>
+                      <svg viewBox="0 0 24 24" className={clsx('h-3.5 w-3.5 transition-transform', AT, open && 'rotate-180')} fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 9l6 6 6-6" /></svg>
+                    </span>
+                    <button title="Exit at market" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onExit(p) }}
+                      className="flex items-center gap-1 px-2 border-l border-slate-200 dark:border-slate-700 bg-rose-500 hover:bg-rose-600 text-white text-[11px] font-bold">
+                      <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M16 17l5-5-5-5M21 12H9M12 3H5a2 2 0 00-2 2v14a2 2 0 002 2h7" /></svg>
+                      Exit
+                    </button>
+                  </div>
 
-                  <div className={clsx('flex items-center gap-1 transition-all duration-200',
-                    open ? 'opacity-100 translate-x-0 pointer-events-auto'
-                      : 'opacity-0 -translate-x-1 pointer-events-none group-hover:opacity-100 group-hover:translate-x-0 group-hover:pointer-events-auto')}>
-                    {p.stopLoss == null && <Chip tone="sl" label="SL" onDown={startLegCreate(p, 'sl')} />}
-                    {p.target == null && <Chip tone="tp" label="Target" onDown={startLegCreate(p, 'tp')} />}
-                    <IconChip title="Exit position" danger onClick={() => onExit(p)}><path d="M6 6l12 12M18 6L6 18" /></IconChip>
+                  {/* SL / Target drawer — slides straight DOWN from under the strip,
+                      side by side. Hidden state tucks up behind the pill (lower z +
+                      opaque pill), so it looks like it emerges from the strip. */}
+                  <div className={clsx('absolute left-1 top-[30px] z-[1] flex items-center gap-1.5 transition-all duration-200',
+                    open ? 'opacity-100 translate-y-0 pointer-events-auto'
+                      : 'opacity-0 -translate-y-3 pointer-events-none group-hover:opacity-100 group-hover:translate-y-0 group-hover:pointer-events-auto')}>
+                    {p.stopLoss == null && <DropChip tone="sl" label="SL" onDown={startLegCreate(p, 'sl')} />}
+                    {p.target == null && <DropChip tone="tp" label="Target" onDown={startLegCreate(p, 'tp')} />}
                   </div>
                 </div>
               </div>
@@ -407,25 +426,25 @@ function OrderTag({ refCb, dragging, onStart, side, qty, step, price, priceType,
   )
 }
 
-function Chip({ tone, label, onDown }: { tone: 'sl' | 'tp'; label: string; onDown: (e: React.PointerEvent) => void }) {
+// Drawer chip that slides down under the strip — icon + label, press-and-drag to place.
+function DropChip({ tone, label, onDown }: { tone: 'sl' | 'tp'; label: string; onDown: (e: React.PointerEvent) => void }) {
+  const icon = tone === 'sl'
+    ? 'M12 3l7 3v5c0 4.2-3 7.4-7 8.4-4-1-7-4.2-7-8.4V6z'   // shield
+    : 'M12 3v3M12 18v3M3 12h3M18 12h3'                       // target crosshair (with circles below)
   return (
     <button onPointerDown={onDown} title="Press and drag onto the chart to place"
-      className={clsx('h-6 px-2 rounded-lg text-white text-[10px] font-bold shadow-sm transition-all active:scale-95 whitespace-nowrap cursor-ns-resize select-none touch-none',
+      className={clsx('flex items-center gap-1 h-6 pl-1.5 pr-2 rounded-lg text-white text-[10px] font-bold shadow-md transition-all active:scale-95 whitespace-nowrap cursor-ns-resize select-none touch-none',
         tone === 'sl' ? 'bg-red-500 hover:bg-red-600' : 'bg-teal-500 hover:bg-teal-600')}>
+      <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        {tone === 'tp' && <circle cx="12" cy="12" r="7" />}
+        {tone === 'tp' && <circle cx="12" cy="12" r="2.5" />}
+        <path d={icon} />
+      </svg>
       {label}
     </button>
   )
 }
 
-function IconChip({ title, danger, onClick, children }: { title: string; danger?: boolean; onClick: () => void; children: React.ReactNode }) {
-  return (
-    <button title={title} onPointerDown={(e) => e.stopPropagation()} onClick={onClick}
-      className={clsx('h-6 w-6 grid place-items-center rounded-lg bg-white/95 dark:bg-slate-800/95 shadow-sm ring-1 ring-black/5 dark:ring-white/10 transition-all active:scale-90',
-        danger ? 'text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-white/10')}>
-      <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{children}</svg>
-    </button>
-  )
-}
 
 function LegTag({ refCb, dragging, onStart, kind, color, label, price, qty, step, pnl, onSetQty, onRemove }: {
   refCb: (el: HTMLDivElement | null) => void

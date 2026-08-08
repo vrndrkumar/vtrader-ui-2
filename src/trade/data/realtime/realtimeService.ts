@@ -107,9 +107,17 @@ async function primeIndex(index: string) {
  * Symbols the feed can't resolve (BTC, INDIA VIX, …) are absent from the result
  * and keep their candle fallback.
  */
+// Guards so the batch /data/quotes call fires ONCE per session — repeated
+// primeIndices() calls (component remounts, StrictMode) become no-ops. After the
+// first successful seed, prices track purely through the WebSocket.
+let indicesPrimed = false
+let indicesPriming = false
 async function primeIndicesFromApi(codes: string[]) {
+  if (indicesPrimed || indicesPriming) return
+  indicesPriming = true
   try {
     const marks = await fetchIndexQuotes(codes)
+    indicesPrimed = true
     const now = Date.now()
     for (const m of marks) {
       apiSeeded.add(m.code)
@@ -130,6 +138,7 @@ async function primeIndicesFromApi(codes: string[]) {
       }
     }
   } catch { /* ignore — per-index candle fallback still applies */ }
+  finally { indicesPriming = false }
 }
 
 /** Same as primeIndex but for an option strike symbol (2-month candle range). */
@@ -198,7 +207,7 @@ export const realtime = {
   },
 
   /** Seed authoritative previous-close + last price for many indices at once
-   *  (batched quotes API). Call with the strip's codes on mount. */
+   *  (batched quotes API). Called ONCE on mount; prices then track via WebSocket. */
   primeIndices(codes: string[]): void { void primeIndicesFromApi(codes) },
 
   /** Ref-counted server subscription for an index's tick stream. */

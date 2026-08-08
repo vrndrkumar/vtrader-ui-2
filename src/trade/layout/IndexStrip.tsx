@@ -12,12 +12,11 @@ export function IndexStrip() {
   useEffect(() => {
     realtime.start()
     const codes = STRIP_INDICES.map((i) => i.code)
-    // Keep index prev-close + price matched to the broker at every phase
-    // (pre-open / live / post-close): sync now, then refresh on an interval.
+    // Fetch prev-close + seed price ONCE on load. After that prices track purely
+    // through the WebSocket — no repeated /data/quotes polling.
     realtime.primeIndices(codes)
-    const poll = setInterval(() => realtime.primeIndices(codes), 5_000)
     const unsubs = STRIP_INDICES.map((i) => realtime.subscribeIndexTick(i.code))
-    return () => { clearInterval(poll); unsubs.forEach((u) => u()) }
+    return () => { unsubs.forEach((u) => u()) }
   }, [])
 
   return (

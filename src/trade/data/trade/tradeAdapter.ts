@@ -10,6 +10,7 @@ import { useBrokerStore } from '@/store/brokerStore'
 import { saveOcoMonitor } from '@/api/trade'
 import { roundTick } from '@/services/orders/tick'
 import { setOrderLineDragEnd } from '../../chart/orderOverlays'
+import { useIndexBracketStore } from '../../store/indexBracketStore'
 
 export function placeMarket(
   symbolKey: string, display: string, side: Side, qty: number, brokerId: number,
@@ -36,12 +37,21 @@ export function placeMarket(
 /**
  * Persist a position's SL/Target as a server-side OCO monitor.
  * Sends the FULL current bracket (SL and/or Target — either optional); the
- * backend upserts by (user, broker, symbol). Call on set / drag-end / qty-edit,
- * not on every drag frame. No-op when neither leg is set.
+ * backend upserts by (user, broker, symbol) and clears any leg that's absent.
+ * Call on set / drag-end / qty-edit / REMOVE. When both legs are cleared we must
+ * still sync IF a monitor exists (so the removed leg is cleared server-side and
+ * can't fire) — only skip entirely when there's nothing to save and nothing to
+ * clear.
  */
 export function syncOcoMonitor(positionId: string) {
   const p = useTradeStore.getState().positions[positionId]
-  if (!p || (p.stopLoss == null && p.target == null)) return
+  if (!p) return
+  const hasLeg = p.stopLoss != null || p.target != null
+  const monitorExists = useIndexBracketStore.getState().all.some(
+    (r) => r.monitorType !== 'INDEX' && r.symbolName === p.symbolKey
+      && (r.entryStatus == null || r.entryStatus === 'FILLED'),
+  )
+  if (!hasLeg && !monitorExists) return // nothing to save, nothing to clear
   const long = p.netQty >= 0
   const posQty = Math.abs(p.netQty)
   const brokerName = useBrokerStore.getState().accounts.find((a) => a.id === p.brokerId)?.brokerName
@@ -56,7 +66,10 @@ export function syncOcoMonitor(positionId: string) {
     quantity: posQty,
     stopLoss: p.stopLoss != null ? { limitPrice: +p.stopLoss.toFixed(2), quantity: p.stopQty ?? posQty } : undefined,
     target: p.target != null ? { limitPrice: +p.target.toFixed(2), quantity: p.targetQty ?? posQty } : undefined,
-  }).then(() => toast.success('OCO monitor saved')).catch(() => toast.error('Failed to save OCO monitor'))
+  }).then(() => {
+    toast.success('OCO monitor saved')
+    void useIndexBracketStore.getState().reload() // reflect the cleared/updated legs
+  }).catch(() => toast.error('Failed to save OCO monitor'))
 }
 
 export function modifyStop(id: string, price: number) { useTradeStore.getState().updatePosition(id, { stopLoss: roundTick(price) }) }
