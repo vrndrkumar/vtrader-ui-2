@@ -1,7 +1,7 @@
 import axios from 'axios'
 
 const BASE_URL        = 'https://api.vtrader.in'
-const SIGNAL_BASE_URL = 'http://164.52.201.122:3500'
+const SIGNAL_BASE_URL = 'http://200.141.15.69:3500'
 const CANDLE_BASE_URL = 'https://data.vtrader.in' // dedicated candle-history host
 
 export const axiosPublic = axios.create({

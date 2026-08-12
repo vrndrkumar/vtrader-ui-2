@@ -17,9 +17,55 @@ import { useBrokerStore, resolveQty } from '@/store/brokerStore'
 import { lotSizeFor } from '@/services/orders/lotSize'
 import { useIndicatorParams } from '../store/indicatorParamsStore'
 import { useDrawingStore } from '../store/drawingStore'
-import { TF_MINUTES, type Candle } from '../types/market'
+import { TF_MINUTES, type Candle, type ChartSymbol } from '../types/market'
 
 const isDark = () => document.documentElement.classList.contains('dark')
+
+// Index strike spacing (₹): SENSEX / BANKNIFTY / BANKEX step by 100, rest by 50.
+const strikeStep = (index: string) => (/SENSEX|BANKNIFTY|BANKEX/.test(index) ? 100 : 50)
+
+// Inline strike control on an option chart — swap CE/PE and step the strike
+// (±one strike) without opening the option chain. Rebuilds the canonical
+// INDEX_EXPIRY_TYPE_STRIKE symbol and reassigns it to this panel.
+function StrikeSwitcher({ panelId, symbolKey }: { panelId: string; symbolKey: string }) {
+  const assign = useChartLayoutStore((s) => s.assignSymbol)
+  const parts = symbolKey.split('_')
+  const strike = Number(parts[parts.length - 1])
+  const type = parts[parts.length - 2] as 'CE' | 'PE'
+  const expiry = parts[parts.length - 3]
+  const index = parts.slice(0, parts.length - 3).join('_')
+  if (!index || !expiry || (type !== 'CE' && type !== 'PE') || !Number.isFinite(strike)) return null
+  const step = strikeStep(index)
+  const build = (t: 'CE' | 'PE', s: number): ChartSymbol => {
+    const key = `${index}_${expiry}_${t}_${s}`
+    return { key, candleSymbol: key, display: `${index} ${s} ${t}`, kind: 'OPTION' }
+  }
+  const setStrike = (s: number) => { if (s > 0) assign(panelId, build(type, s)) }
+  const setType = (t: 'CE' | 'PE') => { if (t !== type) assign(panelId, build(t, strike)) }
+  const stop = (e: React.MouseEvent) => e.stopPropagation()
+  const seg = 'grid place-items-center h-full px-2 rounded text-[10px] font-bold transition-colors'
+  const stepBtn = 'grid place-items-center w-6 text-slate-500 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors'
+
+  return (
+    <div onMouseDown={stop} className="flex items-stretch h-[26px] rounded-lg overflow-hidden shadow-sm ring-1 ring-black/10 dark:ring-white/10 select-none bg-white dark:bg-slate-800 pointer-events-auto shrink-0">
+      {/* CE / PE segmented toggle on a tinted track (sliding-pill look) */}
+      <span className="flex items-center gap-0.5 p-[2px] bg-slate-100 dark:bg-white/5">
+        <button onMouseDown={stop} onClick={(e) => { stop(e); setType('CE') }} title="Call" className={clsx(seg, type === 'CE' ? 'bg-emerald-500 text-white shadow-sm' : 'text-slate-500 dark:text-slate-300 hover:text-slate-700 dark:hover:text-white')}>CE</button>
+        <button onMouseDown={stop} onClick={(e) => { stop(e); setType('PE') }} title="Put" className={clsx(seg, type === 'PE' ? 'bg-rose-500 text-white shadow-sm' : 'text-slate-500 dark:text-slate-300 hover:text-slate-700 dark:hover:text-white')}>PE</button>
+      </span>
+      {/* slanted divider */}
+      <span className="w-px self-stretch my-1 mx-0.5 bg-slate-200 dark:bg-white/10 -skew-x-12" />
+      {/* strike stepper: −, inset strike field, + — the field is visually distinct from the buttons */}
+      <button onMouseDown={stop} onClick={(e) => { stop(e); setStrike(strike - step) }} title="Lower strike" className={stepBtn}>
+        <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M5 12h14" /></svg>
+      </button>
+      <span className="grid place-items-center my-[3px] mx-0.5 px-2 min-w-[44px] rounded bg-slate-50 dark:bg-white/5 border border-slate-200/80 dark:border-white/10 text-[12px] font-bold tabular-nums tracking-tight text-slate-800 dark:text-slate-100">{strike}</span>
+      <button onMouseDown={stop} onClick={(e) => { stop(e); setStrike(strike + step) }} title="Higher strike" className={stepBtn}>
+        <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+      </button>
+    </div>
+  )
+}
 const fmtVol = (v: number) => (v >= 1e7 ? `${(v / 1e7).toFixed(2)}Cr` : v >= 1e5 ? `${(v / 1e5).toFixed(2)}L` : v >= 1e3 ? `${(v / 1e3).toFixed(1)}K` : String(Math.round(v)))
 
 export function ChartPanel({ panelId }: { panelId: string }) {
@@ -61,7 +107,9 @@ export function ChartPanel({ panelId }: { panelId: string }) {
     let cancelled = false
     setLoading(true); setEmpty(false)
 
-    dataSource.getCandles(symbol, config.timeframe).then((candles) => {
+    // fresh: always re-call the candle API on a symbol/timeframe (re)load, so a
+    // timeframe you last viewed earlier is fully backfilled to NOW (no cache gap).
+    dataSource.getCandles(symbol, config.timeframe, { fresh: true }).then((candles) => {
       if (cancelled || !engineRef.current) return
       setLoading(false)
       if (!candles.length) { setEmpty(true); return }
@@ -136,41 +184,62 @@ export function ChartPanel({ panelId }: { panelId: string }) {
       onMouseDown={() => setActive(panelId)}
       className={clsx('relative h-full w-full bg-white dark:bg-surface-dark', active ? 'ring-2 ring-inset ring-brand-500 z-10' : 'ring-1 ring-inset ring-slate-200 dark:ring-slate-800')}
     >
-      {/* From-chart SELL / BUY (bid–ask) — left-anchored so it never overlaps the price axis */}
-      {config?.symbol?.kind === 'OPTION' && quote && (
-        <div className="absolute top-[38px] left-1.5 z-20 flex items-stretch rounded-lg overflow-hidden shadow-md ring-1 ring-black/10 dark:ring-white/10 select-none">
-          <button onClick={(e) => { e.stopPropagation(); trade('SELL') }} className="flex flex-col items-center justify-center leading-none gap-0.5 px-2 py-1 bg-red-500 hover:bg-red-600 transition-colors text-white">
-            <span className="text-[11px] font-bold tabular-nums">{(quote.bid ?? quote.ltp).toFixed(2)}</span>
-            <span className="text-[8px] font-semibold tracking-widest opacity-90">SELL</span>
-          </button>
-          <span className="grid place-items-center px-1 bg-white dark:bg-slate-800 text-[9px] font-semibold text-slate-500 tabular-nums">{Math.max(0, (quote.ask ?? quote.ltp) - (quote.bid ?? quote.ltp)).toFixed(2)}</span>
-          <button onClick={(e) => { e.stopPropagation(); trade('BUY') }} className="flex flex-col items-center justify-center leading-none gap-0.5 px-2 py-1 bg-blue-600 hover:bg-blue-700 transition-colors text-white">
-            <span className="text-[11px] font-bold tabular-nums">{(quote.ask ?? quote.ltp).toFixed(2)}</span>
-            <span className="text-[8px] font-semibold tracking-widest opacity-90">BUY</span>
-          </button>
-        </div>
-      )}
 
-      {/* Symbol + compact OHLC strip (inline, short labels, follows crosshair) */}
-      {config?.symbol && (
-        <div className="absolute top-1 left-1.5 z-10 flex items-center gap-2 px-1.5 py-0.5 rounded-md bg-white/75 dark:bg-surface-dark/75 backdrop-blur-sm pointer-events-none max-w-[calc(100%-16px)] overflow-hidden">
-          <span className="text-xs font-semibold text-slate-800 dark:text-slate-100 shrink-0">{config.symbol.display}</span>
-          {ohlc && (() => {
-            const cu = ohlc.close >= ohlc.open
-            const cc = cu ? 'text-green-600' : 'text-red-600'
-            return (
-              <span className="flex items-center gap-1.5 text-[10px] tabular-nums whitespace-nowrap">
-                <span><span className="text-slate-400">O</span> <span className={cc}>{ohlc.open.toFixed(2)}</span></span>
-                <span><span className="text-slate-400">H</span> <span className={cc}>{ohlc.high.toFixed(2)}</span></span>
-                <span><span className="text-slate-400">L</span> <span className={cc}>{ohlc.low.toFixed(2)}</span></span>
-                <span><span className="text-slate-400">C</span> <span className={cc}>{ohlc.close.toFixed(2)}</span></span>
-                {ohlc.volume != null && <span className="hidden sm:inline"><span className="text-slate-400">V</span> <span className="text-slate-500 dark:text-slate-300">{fmtVol(ohlc.volume)}</span></span>}
-              </span>
-            )
-          })()}
-          {quote && <span className={clsx('text-[10px] font-semibold tabular-nums shrink-0', up ? 'text-green-600' : 'text-red-600')}>{up ? '+' : ''}{quote.chgPct?.toFixed(2)}%</span>}
-        </div>
-      )}
+      {/* Header card: line 1 = symbol + expiry chip + (option) strike switcher;
+          line 2 = OHLC + change%. Left-anchored & capped so it never reaches the
+          price axis / "+" pill on the right. */}
+      {config?.symbol && (() => {
+        const isOption = config.symbol.kind === 'OPTION'
+        const parts = config.symbol.key.split('_')
+        const expiry = isOption ? (parts[parts.length - 3] ?? '').replace(/(\d+)([A-Za-z]+)(\d+)/, '$1 $2 $3') : ''
+        const headLabel = isOption ? parts.slice(0, parts.length - 3).join('_') : config.symbol.display
+        return (
+          <div className="absolute top-1 left-1.5 z-10 max-w-[calc(100%-64px)] rounded-lg bg-white/80 dark:bg-surface-dark/80 backdrop-blur-sm px-2 py-1 shadow-sm ring-1 ring-black/5 dark:ring-white/10 pointer-events-none">
+            {/* Line 1 */}
+            <div className="flex items-center gap-2">
+              <span className="text-[13px] font-bold text-slate-800 dark:text-slate-100 whitespace-nowrap">{headLabel}</span>
+              {isOption && expiry && (
+                <span className="inline-flex items-center gap-1 h-[18px] px-1.5 rounded bg-slate-100 dark:bg-white/10 text-[10px] font-bold tracking-wide text-slate-500 dark:text-slate-300 whitespace-nowrap">
+                  <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="17" rx="2" /><path d="M3 9h18M8 2v4M16 2v4" /></svg>
+                  {expiry}
+                </span>
+              )}
+              {isOption && <StrikeSwitcher panelId={panelId} symbolKey={config.symbol.key} />}
+              {/* Bid–ask SELL / BUY — grouped with the strike control, with a gap. */}
+              {isOption && quote && (
+                <div className="flex items-stretch h-[26px] ml-1.5 rounded-lg overflow-hidden shadow-sm ring-1 ring-black/10 dark:ring-white/10 select-none pointer-events-auto">
+                  <button onClick={(e) => { e.stopPropagation(); trade('SELL') }} title="Sell at bid" className="flex items-center gap-1 px-2 bg-rose-500 hover:bg-rose-600 transition-colors text-white">
+                    <span className="text-[8px] font-bold tracking-wider opacity-85">SELL</span>
+                    <span className="text-[11px] font-bold tabular-nums">{(quote.bid ?? quote.ltp).toFixed(2)}</span>
+                  </button>
+                  <span className="grid place-items-center px-1 bg-white dark:bg-slate-800 text-[9px] font-semibold text-slate-400 tabular-nums">{Math.max(0, (quote.ask ?? quote.ltp) - (quote.bid ?? quote.ltp)).toFixed(2)}</span>
+                  <button onClick={(e) => { e.stopPropagation(); trade('BUY') }} title="Buy at ask" className="flex items-center gap-1 px-2 bg-blue-600 hover:bg-blue-700 transition-colors text-white">
+                    <span className="text-[11px] font-bold tabular-nums">{(quote.ask ?? quote.ltp).toFixed(2)}</span>
+                    <span className="text-[8px] font-bold tracking-wider opacity-85">BUY</span>
+                  </button>
+                </div>
+              )}
+            </div>
+            {/* Line 2 */}
+            <div className="flex items-center gap-2.5 mt-1 overflow-hidden">
+              {ohlc && (() => {
+                const cu = ohlc.close >= ohlc.open
+                const cc = cu ? 'text-green-600' : 'text-red-600'
+                return (
+                  <span className="flex items-center gap-2 text-[10px] tabular-nums whitespace-nowrap">
+                    <span><span className="text-slate-400">O</span> <span className={cc}>{ohlc.open.toFixed(2)}</span></span>
+                    <span><span className="text-slate-400">H</span> <span className={cc}>{ohlc.high.toFixed(2)}</span></span>
+                    <span><span className="text-slate-400">L</span> <span className={cc}>{ohlc.low.toFixed(2)}</span></span>
+                    <span><span className="text-slate-400">C</span> <span className={cc}>{ohlc.close.toFixed(2)}</span></span>
+                    {ohlc.volume != null && <span className="hidden sm:inline"><span className="text-slate-400">V</span> <span className="text-slate-500 dark:text-slate-300">{fmtVol(ohlc.volume)}</span></span>}
+                  </span>
+                )
+              })()}
+              {quote && <span className={clsx('px-1.5 py-px rounded text-[10px] font-bold tabular-nums shrink-0', up ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400')}>{up ? '+' : ''}{quote.chgPct?.toFixed(2)}%</span>}
+            </div>
+          </div>
+        )
+      })()}
       <div ref={elRef} className="h-full w-full" />
       {config?.symbol && <ChartOrderLayer engineRef={engineRef} symbolKey={config.symbol.key} ltp={quote?.ltp ?? 0} />}
       {config?.symbol?.kind === 'OPTION' && quote && <ChartPlusOrder engineRef={engineRef} containerRef={rootRef} symbol={config.symbol} ltp={quote.ltp} qty={orderQty} />}

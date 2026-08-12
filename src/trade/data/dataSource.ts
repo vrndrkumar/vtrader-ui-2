@@ -10,13 +10,13 @@ import { realtime } from './realtime/realtimeService'
 import { useMarketStore } from '../store/marketStore'
 
 export interface MarketDataSource {
-  getCandles(symbol: ChartSymbol, tf: Timeframe): Promise<Candle[]>
+  getCandles(symbol: ChartSymbol, tf: Timeframe, opts?: { fresh?: boolean }): Promise<Candle[]>
   /** Delivers live quotes for the chart's forming candle. Returns unsubscribe. */
   subscribeQuote(symbol: ChartSymbol, onTick: (q: Quote) => void): () => void
 }
 
 export const dataSource: MarketDataSource = {
-  getCandles: (symbol, tf) => getCandlesBySymbol(symbol.candleSymbol, tf, symbol.kind),
+  getCandles: (symbol, tf, opts) => getCandlesBySymbol(symbol.candleSymbol, tf, symbol.kind, opts),
   subscribeQuote(symbol, onTick) {
     realtime.start()
     const unsubChannel = symbol.kind === 'INDEX'

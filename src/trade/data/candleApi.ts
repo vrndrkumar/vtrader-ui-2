@@ -108,9 +108,21 @@ function parse(raw: unknown): Candle[] {
 }
 
 // ── Cache + in-flight de-dup ─────────────────────────────────────────────────
+// The cache is TIME-BOUNDED. Without a TTL, once a series is cached it's reused
+// forever — so switching timeframe (or leaving and returning) shows a stale,
+// partial series with a gap between the last cached bar and now (the live feed
+// only updates the forming bar, it doesn't backfill). A short TTL means every
+// (re)load of a timeframe pulls fresh candles; quick toggles within the window
+// still hit the cache. Intraday needs a tighter window than daily/weekly.
 
-const cache = new Map<string, Candle[]>()
+const cache = new Map<string, { candles: Candle[]; at: number }>()
 const inFlight = new Map<string, Promise<Candle[]>>()
+
+function ttlFor(tf: Timeframe): number {
+  if (tf === 'D' || tf === 'W' || tf === 'M') return 5 * 60_000 // daily+ change slowly
+  if (tf === '60' || tf === '30') return 60_000
+  return 20_000 // minute frames — keep fresh
+}
 
 function fetchRange(candleSymbol: string, tf: Timeframe, from: string, to: string): Promise<Candle[]> {
   // New host: GET https://data.vtrader.in/data/candle?symbol=&from=&to=&frequency=
@@ -127,15 +139,22 @@ function fetchRange(candleSymbol: string, tf: Timeframe, from: string, to: strin
 async function load(candleSymbol: string, tf: Timeframe, kind: CandleKind, key: string): Promise<Candle[]> {
   const { from, to } = defaultRange(tf, kind)
   const candles = await fetchRange(candleSymbol, tf, from, to).catch(() => [] as Candle[])
-  if (candles.length) cache.set(key, candles)
+  if (candles.length) cache.set(key, { candles, at: Date.now() })
   return candles
 }
 
-/** Historical candles for ANY symbol (index or option strike). */
-export async function getCandlesBySymbol(candleSymbol: string, tf: Timeframe, kind: CandleKind = 'INDEX'): Promise<Candle[]> {
+/** Historical candles for ANY symbol (index or option strike).
+ *  `fresh: true` bypasses the cache read and always re-calls the API — used when
+ *  the user deliberately (re)loads a timeframe, so switching e.g. 15m → 1m → 15m
+ *  refetches the full 15m series up to NOW instead of returning the stale series
+ *  cached when 15m was last viewed (which left a gap from then to now). */
+export async function getCandlesBySymbol(candleSymbol: string, tf: Timeframe, kind: CandleKind = 'INDEX', opts?: { fresh?: boolean }): Promise<Candle[]> {
   const key = `${candleSymbol}:${tf}`
-  const cached = cache.get(key)
-  if (cached?.length) return cached
+  if (!opts?.fresh) {
+    const cached = cache.get(key)
+    if (cached?.candles.length && Date.now() - cached.at < ttlFor(tf)) return cached.candles
+  }
+  // De-dup concurrent loads even for a fresh request (two panels, same symbol+tf).
   const existing = inFlight.get(key)
   if (existing) return existing
 
@@ -144,8 +163,8 @@ export async function getCandlesBySymbol(candleSymbol: string, tf: Timeframe, ki
   return p
 }
 
-export async function getCandles(symbol: TradeSymbol, tf: Timeframe): Promise<Candle[]> {
-  return getCandlesBySymbol(symbol.candleSymbol, tf, 'INDEX')
+export async function getCandles(symbol: TradeSymbol, tf: Timeframe, opts?: { fresh?: boolean }): Promise<Candle[]> {
+  return getCandlesBySymbol(symbol.candleSymbol, tf, 'INDEX', opts)
 }
 
 export function clearCandleCache() {

@@ -72,7 +72,7 @@ export function ChartContainer({ symbol, tradable, defaultTimeframe = '5' }: Pro
     setLoading(true); setEmpty(false)
     setActiveInd([])
 
-    dataSource.getCandles(symbol, timeframe).then((candles) => {
+    dataSource.getCandles(symbol, timeframe, { fresh: true }).then((candles) => {
       if (cancelled || !engineRef.current) return
       setLoading(false)
       if (!candles.length) { setEmpty(true); return }

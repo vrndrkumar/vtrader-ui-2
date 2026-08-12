@@ -98,6 +98,7 @@ const NAV: NavEntry[] = [
       { kind: 'link', to: '/analytics', label: 'Analytics', icon: <I><line x1="18" y1="20" x2="18" y2="10" /><line x1="12" y1="20" x2="12" y2="4" /><line x1="6" y1="20" x2="6" y2="14" /></I> },
       { kind: 'link', to: '/signals', label: 'Signal Generator', icon: <I><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></I> },
       { kind: 'link', to: '/strategy-lab', label: 'Strategy Lab', icon: <I><path d="M9 3v6l-5 9a2 2 0 002 3h12a2 2 0 002-3l-5-9V3" /><path d="M7 3h10" /></I> },
+      { kind: 'link', to: '/admin/option-simulator', label: 'Option Simulator', icon: <I><path d="M3 3v18h18" /><path d="M7 13l3-4 3 3 4-6" /><circle cx="7" cy="13" r="0.5" fill="currentColor" /></I> },
     ],
   },
 ]

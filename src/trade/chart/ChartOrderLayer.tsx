@@ -16,6 +16,7 @@ import { clearStop, clearTarget, exitPosition, modifyStop, modifyStopQty, modify
 import { useIndexBracketStore } from '../store/indexBracketStore'
 import { useBrokerStore } from '@/store/brokerStore'
 import { submitOrder } from '@/services/orders/placeOrder'
+import { cancelIndexBracket } from '@/api/trade'
 
 type Leg = 'sl' | 'tp'
 type DragTarget =
@@ -170,7 +171,25 @@ export function ChartOrderLayer({ engineRef, symbolKey, ltp }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symMon, symbolKey])
 
+  // Cancel any active SL/Target OCO monitor(s) watching this strike. Without this,
+  // exiting the position leaves the monitor ACTIVE — it keeps watching (could fire
+  // a fresh order later) and the chart re-draws it as a ghost position + SL line.
+  const cancelOcoForSymbol = (symbolKey: string) => {
+    const mons = useIndexBracketStore.getState().all.filter(
+      (r) => r.monitorType !== 'INDEX' && r.symbolName === symbolKey,
+    )
+    if (!mons.length) return
+    void Promise.all(mons.map((m) => cancelIndexBracket(m.id as number | string)))
+      .then(() => useIndexBracketStore.getState().reload())
+      .catch(() => { /* ignore — position exit already dispatched */ })
+  }
+
   const onExit = (p: Position) => {
+    cancelOcoForSymbol(p.symbolKey) // always drop the SL/Target monitor with the position
+    // Synthetic OCO ghost (drawn only to show a monitor's SL when no real position
+    // is loaded) → there's NOTHING to close, so just cancel the monitor + clear the
+    // line. Placing a MKT order here would open a spurious new position.
+    if (p.id.startsWith('oco:')) { exitPosition(p.id); return }
     // Mirrored live position → square off through the tradebook (MKT close).
     if (p.id.startsWith('tb:')) { useTradebookStore.getState().squareOff(p.id.slice(3)); exitPosition(p.id); return }
     // Non-mirrored running position (e.g. restored from an OCO when the live

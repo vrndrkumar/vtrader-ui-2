@@ -19,11 +19,27 @@ import { clearStop, clearTarget } from '../trade/tradeAdapter'
 const legLabel = (leg: OcoEventPayload['leg']) =>
   leg === 'SL' ? 'Stop-loss' : leg === 'TGT' ? 'Target' : leg === 'ENTRY' ? 'Entry' : 'Bracket'
 
+// An OCO leg firing PLACES the exit order — the position only closes once the
+// broker FILLS it, a moment later. A single reload at the event catches the
+// order but not yet the closed position (so the old position tag lingers until a
+// manual reload). Reload a few times over the next several seconds to pick up
+// the fill automatically. Also reload the OCO/index-bracket store each time.
+let burstTimers: ReturnType<typeof setTimeout>[] = []
+function reloadBurst(indexName?: string) {
+  burstTimers.forEach(clearTimeout)
+  burstTimers = [];
+  [0, 1200, 3000, 6000].forEach((ms) => {
+    burstTimers.push(setTimeout(() => {
+      void useTradebookStore.getState().reload()
+      void useIndexBracketStore.getState().reload(indexName)
+    }, ms))
+  })
+}
+
 // INDEX brackets are their own overlay — just refresh the list for that index and
 // toast the transition; the chart layer re-renders from the reloaded state.
 function handleIndexEvent(e: OcoEventPayload) {
-  if (e.indexName) void useIndexBracketStore.getState().reload(e.indexName)
-  void useTradebookStore.getState().reload() // entry/exit changes real positions too
+  reloadBurst(e.indexName) // catch the broker fill (position close), not just the placed order
   if (e.event === 'ENTRY_FILLED') toast.success(`Entry filled · ${e.symbolName}`)
   else if (e.event === 'EXECUTED') toast.success(`${legLabel(e.leg)} hit · ${e.symbolName}`)
   else if (e.event === 'REJECTED') toast.error(`${legLabel(e.leg)} rejected${e.message ? `: ${e.message}` : ''}`)
@@ -48,6 +64,11 @@ function clearLegForSymbol(symbolName: string, leg: 'SL' | 'TGT') {
 }
 
 export function handleOcoEvent(payload: unknown) {
+  // TEMP DEBUG: print every OCO frame to the browser console so the raw event
+  // (leg / event / status / symbol) is visible even though WS frames don't show
+  // as network calls. Open DevTools → Console and copy the "[OCO WS]" lines.
+  try { console.log('[OCO WS]', JSON.stringify(payload)) } catch { console.log('[OCO WS]', payload) }
+
   const e = payload as OcoEventPayload
   if (!e || typeof e !== 'object' || !e.symbolName || !e.event) return
 
@@ -60,7 +81,7 @@ export function handleOcoEvent(payload: unknown) {
   if (e.event === 'EXECUTED') {
     clearLinesForSymbol(e.symbolName)
     toast.success(`${legLabel(e.leg)} hit — exit order placed`)
-    void useTradebookStore.getState().reload()
+    reloadBurst() // position closes when the broker FILLS the exit, a moment later
     return
   }
 
@@ -68,13 +89,13 @@ export function handleOcoEvent(payload: unknown) {
     if (monitorInactive) clearLinesForSymbol(e.symbolName)
     else clearLegForSymbol(e.symbolName, e.leg)
     toast.error(`${legLabel(e.leg)} order rejected${e.message ? `: ${e.message}` : ''} — removed; position unprotected`)
-    void useTradebookStore.getState().reload()
+    reloadBurst()
     return
   }
 
   if (e.event === 'CANCELLED') {
     if (monitorInactive) clearLinesForSymbol(e.symbolName)
     else clearLegForSymbol(e.symbolName, e.leg)
-    void useTradebookStore.getState().reload()
+    reloadBurst()
   }
 }

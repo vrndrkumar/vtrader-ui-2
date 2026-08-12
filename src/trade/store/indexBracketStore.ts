@@ -7,6 +7,7 @@
 
 import { create } from 'zustand'
 import { getOcoMonitors } from '@/api/trade'
+import { useBrokerStore } from '@/store/brokerStore'
 
 export interface IndexBracket {
   id: number | string
@@ -67,7 +68,14 @@ export const useIndexBracketStore = create<State>((set, get) => ({
   bySymbol: {},
   reload: async () => {
     try {
-      const rows = await getOcoMonitors({}) // ALL active monitors for the user
+      const raw = await getOcoMonitors({}) // ALL active monitors for the user (every broker)
+      // Scope to the currently SELECTED broker(s) — so the chart shows only the
+      // chosen brokers' OCO (SL/Target/brackets), and all of them when several are
+      // selected. Falls back to unfiltered if selection can't be resolved.
+      const bs = useBrokerStore.getState()
+      const selNames = new Set(bs.accounts.filter((a) => bs.selectedIds.includes(a.id)).map((a) => a.brokerName))
+      const brokerOf = (r: Record<string, unknown>) => String(r.brokerName ?? r.broker_name ?? '')
+      const rows = selNames.size ? raw.filter((r) => selNames.has(brokerOf(r))) : raw
       const byIndex: Record<string, IndexBracket[]> = {}
       const bySymbol: Record<string, IndexBracket[]> = {}
       for (const r of rows) {

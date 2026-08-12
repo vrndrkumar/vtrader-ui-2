@@ -10,6 +10,9 @@ import { OrderWindow } from '@/components/order/OrderWindow'
 import { ensureLotSizes } from '@/services/orders/lotSize'
 import { TradebookPanel } from './features/tradebook/TradebookPanel'
 import { SYMBOLS, type ChartSymbol } from './types/market'
+import { useSelectedBrokers } from '@/store/brokerStore'
+import { useTradebookStore } from './features/tradebook/tradebookStore'
+import { useIndexBracketStore } from './store/indexBracketStore'
 
 export default function TradePage() {
   const [view, setView] = useState<TradeView>('chart')
@@ -23,6 +26,17 @@ export default function TradePage() {
     const unsubs = SYMBOLS.flatMap((s) => [realtime.subscribeOptionChain(s.code), realtime.subscribeIndexTick(s.code)])
     return () => unsubs.forEach((u) => u())
   }, [])
+
+  // When the selected broker(s) change, refresh BOTH the positions/orders and the
+  // OCO monitors so the chart (strike + index) shows the chosen brokers' positions
+  // and SL/Target/brackets — all of them when several brokers are selected.
+  const selectedBrokers = useSelectedBrokers()
+  const selKey = selectedBrokers.map((b) => b.id).join(',')
+  useEffect(() => {
+    void useTradebookStore.getState().load(selectedBrokers)
+    void useIndexBracketStore.getState().reload()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selKey])
 
   const onPanel = (k: PanelKey) => {
     setView('chart')

@@ -1,6 +1,7 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { Suspense, lazy } from 'react'
 import { ProtectedRoute } from './ProtectedRoute'
+import { AdminRoute } from './AdminRoute'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { useAuth } from '@/hooks/useAuth'
 
@@ -21,6 +22,7 @@ const InsightGuidePage       = lazy(() => import('@/insight/GuidePage'))
 const OptionInsightsPage     = lazy(() => import('@/insight/options/OptionInsightsPage'))
 const StrategyLabPage        = lazy(() => import('@/insight/StrategyLabPage'))
 const TransitionsPage        = lazy(() => import('@/insight/TransitionsPage'))
+const OptionSimulatorPage    = lazy(() => import('@/simulator/OptionSimulatorPage'))
 
 function GuestRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth()
@@ -67,6 +69,7 @@ export function AppRouter() {
             <Route path="/insight/transitions" element={<TransitionsPage />} />
             <Route path="/insight/options" element={<OptionInsightsPage />} />
             <Route path="/insight/:symbol" element={<InsightReportPage />} />
+            <Route path="/admin/option-simulator" element={<AdminRoute><OptionSimulatorPage /></AdminRoute>} />
           </Route>
 
           <Route path="*" element={<Navigate to="/login" replace />} />
