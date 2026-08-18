@@ -37,8 +37,27 @@ function mapPosition(r: Record<string, unknown>, b: BrokerAccount, i: number): P
   const netQ = num(r, ['netQty', 'netQuantity', 'net_quantity', 'quantity', 'netqty'], buyQty - sellQty)
   const buyAvg = num(r, ['buyAvg', 'buyAvgPrice', 'buy_price', 'avgBuyPrice'])
   const sellAvg = num(r, ['sellAvg', 'sellAvgPrice', 'sell_price', 'avgSellPrice'])
-  const avgPrice = num(r, ['avgPrice', 'averagePrice', 'average_price', 'netAvgPrice', 'net_average_price'],
-    netQ >= 0 ? buyAvg : sellAvg)
+  // Today's traded quantities / averages (for Day P&L).
+  const dayBuyQty = num(r, ['dayBuyQuantity', 'day_buy_quantity', 'dayBuyQty'])
+  const daySellQty = num(r, ['daySellQuantity', 'day_sell_quantity', 'daySellQty'])
+  const dayBuyAvg = num(r, ['dayBuyAvgPrice', 'day_buy_avg_price', 'dayBuyAvg'])
+  const daySellAvg = num(r, ['daySellAvgPrice', 'day_sell_avg_price', 'daySellAvg'])
+  const carryQty = netQ - dayBuyQty + daySellQty // qty carried from a previous day
+  // netAvgPrice carries the previous-close / carry price (e.g. 43.70) — it is BOTH
+  // the Net P&L baseline AND the Day P&L baseline for carried qty. Fall back to
+  // today's traded avg only when it's 0 (closed intraday round-trip) so the row
+  // still shows a price instead of 0.
+  const netAvg = num(r, ['netAvgPrice', 'net_average_price', 'netavgprc'])
+  // Entry average (Net P&L baseline is prevClose; the DAY-P&L baseline is the true
+  // entry). The response doesn't expose the true entry directly, but for an OPEN
+  // position it's carried in the traded-side day avg: dayBuyAvgPrice for a long,
+  // daySellAvgPrice for a short. Use that; fall back to netAvg for closed rows.
+  const sideEntry = netQ > 0 ? dayBuyAvg : netQ < 0 ? daySellAvg : 0
+  const avgPrice = (netQ !== 0 && sideEntry > 0)
+    ? sideEntry
+    : (netAvg || num(r, ['avgPrice', 'averagePrice', 'average_price'], (netQ >= 0 ? buyAvg : sellAvg) || dayBuyAvg || daySellAvg))
+  // Net P&L baseline = previous close (broker upldprc; falls back to netAvgPrice).
+  const dayBase = num(r, ['prevClose', 'uploadPrice', 'upldprc', 'uploadPrc', 'previousClose'], netAvg)
   const ltp = num(r, ['ltp', 'lastPrice', 'last_price', 'lastTradedPrice', 'ltpPrice'], avgPrice) // seed only; live LTP overrides
   return {
     id: str(r, ['id', 'positionId'], `${b.id}-${symbol}-${i}`),
@@ -51,6 +70,8 @@ function mapPosition(r: Record<string, unknown>, b: BrokerAccount, i: number): P
     buyAvg: buyAvg || (netQ > 0 ? avgPrice : 0),
     sellAvg: sellAvg || (netQ < 0 ? avgPrice : 0),
     avgPrice,
+    dayBuyQty, daySellQty, dayBuyAvg, daySellAvg, carryQty,
+    dayBase, // = netAvgPrice (carry / previous-close baseline)
     ltp,
     prevClose: num(r, ['prevClose', 'close', 'closePrice', 'close_price'], avgPrice),
     // API sends realized under `realiasedPNL` (broker spelling). Unrealized is NOT

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { clsx } from 'clsx'
 import type { StrategyConfig, UserStrategy, EditStrategyPayload } from '@/types/strategy'
-import { getStrategyIndices, isUserStrategyDeployed } from '@/types/strategy'
+import { getStrategyIndices, isUserStrategyDeployed, templateStatus } from '@/types/strategy'
 import { editStrategy, unsubscribeStrategy } from '@/api/strategy'
 
 export type TabContext = 'templates' | 'my' | 'deployed'
@@ -31,6 +31,20 @@ function statusBadge(subscribed: boolean, deployed: boolean) {
   if (!subscribed) return { label: 'Available',   cls: 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400' }
   if (deployed)   return { label: 'Deployed',    cls: 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800' }
   return           { label: 'Subscribed',  cls: 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-800' }
+}
+
+// ── Template lifecycle badge (PUBLISHED / READY / INACTIVE / DRAFT …) ──────────
+function templateStatusMeta(status: string): { label: string; cls: string; dot: string } | null {
+  if (!status) return null
+  const label = status.charAt(0) + status.slice(1).toLowerCase()
+  switch (status) {
+    case 'PUBLISHED': return { label, cls: 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800', dot: 'bg-emerald-500' }
+    case 'READY':     return { label, cls: 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-800', dot: 'bg-blue-500' }
+    case 'DRAFT':     return { label, cls: 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800', dot: 'bg-amber-500' }
+    case 'INACTIVE':
+    case 'ARCHIVED':  return { label, cls: 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700', dot: 'bg-slate-400' }
+    default:          return { label, cls: 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700', dot: 'bg-slate-400' }
+  }
 }
 
 // ── Booking % display — read-only track in table cell (edit via modal) ────────
@@ -71,6 +85,7 @@ export function StrategyCard({ strategy, userStrategy, tabContext, onSubscribe, 
   const isTemplateTab = tabContext === 'templates'
   const [c1, c2]      = accent(strategy.id)
   const status        = statusBadge(isSubscribed, isDeployed)
+  const tplStatus     = templateStatusMeta(templateStatus(strategy))
 
   const [acting,       setActing]       = useState(false)
   const [confirmUnsub, setConfirmUnsub] = useState(false)
@@ -136,7 +151,15 @@ export function StrategyCard({ strategy, userStrategy, tabContext, onSubscribe, 
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
             <h3 className="font-bold text-slate-900 dark:text-white text-sm leading-tight">{strategy.strategyName}</h3>
-            <p className="text-[11px] font-mono text-slate-400 dark:text-slate-500 mt-0.5">{strategy.strategyCode}</p>
+            <div className="flex items-center gap-1.5 mt-0.5">
+              <p className="text-[11px] font-mono text-slate-400 dark:text-slate-500">{strategy.strategyCode}</p>
+              {tplStatus && (
+                <span className={clsx('inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full whitespace-nowrap', tplStatus.cls)}>
+                  <span className={clsx('h-1.5 w-1.5 rounded-full', tplStatus.dot)} />
+                  {tplStatus.label}
+                </span>
+              )}
+            </div>
           </div>
           <span className={clsx('shrink-0 text-[10px] font-semibold px-2.5 py-1 rounded-full whitespace-nowrap', status.cls)}>
             {status.label}

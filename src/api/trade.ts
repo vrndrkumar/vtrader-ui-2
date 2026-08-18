@@ -103,6 +103,27 @@ export async function saveOcoMonitor(payload: OcoMonitorRequest): Promise<unknow
   return data
 }
 
+/** SL/Target for an EXISTING strike position, but triggered on the INDEX (spot)
+ *  price instead of the option premium. Same endpoint, monitorType:'INDEX', no
+ *  entry leg — the exit still places on the strike (symbolName). Triggers are
+ *  INDEX levels, so they are NOT tick-rounded (index spot isn't a 0.05 grid).
+ *  `direction` is the position's INDEX bias (LONG for BUY-CE/SELL-PE, else SHORT). */
+export interface IndexPositionOcoRequest {
+  brokerName: string
+  indexName: string
+  symbolName: string            // the strike, e.g. NIFTY_11AUG26_PE_77500
+  product?: string
+  direction: 'LONG' | 'SHORT'   // index bias of the position
+  side: 'BUY' | 'SELL'          // exit order side
+  quantity: number
+  stopLoss?: { triggerPrice: number; quantity: number }  // INDEX level
+  target?: { triggerPrice: number; quantity: number }    // INDEX level
+}
+export async function saveIndexPositionOco(payload: IndexPositionOcoRequest): Promise<unknown> {
+  const { data } = await axiosPrivate.post('/trade/oco-monitor', { monitorType: 'INDEX', ...payload })
+  return data
+}
+
 // ── Index bracket (index-triggered entry + SL/Target on a strike) ────────────
 // Same endpoint as OCO, discriminated by monitorType:'INDEX'. Entry + SL + Target
 // all trigger on the INDEX price; the backend places MKT orders on `symbolName`

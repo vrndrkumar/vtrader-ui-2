@@ -78,13 +78,6 @@ export interface UpdateOrderPayload {
   groupName: string
 }
 
-// ── Assign group payload (POST /trades/orders/group-assign) ──────────────────
-
-export interface GroupAssignPayload {
-  orderIds: number[]
-  groupName: string
-}
-
 // ── Filter state ──────────────────────────────────────────────────────────────
 
 export interface TradeFilters {

@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { clsx } from 'clsx'
 import { getStrategyConfigs, getUserStrategies } from '@/api/strategy'
 import type { StrategyConfig, UserStrategy } from '@/types/strategy'
-import { isUserStrategyDeployed } from '@/types/strategy'
+import { isUserStrategyDeployed, isTemplateVisible } from '@/types/strategy'
+import { useAuth } from '@/hooks/useAuth'
 import { StrategyCard } from '@/components/strategies/StrategyCard'
 import { SubscribeModal } from '@/components/strategies/SubscribeModal'
 
@@ -15,6 +16,8 @@ const TABS: { id: Tab; label: string }[] = [
 ]
 
 export default function StrategiesPage() {
+  const { user } = useAuth()
+  const isAdmin = user?.role === 'ADMIN'
   // Default to 'my' so user lands on their own strategies first
   const [activeTab, setActiveTab]             = useState<Tab>('my')
   const [search, setSearch]                   = useState('')
@@ -68,9 +71,10 @@ export default function StrategiesPage() {
   )
 
   // ── Derived lists ─────────────────────────────────────────────────────────
+  // Templates: admins see every status; users see PUBLISHED only.
   const activeConfigs = useMemo(
-    () => configs.filter((c) => c.configData?.isActive !== false),
-    [configs],
+    () => configs.filter((c) => isTemplateVisible(c, isAdmin) && c.configData?.isActive !== false),
+    [configs, isAdmin],
   )
 
   const myStrategyConfigs = useMemo(

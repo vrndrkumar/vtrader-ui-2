@@ -69,7 +69,19 @@ export function syncOcoMonitor(positionId: string) {
   }).then(() => {
     toast.success('OCO monitor saved')
     void useIndexBracketStore.getState().reload() // reflect the cleared/updated legs
-  }).catch(() => toast.error('Failed to save OCO monitor'))
+  }).catch((e) => {
+    const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message
+    // One-place-only rule: SL/Target already on the index for this position. The
+    // strike side was NOT saved, so REVERT the optimistic line(s) we just drew —
+    // it must not linger on the chart. Warn clearly (longer, so it's readable).
+    if (msg && /already set/i.test(msg)) {
+      clearStop(positionId); clearTarget(positionId)
+      void useIndexBracketStore.getState().reload()
+      toast.error(msg, { duration: 6000, icon: '⛔' })
+    } else {
+      toast.error(msg || 'Failed to save OCO monitor')
+    }
+  })
 }
 
 export function modifyStop(id: string, price: number) { useTradeStore.getState().updatePosition(id, { stopLoss: roundTick(price) }) }

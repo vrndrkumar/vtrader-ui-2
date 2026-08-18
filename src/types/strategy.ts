@@ -2,8 +2,10 @@ export interface StrategyConfig {
   id: number
   strategyName: string          // human-readable display name
   strategyCode: string          // matches trade.group_name  e.g. "INTPLUSEXP"
+  status?: string               // lifecycle: PUBLISHED | READY | INACTIVE | DRAFT …
   configData?: {
     isActive?: boolean
+    status?: string
     strategyName?: string
     marginRequired?: boolean
     description?: string
@@ -11,6 +13,16 @@ export interface StrategyConfig {
   }
   createdAt?: string
   updatedAt?: string
+}
+
+/** Normalised template lifecycle status (top-level wins, falls back to configData). */
+export function templateStatus(cfg: StrategyConfig): string {
+  return String(cfg.status ?? cfg.configData?.status ?? '').toUpperCase()
+}
+
+/** Users only ever see PUBLISHED templates; admins see every status. */
+export function isTemplateVisible(cfg: StrategyConfig, isAdmin: boolean): boolean {
+  return isAdmin || templateStatus(cfg) === 'PUBLISHED'
 }
 
 /** Indices a strategy can trade (checked as keys in configData) */

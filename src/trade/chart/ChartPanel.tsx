@@ -10,8 +10,10 @@ import { placeOrder } from '@/services/orders/placeOrder'
 import { ChartPlusOrder } from './ChartPlusOrder'
 import { IndexPlusOrder } from './IndexPlusOrder'
 import { IndexBracketLayer } from './IndexBracketLayer'
+import { IndexPositionMirror } from './IndexPositionMirror'
 import { BarCountdown } from './BarCountdown'
-import { useQuote } from '../store/marketStore'
+import { useQuote, useMarketStore } from '../store/marketStore'
+import { recordEntrySpot } from '../store/entrySpotStore'
 import { useChartLayoutStore } from '../store/chartLayoutStore'
 import { useBrokerStore, resolveQty } from '@/store/brokerStore'
 import { lotSizeFor } from '@/services/orders/lotSize'
@@ -161,6 +163,10 @@ export function ChartPanel({ panelId }: { panelId: string }) {
   const trade = (side: 'BUY' | 'SELL') => {
     const sym = config?.symbol
     if (!sym) return
+    // Remember the index spot at entry so the position anchors at that level on
+    // the index chart (mirror feature).
+    const idxSpot = useMarketStore.getState().quotes[sym.key.split('_')[0]]?.ltp
+    if (idxSpot) recordEntrySpot(sym.candleSymbol, idxSpot)
     // Real order via the global service: Quick Trade ON → submit MKT immediately
     // across selected brokers; OFF → open the shared Order Window for review.
     // Quantity defaults to each broker's lots (resolveQty ÷ lot size) inside placeOrder.
@@ -246,6 +252,9 @@ export function ChartPanel({ panelId }: { panelId: string }) {
       {config?.symbol?.kind === 'INDEX' && quote && <IndexPlusOrder engineRef={engineRef} containerRef={rootRef} index={config.symbol.key} ltp={quote.ltp} />}
       {config?.symbol?.kind === 'INDEX' && showIndexOrders && <IndexBracketLayer engineRef={engineRef} index={config.symbol.key} ltp={quote?.ltp ?? 0} />}
       {config?.symbol?.kind === 'OPTION' && showIndexOrders && <IndexBracketLayer engineRef={engineRef} symbol={config.symbol.key} ltp={quote?.ltp ?? 0} />}
+      {/* "Show orders on chart" → also mirror strike positions onto the index chart
+          with SL/Target draggable at spot levels (exit fires on the strike). */}
+      {config?.symbol?.kind === 'INDEX' && showIndexOrders && <IndexPositionMirror engineRef={engineRef} index={config.symbol.key} ltp={quote?.ltp ?? 0} />}
       {config?.symbol && barCountdown && quote && <BarCountdown engineRef={engineRef} ltp={quote.ltp} timeframe={config.timeframe} />}
       {loading && config?.symbol && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">

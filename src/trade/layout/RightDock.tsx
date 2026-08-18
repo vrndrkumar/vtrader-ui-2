@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
 import { clsx } from 'clsx'
 import { useChartStore } from '../store/chartStore'
-import { useQuote } from '../store/marketStore'
+import { useQuote, useMarketStore } from '../store/marketStore'
+import { recordEntrySpot } from '../store/entrySpotStore'
 import { SYMBOLS } from '../types/market'
 import { type OptType, type Side } from '../types/options'
 import { OptionChainTable, buildPositionMap } from '../features/optionchain/OptionChainTable'
@@ -105,13 +106,16 @@ function OptionChainPanel() {
   // Default to nearest; also re-select if the current one expired / vanished.
   useEffect(() => { if (expiries.length && !expiries.includes(expiry)) setExpiry(expiries[0]) }, [expiries, expiry])
 
-  const onAction = (strike: number, optType: OptType, side: Side, ltp: number) =>
-    placeOrder({
+  const onAction = (strike: number, optType: OptType, side: Side, ltp: number) => {
+    const idxSpot = useMarketStore.getState().quotes[symbolCode]?.ltp
+    if (idxSpot) recordEntrySpot(`${symbolCode}_${expiry.replace(/\s/g, '')}_${optType}_${strike}`, idxSpot)
+    return placeOrder({
       symbolName: `${symbolCode}_${expiry.replace(/\s/g, '')}_${optType}_${strike}`,
       indexName: symbolCode,
       display: `${symbolCode} ${strike} ${optType}`,
       side, ltp, priceType: 'MKT',
     })
+  }
   const onWatch = (strike: number, optType: OptType, ltp: number) => {
     addWatch({ id: `${symbolCode}_${expiry}_${optType}_${strike}`, symbol: `${symbolCode}_${expiry.replace(/\s/g, '')}_${optType}_${strike}`, display: `${symbolCode} ${strike} ${optType}`, ltp })
     toast.success('Added to watchlist')

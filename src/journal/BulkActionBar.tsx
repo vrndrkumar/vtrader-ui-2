@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState } from 'react'
 import toast from 'react-hot-toast'
 import { clsx } from 'clsx'
-import { getTradeOrders, assignOrderGroup } from '@/api/reports'
+import { getTradeOrders, setOrdersGroup } from '@/api/reports'
 import { updateTradeTags } from '@/api/tags'
 import type { Trade } from '@/types/reports'
 import type { UserTag } from '@/api/tags'
@@ -84,13 +84,13 @@ export function BulkActionBar({ count, trades, allTags, onClear, onDone }: Props
     setStrategyStatus('loading')
     try {
       const results = await Promise.allSettled(trades.map((t) => getTradeOrders(t.trade_id)))
-      const allOrderIds = results.flatMap((r) => r.status === 'fulfilled' ? r.value.map((o) => o.id) : [])
-      if (!allOrderIds.length) {
+      const allOrders = results.flatMap((r) => r.status === 'fulfilled' ? r.value : [])
+      if (!allOrders.length) {
         toast.error('No orders found for selected trades')
         setStrategyStatus('idle')
         return
       }
-      await assignOrderGroup({ orderIds: allOrderIds, groupName: bulkGroup || 'MANUAL' })
+      await setOrdersGroup(allOrders, bulkGroup || 'MANUAL')
       toast.success(`Strategy updated for ${trades.length} trade${trades.length !== 1 ? 's' : ''}`)
       setStrategyStatus('done')
       onDone()

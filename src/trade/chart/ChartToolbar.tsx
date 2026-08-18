@@ -1,11 +1,13 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { clsx } from 'clsx'
 import { useChartLayoutStore, applySymbol, applyTimeframe, type SyncState } from '../store/chartLayoutStore'
 import { getLayout, layoutsByCount } from './layouts'
 import { useIndexOptionSync } from './useIndexOptionSync'
 import { LayoutIcon } from './LayoutIcon'
-import { useWatchlistStore } from '../store/watchlistStore'
-import { SYMBOLS, indexChartSymbol, TIMEFRAMES, type ChartSymbol } from '../types/market'
+import { IndexSelect } from '../features/optionchain/IndexSelect'
+import { useChartStore } from '../store/chartStore'
+import { SYMBOLS, TIMEFRAMES, type ChartSymbol } from '../types/market'
+import { OPTION_CHAIN_INDICES } from '../config/indices'
 import { BrokerSelector } from '@/components/broker/BrokerSelector'
 import { INDICATORS, INDICATOR_GROUPS } from './indicatorMeta'
 import { IndicatorSettings } from './IndicatorSettings'
@@ -110,41 +112,24 @@ function LayoutMenu() {
   )
 }
 
+// Build an index ChartSymbol from a code (config/indices), preferring an explicit
+// SYMBOLS entry's candle symbol when present.
+function indexSymbolOf(code: string): ChartSymbol {
+  const s = SYMBOLS.find((x) => x.code === code)
+  const cfg = OPTION_CHAIN_INDICES.find((i) => i.code === code)
+  return { key: code, candleSymbol: s?.candleSymbol ?? code, display: cfg?.name ?? s?.display ?? code, kind: 'INDEX' }
+}
+
+// Chart symbol picker — reuses the SAME IndexSelect as the option chain (tabs:
+// Indices / All F&O Stocks / Recently Viewed), just with a compact trigger.
 function SymbolPicker({ active }: { active: ChartSymbol | null }) {
-  const items = useWatchlistStore((s) => s.items)
-  const [open, setOpen] = useState(false)
-  const [q, setQ] = useState('')
-  const options = useMemo<ChartSymbol[]>(() => [
-    ...SYMBOLS.map((s) => indexChartSymbol(s.code)),
-    ...items.map((it) => ({ key: it.symbol, candleSymbol: it.symbol, display: it.display, kind: 'OPTION' as const })),
-  ], [items])
-  const filtered = options.filter((o) => o.display.toLowerCase().includes(q.toLowerCase()))
+  const idx = active ? active.key.split('_')[0] : 'NIFTY' // underlying index of the active symbol
   return (
-    <div className="relative">
-      <button className="flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-white/5" onClick={() => setOpen((o) => !o)}>
-        <span className="text-sm font-semibold text-slate-800 dark:text-slate-100 max-w-[150px] truncate">{active?.display ?? 'Select symbol'}</span>
-        <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 text-slate-400" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6" /></svg>
-      </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
-          <div className="absolute z-40 mt-1 w-64 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-card-dark shadow-xl animate-fade-in">
-            <div className="p-2 border-b border-slate-100 dark:border-slate-800">
-              <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search symbol…" className="w-full h-8 px-2.5 rounded-lg bg-slate-100 dark:bg-white/5 text-sm outline-none" />
-            </div>
-            <div className="max-h-64 overflow-y-auto py-1">
-              {filtered.map((o) => (
-                <button key={o.key} onClick={() => { applySymbol(o); setOpen(false) }} className="flex w-full items-center justify-between px-3 py-1.5 text-sm hover:bg-slate-100 dark:hover:bg-white/5">
-                  <span className={clsx(o.key === active?.key ? 'text-brand-600 font-medium' : 'text-slate-700 dark:text-slate-300')}>{o.display}</span>
-                  <span className="text-[10px] text-slate-400">{o.kind}</span>
-                </button>
-              ))}
-              {filtered.length === 0 && <p className="px-3 py-4 text-center text-xs text-slate-400">Add strikes to your watchlist to chart them.</p>}
-            </div>
-          </div>
-        </>
-      )}
-    </div>
+    <IndexSelect compact value={idx} triggerText={active?.display ?? 'Select symbol'}
+      onChange={(code) => {
+        applySymbol(indexSymbolOf(code))
+        useChartStore.getState().setSymbol(code) // keep the global index in sync (drives option sync)
+      }} />
   )
 }
 

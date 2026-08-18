@@ -4,7 +4,6 @@ import type {
   TradeOrder,
   SyncOrderPayload,
   UpdateOrderPayload,
-  GroupAssignPayload,
 } from '@/types/reports'
 
 // ── Response normalizer ───────────────────────────────────────────────────────
@@ -64,10 +63,12 @@ export async function updateOrder(id: number, payload: UpdateOrderPayload): Prom
   return data
 }
 
-// ── Assign orders to a group ──────────────────────────────────────────────────
-// POST /trades/orders/group-assign
+// ── Assign a group to orders ──────────────────────────────────────────────────
+// Updates each order individually via PUT /trades/orders/:id (no bulk endpoint).
+// Accepts the full TradeOrder objects (from getTradeOrders) so we can send the
+// complete order payload back with only groupName changed. Works for one order
+// or many (single trade or multi-select).
 
-export async function assignOrderGroup(payload: GroupAssignPayload): Promise<unknown> {
-  const { data } = await axiosPrivate.post('/trades/orders/group-assign', payload)
-  return data
+export async function setOrdersGroup(orders: TradeOrder[], groupName: string): Promise<unknown[]> {
+  return Promise.all(orders.map((o) => updateOrder(o.id, { ...o, groupName } as UpdateOrderPayload)))
 }

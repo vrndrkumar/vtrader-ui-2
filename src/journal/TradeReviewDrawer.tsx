@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import toast from 'react-hot-toast'
 import { clsx } from 'clsx'
-import { getTradeOrders, assignOrderGroup } from '@/api/reports'
+import { getTradeOrders, setOrdersGroup } from '@/api/reports'
 import type { Trade, TradeOrder } from '@/types/reports'
 import { updateTradeTags } from '@/api/tags'
 import type { UserTag } from '@/api/tags'
@@ -74,7 +74,7 @@ export function TradeReviewDrawer({ trade, allTags, onClose, onChanged }: { trad
   const applyStrategy = async () => {
     if (!orders.length) return
     setAssigning(true)
-    try { await assignOrderGroup({ orderIds: orders.map((o) => o.id), groupName: group || 'MANUAL' }); toast.success('Strategy updated'); refresh() }
+    try { await setOrdersGroup(orders, group || 'MANUAL'); toast.success('Strategy updated'); refresh() }
     catch { toast.error('Failed to assign strategy') } finally { setAssigning(false) }
   }
 

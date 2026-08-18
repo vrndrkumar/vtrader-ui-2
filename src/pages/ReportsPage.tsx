@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'react-hot-toast'
 import { clsx } from 'clsx'
 import { getTrades } from '@/api/reports'
@@ -14,6 +14,8 @@ import {
   computeIndexPnl,
   formatPnl,
 } from '@/utils/tradeStats'
+import { downloadReportPdf } from '@/utils/reportPdf'
+import { useAuth } from '@/hooks/useAuth'
 import { SummaryCards } from '@/components/reports/SummaryCards'
 import { FilterBar } from '@/components/reports/FilterBar'
 import { TradeTable } from '@/components/reports/TradeTable'
@@ -385,6 +387,25 @@ export default function ReportsPage() {
     setFilters((f) => ({ ...f, ...patch }))
   }
 
+  const { user } = useAuth()
+  const overviewRef = useRef<HTMLDivElement>(null)
+  const [exporting, setExporting] = useState(false)
+  const handleDownloadPdf = async () => {
+    if (loading || !filteredTrades.length) { toast.error('No data to export'); return }
+    setExporting(true)
+    const t = toast.loading('Building PDF…')
+    try {
+      await downloadReportPdf({
+        stats, dailyPnl, groupPnl, indexPnl, symbolPnl,
+        filters, tradeCount: filteredTrades.length,
+        userName: [user?.firstName, user?.lastName].filter(Boolean).join(' ') || (user?.username ?? ''),
+        captureEl: tab === 'overview' ? overviewRef.current : null,
+      })
+      toast.success('Report downloaded', { id: t })
+    } catch { toast.error('Could not generate PDF', { id: t }) }
+    finally { setExporting(false) }
+  }
+
   const timeAgo = useMemo(() => {
     const s = Math.floor((Date.now() - lastRefresh.getTime()) / 1000)
     if (s < 60) return 'just now'
@@ -403,21 +424,39 @@ export default function ReportsPage() {
               {allTrades.length} trades · refreshed {timeAgo}
             </p>
           </div>
-          <button
-            onClick={() => fetchTrades(true)}
-            disabled={syncing}
-            className={clsx(
-              'inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all',
-              'bg-white dark:bg-white/5 border border-slate-200 dark:border-slate-700',
-              'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/10',
-              'shadow-sm disabled:opacity-60',
-            )}
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" className={clsx('h-4 w-4', syncing && 'animate-spin')} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 102.13-9.36L1 10" />
-            </svg>
-            {syncing ? 'Refreshing…' : 'Refresh'}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleDownloadPdf}
+              disabled={loading || exporting || !filteredTrades.length}
+              title="Download a professional PDF of this overview"
+              className={clsx(
+                'inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all',
+                'bg-brand-600 text-white hover:bg-brand-700 shadow-sm shadow-brand-600/25 disabled:opacity-50',
+              )}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className={clsx('h-4 w-4', exporting && 'animate-spin')} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                {exporting
+                  ? <path d="M21 12a9 9 0 11-6-8.49" />
+                  : <><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></>}
+              </svg>
+              {exporting ? 'Exporting…' : 'Download PDF'}
+            </button>
+            <button
+              onClick={() => fetchTrades(true)}
+              disabled={syncing}
+              className={clsx(
+                'inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all',
+                'bg-white dark:bg-white/5 border border-slate-200 dark:border-slate-700',
+                'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/10',
+                'shadow-sm disabled:opacity-60',
+              )}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className={clsx('h-4 w-4', syncing && 'animate-spin')} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 102.13-9.36L1 10" />
+              </svg>
+              {syncing ? 'Refreshing…' : 'Refresh'}
+            </button>
+          </div>
         </div>
 
         {/* Tabs */}
@@ -451,6 +490,9 @@ export default function ReportsPage() {
             brokerOptions={brokerOptions}
             strategyOptions={strategyOptions}
           />
+
+          {/* Capture zone → rasterised as PDF page 1 (overview snapshot) */}
+          <div ref={overviewRef} className="space-y-5 bg-slate-50 dark:bg-transparent">
 
           {/* KPI Cards */}
           <SummaryCards stats={stats} loading={loading} />
@@ -517,6 +559,8 @@ export default function ReportsPage() {
               )}
             </div>
           )}
+
+          </div>{/* /capture zone */}
 
           {/* ── Analytics ── */}
           {tab === 'analytics' && (

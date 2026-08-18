@@ -21,10 +21,17 @@ export interface Position {
   sellQty: number
   buyAvg: number
   sellAvg: number
-  avgPrice: number            // net entry price of the open side
+  avgPrice: number            // net entry price (netAvgPrice) — Net P&L baseline
   ltp: number
-  prevClose: number           // for day P&L
+  prevClose: number
   realized: number
+  // Day P&L inputs (from the positions API) + today's open for carried qty.
+  dayBuyQty: number
+  daySellQty: number
+  dayBuyAvg: number
+  daySellAvg: number
+  carryQty: number            // qty carried from a previous day = netQty − dayBuyQty + daySellQty
+  dayBase: number             // previous session CLOSE — the M2M baseline for carried qty (matches broker)
   status: PositionStatus
   stop?: number               // set/modify stop loss
   target?: number             // set/modify target
@@ -32,12 +39,16 @@ export interface Position {
 
 /** Net quantity — positive = long, negative = short. */
 export const netQty = (p: Position) => p.buyQty - p.sellQty
-/** Unrealized (open) P&L at current LTP. */
+/** Unrealized (open) P&L at current LTP, from the NET average (netAvgPrice). */
 export const unrealized = (p: Position) => (p.ltp - p.avgPrice) * netQty(p)
-/** Day P&L relative to previous close. */
-export const dayPnl = (p: Position) => (p.ltp - p.prevClose) * netQty(p)
-/** Total (net) P&L = realized + unrealized. */
-export const totalPnl = (p: Position) => p.realized + unrealized(p)
+/** Day P&L (matches the broker's "Days MTM" column) = realized + unrealized from
+ *  the net average (netAvgPrice). */
+export const dayPnl = (p: Position) => p.realized + unrealized(p)
+/** Net P&L (matches the broker's "P&L" column) = M2M from the previous session
+ *  close = daySellQty·daySellAvg − dayBuyQty·dayBuyAvg + netQty·ltp − carryQty·dayBase.
+ *  For a purely-today position (carryQty = 0) the dayBase term drops out. */
+export const totalPnl = (p: Position) =>
+  p.daySellQty * p.daySellAvg - p.dayBuyQty * p.dayBuyAvg + netQty(p) * p.ltp - p.carryQty * p.dayBase
 
 export type OrderStatus = 'PENDING' | 'OPEN' | 'COMPLETE' | 'CANCELLED' | 'REJECTED'
 

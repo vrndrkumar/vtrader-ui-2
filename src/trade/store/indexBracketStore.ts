@@ -80,7 +80,13 @@ export const useIndexBracketStore = create<State>((set, get) => ({
       const bySymbol: Record<string, IndexBracket[]> = {}
       for (const r of rows) {
         if (kindOf(r) === 'INDEX') {
-          ;(byIndex[String(r.indexName ?? '')] ??= []).push(norm(r))
+          // Only INDEX brackets WITH an entry leg belong on the index-bracket
+          // overlay. A no-entry INDEX monitor is a position's index-triggered
+          // SL/Target — rendered by IndexPositionMirror (from `all`), NOT here,
+          // otherwise its SL/Target draws twice.
+          if (r.entryTriggerPrice != null || r.entryStatus != null) {
+            ;(byIndex[String(r.indexName ?? '')] ??= []).push(norm(r))
+          }
         } else if (r.entryStatus != null && r.entryStatus !== 'FILLED') {
           // SYMBOL bracket whose triggered entry hasn't filled yet — show it on
           // the strike chart. Once FILLED, the position + SL/Target render via the
