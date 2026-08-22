@@ -5,7 +5,6 @@
 import { registerOverlay, type OverlayCreateFiguresCallbackParams, type OverlayFigure } from 'klinecharts'
 
 const BLUE = '#3b82f6'
-const STROKE = { style: 'stroke', borderColor: BLUE, borderSize: 1.5 }
 const GREEN_FILL = 'rgba(34,197,94,0.15)'
 const RED_FILL = 'rgba(239,68,68,0.15)'
 const labelStyle = (bg: string) => ({ color: '#ffffff', size: 11, weight: 'bold', backgroundColor: bg, paddingLeft: 5, paddingRight: 5, paddingTop: 2, paddingBottom: 2, borderRadius: 3 })
@@ -15,6 +14,23 @@ export function setPendingText(t: string) { pendingText = t }
 
 type P = { x: number; y: number }
 type Params = OverlayCreateFiguresCallbackParams
+
+// Per-drawing style readers — let the floating editor restyle shapes/text via
+// overrideOverlay({ styles }). Fall back to the defaults above when unset.
+type OvStyles = {
+  line?: { color?: string; size?: number; style?: string; dashedValue?: number[] }
+  polygon?: { color?: string }
+  circle?: { color?: string }
+  rect?: { color?: string }
+  text?: { color?: string; size?: number }
+}
+const st = (o: Params['overlay']): OvStyles => ((o?.styles ?? {}) as OvStyles)
+const lineColor = (o: Params['overlay']) => st(o).line?.color ?? BLUE
+const lineSize = (o: Params['overlay']) => st(o).line?.size ?? 1.5
+const lineDash = (o: Params['overlay']): 'solid' | 'dashed' => (st(o).line?.style === 'dashed' ? 'dashed' : 'solid')
+const fillColor = (o: Params['overlay'], fallback: string) => st(o).polygon?.color ?? st(o).circle?.color ?? st(o).rect?.color ?? fallback
+const textColor = (o: Params['overlay']) => st(o).text?.color ?? BLUE
+const textSize = (o: Params['overlay']) => st(o).text?.size ?? 13
 
 function positionFigures(coords: P[], points: Params['overlay']['points']): OverlayFigure[] {
   if (coords.length < 2) return []
@@ -53,9 +69,9 @@ function boxMeasure(coords: P[], points: Params['overlay']['points'], mode: 'pri
 }
 
 const OVERLAYS = [
-  { name: 'shapeRect', totalStep: 3, createPointFigures: ({ coordinates }: Params): OverlayFigure[] => coordinates.length < 2 ? [] : [{ type: 'rect', attrs: { x: Math.min(coordinates[0].x, coordinates[1].x), y: Math.min(coordinates[0].y, coordinates[1].y), width: Math.abs(coordinates[1].x - coordinates[0].x), height: Math.abs(coordinates[1].y - coordinates[0].y) }, styles: STROKE }] },
-  { name: 'shapeCircle', totalStep: 3, createPointFigures: ({ coordinates }: Params): OverlayFigure[] => coordinates.length < 2 ? [] : [{ type: 'circle', attrs: { x: coordinates[0].x, y: coordinates[0].y, r: Math.hypot(coordinates[1].x - coordinates[0].x, coordinates[1].y - coordinates[0].y) }, styles: STROKE }] },
-  { name: 'shapeText', totalStep: 2, createPointFigures: ({ coordinates }: Params): OverlayFigure[] => !coordinates.length ? [] : [{ type: 'text', attrs: { x: coordinates[0].x, y: coordinates[0].y, text: pendingText }, styles: { color: BLUE, size: 13, weight: 'bold' } }] },
+  { name: 'shapeRect', totalStep: 3, createPointFigures: ({ coordinates, overlay }: Params): OverlayFigure[] => coordinates.length < 2 ? [] : [{ type: 'rect', attrs: { x: Math.min(coordinates[0].x, coordinates[1].x), y: Math.min(coordinates[0].y, coordinates[1].y), width: Math.abs(coordinates[1].x - coordinates[0].x), height: Math.abs(coordinates[1].y - coordinates[0].y) }, styles: st(overlay).polygon?.color || st(overlay).rect?.color ? { style: 'stroke_fill', color: fillColor(overlay, 'rgba(59,130,246,0.12)'), borderColor: lineColor(overlay), borderSize: lineSize(overlay), borderStyle: lineDash(overlay) } : { style: 'stroke', borderColor: lineColor(overlay), borderSize: lineSize(overlay), borderStyle: lineDash(overlay) } }] },
+  { name: 'shapeCircle', totalStep: 3, createPointFigures: ({ coordinates, overlay }: Params): OverlayFigure[] => coordinates.length < 2 ? [] : [{ type: 'circle', attrs: { x: coordinates[0].x, y: coordinates[0].y, r: Math.hypot(coordinates[1].x - coordinates[0].x, coordinates[1].y - coordinates[0].y) }, styles: st(overlay).circle?.color ? { style: 'stroke_fill', color: fillColor(overlay, 'rgba(59,130,246,0.12)'), borderColor: lineColor(overlay), borderSize: lineSize(overlay), borderStyle: lineDash(overlay) } : { style: 'stroke', borderColor: lineColor(overlay), borderSize: lineSize(overlay), borderStyle: lineDash(overlay) } }] },
+  { name: 'shapeText', totalStep: 2, createPointFigures: ({ coordinates, overlay }: Params): OverlayFigure[] => !coordinates.length ? [] : [{ type: 'text', attrs: { x: coordinates[0].x, y: coordinates[0].y, text: (overlay?.extendData as string) || pendingText }, styles: { color: textColor(overlay), size: textSize(overlay), weight: 'bold' } }] },
   { name: 'shapeLong', totalStep: 4, createPointFigures: ({ coordinates, overlay }: Params): OverlayFigure[] => positionFigures(coordinates, overlay.points) },
   { name: 'shapeShort', totalStep: 4, createPointFigures: ({ coordinates, overlay }: Params): OverlayFigure[] => positionFigures(coordinates, overlay.points) },
   { name: 'measurePrice', totalStep: 3, createPointFigures: ({ coordinates, overlay }: Params): OverlayFigure[] => boxMeasure(coordinates, overlay.points, 'price') },
@@ -63,4 +79,7 @@ const OVERLAYS = [
   { name: 'measureBoth', totalStep: 3, createPointFigures: ({ coordinates, overlay }: Params): OverlayFigure[] => boxMeasure(coordinates, overlay.points, 'both') },
 ]
 
-OVERLAYS.forEach((o) => registerOverlay(o as never))
+// needDefaultPointFigure: true → klinecharts renders draggable anchor points on
+// each overlay, so custom shapes/text/measures can be MOVED and RESIZED after
+// drawing (klinecharts defaults this to false, which left them static).
+OVERLAYS.forEach((o) => registerOverlay({ needDefaultPointFigure: true, ...o } as never))

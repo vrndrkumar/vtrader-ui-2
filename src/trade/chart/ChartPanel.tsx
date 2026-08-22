@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { clsx } from 'clsx'
 import { KLineChartEngine } from './KLineChartEngine'
-import type { ChartEngine } from './ChartEngine'
+import type { ChartEngine, DrawingSelection } from './ChartEngine'
 import { ChartOrderLayer } from './ChartOrderLayer'
+import { DrawingEditToolbar } from './DrawingEditToolbar'
 import { engineRegistry } from './engineRegistry'
 import { dataSource } from '../data/dataSource'
 import { marksFromCandles, setDailyMarks } from '../data/realtime/dailyMarks'
@@ -78,6 +79,7 @@ export function ChartPanel({ panelId }: { panelId: string }) {
   const [empty, setEmpty] = useState(false)
   const [lastC, setLastC] = useState<Candle | null>(null)
   const [hoverC, setHoverC] = useState<Candle | null>(null)
+  const [selDrawing, setSelDrawing] = useState<DrawingSelection | null>(null)
 
   const config = useChartLayoutStore((s) => s.panels[panelId])
   const showIndexOrders = useChartLayoutStore((s) => s.showIndexOrders)
@@ -97,6 +99,7 @@ export function ChartPanel({ panelId }: { panelId: string }) {
     const mo = new MutationObserver(() => engine.setTheme(isDark()))
     mo.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
     const unsubCross = engine.subscribeCrosshair(setHoverC)
+    engine.setSelectionHandler(setSelDrawing) // show/hide the floating edit toolbar
     return () => { unsubCross(); ro.disconnect(); mo.disconnect(); engineRegistry.delete(panelId); engine.dispose(); engineRef.current = null }
   }, [panelId])
 
@@ -116,8 +119,13 @@ export function ChartPanel({ panelId }: { panelId: string }) {
       setLoading(false)
       if (!candles.length) { setEmpty(true); return }
       engine.setData(candles)
-      // Persist + re-anchor drawings: save on any change, and rebuild from the
-      // stored time+price defs now that the (new-timeframe) bars are loaded.
+      // Persist + re-anchor drawings. Save on any user change (debounced,
+      // per-drawing) via the store. Re-anchor from whatever the store currently
+      // holds — its points carry timestamps, so klinecharts re-maps them to the
+      // CURRENT bars on this timeframe. We do NOT re-fetch the backend here (that
+      // runs once per symbol, below); fetching on every timeframe change was what
+      // let an empty response wipe the drawings. Restore is guarded in the engine,
+      // so it never triggers a spurious save.
       engine.setDrawingChangeHandler((list) => useDrawingStore.getState().save(symbol.key, list))
       engine.restoreDrawings(useDrawingStore.getState().get(symbol.key))
       // Seed prev-close/last-price from these candles to avoid a second candle
@@ -144,6 +152,20 @@ export function ChartPanel({ panelId }: { panelId: string }) {
     })
     return () => { cancelled = true; unsub?.() }
   }, [config?.symbol, config?.timeframe])
+
+  // Load this symbol's drawings from the backend ONCE per symbol (source of
+  // truth), then re-anchor. Kept separate from the data/timeframe effect so a
+  // timeframe switch never re-fetches (and so an empty backend reply can't wipe
+  // what's on screen — see drawingStore.load, which also migrates local cache up).
+  useEffect(() => {
+    const key = config?.symbol?.key
+    if (!key) return
+    let cancelled = false
+    void useDrawingStore.getState().load(key).then((list) => {
+      if (!cancelled) engineRef.current?.restoreDrawings(list)
+    })
+    return () => { cancelled = true }
+  }, [config?.symbol?.key])
 
   // Keep engine indicators in sync with persisted config (toolbar acts on active).
   useEffect(() => {
@@ -247,6 +269,7 @@ export function ChartPanel({ panelId }: { panelId: string }) {
         )
       })()}
       <div ref={elRef} className="h-full w-full" />
+      {selDrawing && <DrawingEditToolbar engineRef={engineRef} containerRef={rootRef} selection={selDrawing} />}
       {config?.symbol && <ChartOrderLayer engineRef={engineRef} symbolKey={config.symbol.key} ltp={quote?.ltp ?? 0} />}
       {config?.symbol?.kind === 'OPTION' && quote && <ChartPlusOrder engineRef={engineRef} containerRef={rootRef} symbol={config.symbol} ltp={quote.ltp} qty={orderQty} />}
       {config?.symbol?.kind === 'INDEX' && quote && <IndexPlusOrder engineRef={engineRef} containerRef={rootRef} index={config.symbol.key} ltp={quote.ltp} />}

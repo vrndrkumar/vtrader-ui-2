@@ -11,9 +11,23 @@ import type { OrderLine } from './orderOverlays'
  * it survives reload and stays anchored across timeframe/zoom/pan changes.
  */
 export interface DrawingDef {
+  id?: string                                         // stable identity — survives reload,
+                                                      // timeframe & symbol changes; the
+                                                      // persistence/update/delete key.
   type: string                                        // overlay/tool name
   points: { timestamp?: number; value?: number }[]    // time + price anchors
   styles?: unknown                                    // optional per-drawing style overrides
+  locked?: boolean                                    // ignores pointer events when true
+  visible?: boolean                                   // hidden when false
+}
+
+/** A drawing the user has selected on the chart — drives the floating editor. */
+export interface DrawingSelection {
+  id: string
+  type: string
+  styles?: unknown
+  locked: boolean
+  visible: boolean
 }
 
 export interface ChartEngine {
@@ -35,6 +49,23 @@ export interface ChartEngine {
   /** Enter draw mode for a drawing tool (e.g. 'segment', 'fibonacciLine'). */
   startDrawing(name: string): void
   clearDrawings(): void
+
+  // ── Single-drawing editing (drives the floating TradingView-style toolbar) ──
+  /** Notified when a drawing is selected (with its current style/lock/visible),
+   *  or null when deselected. */
+  setSelectionHandler(cb: (sel: DrawingSelection | null) => void): void
+  /** Top-anchor pixel of a drawing (for positioning the floating toolbar), or
+   *  null if off-screen / unavailable. Cheap — safe to poll each frame. */
+  overlayScreenAnchor(id: string): { x: number; y: number } | null
+  /** Merge style overrides into one drawing (color/width/line-style/fill/…) and
+   *  persist. */
+  styleDrawing(id: string, styles: Record<string, unknown>): void
+  /** Lock (ignore pointer events) / unlock a single drawing; persisted. */
+  lockDrawing(id: string, locked: boolean): void
+  /** Show / hide a single drawing; persisted. */
+  showDrawing(id: string, visible: boolean): void
+  /** Delete exactly one drawing (persisted removal). */
+  removeDrawing(id: string): void
 
   /** Called whenever the set of user drawings changes (create / move / remove),
    *  with the full list serialized to time+price for persistence. */
