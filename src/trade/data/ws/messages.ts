@@ -67,6 +67,38 @@ export interface OcoEventPayload {
   status?: 'ACTIVE' | 'COMPLETED' | 'CANCELLED'
 }
 
+/**
+ * Order-status frame — the redesigned OCO channel now pushes the RAW broker
+ * order-status object (identical shape to GET /v3/trade/order/status). The
+ * backend places the leg, polls status (0.5s×5) until COMPLETE, then publishes
+ * this once. It carries no monitorId/leg/event — the UI treats it as a "poke"
+ * and reconciles the true state from the Position + Order APIs. Only a few
+ * fields matter (orderId, status, tradingSymbol, quantity for partials); price /
+ * triggerPrice / priceType are ignored.
+ */
+export interface OrderStatusPayload {
+  orderId?: string               // absent on synthesized reject/cancel frames
+  status: string                 // COMPLETE | OPEN | PENDING | REJECTED | CANCELLED | …
+  tradingSymbol: string
+  quantity?: number
+  transationType?: 'B' | 'S'     // broker spelling (note the single 's')
+  exchange?: string
+  index?: string | null
+  rejectionRegion?: string       // reason text when REJECTED
+  priceType?: string
+  price?: number
+  triggerPrice?: number
+}
+
+/** New status frame vs the legacy OcoEventPayload (which carries `event`). */
+export function isOrderStatusPayload(p: unknown): p is OrderStatusPayload {
+  if (!p || typeof p !== 'object') return false
+  const o = p as Record<string, unknown>
+  return typeof o.tradingSymbol === 'string'
+    && typeof o.status === 'string'
+    && !('event' in o)
+}
+
 // Channel name helpers.
 export const indexTickChannel = (index: string) => `INDEX_TICK_${index}`
 export const optionChainChannel = (index: string) => `OPTION_CHAIN_${index}`

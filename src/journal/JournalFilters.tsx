@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { clsx } from 'clsx'
-import { GroupsFilterSelect } from './StrategySelect'
 import {
   DATE_PRESETS, activeCount, defaultFilters, presetRange, loadPresets, savePresets, rehydratePreset,
   type Filters, type SavedPreset,
 } from './filters'
+import { useStrategies, useKnownGroups } from './useStrategies'
+import { MultiSelect, type MultiOption } from '@/components/ui/MultiSelect'
 import type { UserTag } from '@/api/tags'
 import { tagFallbackColor } from './TagCombobox'
 
@@ -149,6 +150,17 @@ export function JournalFilters({ filters, onChange, brokers, tagOptions }: {
   const [open, setOpen] = useState(false)
   const [presets, setPresets] = useState<SavedPreset[]>(loadPresets)
   const patch = (p: Partial<Filters>) => onChange({ ...filters, ...p })
+
+  const strategies = useStrategies()
+  const knownGroups = useKnownGroups()
+  const strategyOptions = useMemo<MultiOption[]>(() => {
+    const labelOf = (code: string) => strategies.find((s) => s.strategyCode === code)?.strategyName ?? code
+    return [{ value: 'MANUAL', label: 'Manual' }, ...knownGroups.filter((g) => g && g.toUpperCase() !== 'MANUAL').map((g) => ({ value: g, label: labelOf(g), hint: g }))]
+  }, [strategies, knownGroups])
+  const indexOptions: MultiOption[] = [
+    ...['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'SENSEX', 'BANKEX', 'MIDCPNIFTY'].map((i) => ({ value: i, label: i })),
+    { value: 'EQ', label: 'EQ / Other' },
+  ]
   const setPreset = (id: Filters['datePreset']) => { const r = presetRange(id); patch(r ? { datePreset: id, ...r } : { datePreset: id }) }
   const count = activeCount(filters)
 
@@ -170,7 +182,7 @@ export function JournalFilters({ filters, onChange, brokers, tagOptions }: {
 
         <DatePopover filters={filters} patch={patch} setPreset={setPreset} />
 
-        <GroupsFilterSelect value={filters.strategy} onChange={(strategy) => patch({ strategy })} className={clsx(inp, 'max-w-[170px]')} />
+        <MultiSelect className={clsx(inp, 'min-w-[150px] max-w-[190px]')} allLabel="All strategies" options={strategyOptions} selected={filters.strategies} onChange={(strategies) => patch({ strategies })} />
 
         {tagOptions.length > 0 && (
           <TagsDropdown selected={filters.tags} allTags={tagOptions} onChange={(tags) => patch({ tags })} />
@@ -206,11 +218,7 @@ export function JournalFilters({ filters, onChange, brokers, tagOptions }: {
             </select>
           </div>
           <div><span className={lbl}>Index</span>
-            <select value={filters.index} onChange={(e) => patch({ index: e.target.value })} className={clsx(inp, 'w-full')}>
-              <option value="">All indices</option>
-              {['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'SENSEX', 'BANKEX', 'MIDCPNIFTY'].map((i) => <option key={i} value={i}>{i}</option>)}
-              <option value="EQ">EQ / Other</option>
-            </select>
+            <MultiSelect className={clsx(inp, 'w-full')} allLabel="All indices" options={indexOptions} selected={filters.indexes} onChange={(indexes) => patch({ indexes })} />
           </div>
           <div><span className={lbl}>Instrument</span>
             <select value={filters.instrument} onChange={(e) => patch({ instrument: e.target.value as Filters['instrument'] })} className={clsx(inp, 'w-full')}>

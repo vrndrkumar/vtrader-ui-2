@@ -54,7 +54,7 @@ export default function BrokerPage() {
       } else {
         if (brokers.length === 0) payload.preferences.default = true
         await addBroker(payload)
-        toast.success('Broker connected!')
+        toast.success('Configuration submitted for admin approval')
       }
       setAddOpen(false)
       setEditBroker(null)
@@ -73,7 +73,7 @@ export default function BrokerPage() {
     setSettingPrimaryId(broker.id)
     try {
       await updateBroker(broker.id, {
-        brokerName: broker.brokerName,
+        brokerId: broker.brokerId,
         brokerInfo: broker.brokerInfo,
         isActive: broker.isActive,
         preferences: {

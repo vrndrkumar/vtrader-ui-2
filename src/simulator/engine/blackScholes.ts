@@ -23,6 +23,26 @@ export function bsPrice(S: number, K: number, T: number, sigma: number, type: 'C
     : K * df * ncdf(-d2) - S * ncdf(-d1)
 }
 
+/**
+ * Implied volatility from a market price (bisection). Returns 0 when the price is
+ * below intrinsic or can't be solved. Used to derive IV/greeks from the real
+ * option chain, which serves LTP but no IV.
+ */
+export function bsImpliedVol(price: number, S: number, K: number, T: number, type: 'CE' | 'PE'): number {
+  if (T <= 0 || price <= 0) return 0
+  const intrinsic = type === 'CE' ? Math.max(S - K, 0) : Math.max(K - S, 0)
+  if (price <= intrinsic + 1e-6) return 0
+  let lo = 1e-4, hi = 5
+  if (bsPrice(S, K, T, hi, type) < price) return hi // price above model max → cap
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2
+    const p = bsPrice(S, K, T, mid, type)
+    if (Math.abs(p - price) < 1e-4) return mid
+    if (p < price) lo = mid; else hi = mid
+  }
+  return (lo + hi) / 2
+}
+
 export interface Greeks { delta: number; gamma: number; theta: number; vega: number }
 
 export function bsGreeks(S: number, K: number, T: number, sigma: number, type: 'CE' | 'PE'): Greeks {

@@ -30,8 +30,10 @@ export interface Position {
   daySellQty: number
   dayBuyAvg: number
   daySellAvg: number
-  carryQty: number            // qty carried from a previous day = netQty − dayBuyQty + daySellQty
-  dayBase: number             // previous session CLOSE — the M2M baseline for carried qty (matches broker)
+  carryQty: number            // net qty carried from a previous day = netQty − dayBuyQty + daySellQty
+  dayBase: number             // previous session CLOSE (upldprc / previousClose) — Day P&L baseline for carried qty
+  hasPrevClose: boolean       // true only when the feed actually supplied a previous close
+  valueFactor: number         // priceFactor × multiplier (₹ per point); 1 for equity/NFO
   status: PositionStatus
   stop?: number               // set/modify stop loss
   target?: number             // set/modify target
@@ -40,15 +42,36 @@ export interface Position {
 /** Net quantity — positive = long, negative = short. */
 export const netQty = (p: Position) => p.buyQty - p.sellQty
 /** Unrealized (open) P&L at current LTP, from the NET average (netAvgPrice). */
-export const unrealized = (p: Position) => (p.ltp - p.avgPrice) * netQty(p)
-/** Day P&L (matches the broker's "Days MTM" column) = realized + unrealized from
- *  the net average (netAvgPrice). */
-export const dayPnl = (p: Position) => p.realized + unrealized(p)
-/** Net P&L (matches the broker's "P&L" column) = M2M from the previous session
- *  close = daySellQty·daySellAvg − dayBuyQty·dayBuyAvg + netQty·ltp − carryQty·dayBase.
- *  For a purely-today position (carryQty = 0) the dayBase term drops out. */
-export const totalPnl = (p: Position) =>
-  p.daySellQty * p.daySellAvg - p.dayBuyQty * p.dayBuyAvg + netQty(p) * p.ltp - p.carryQty * p.dayBase
+export const unrealized = (p: Position) => (p.ltp - p.avgPrice) * netQty(p) * p.valueFactor
+
+/**
+ * Net / overall P&L (lifetime) = booked realized + open unrealized.
+ * Matches the broker's realized (rpnl) + unrealized (urmtom) and the chart mirror.
+ * Exact from fields the positions API always returns — never needs a previous close.
+ */
+export const totalPnl = (p: Position) => p.realized + unrealized(p)
+
+/**
+ * Day P&L = mark-to-market since the PREVIOUS SESSION CLOSE — the exact broker
+ * "day MTM". Works for every position type (intraday, carry-forward, and
+ * carry + today partial book) because it reconstructs the day from first
+ * principles rather than from `realized`:
+ *
+ *   day = (daySellQty·daySellAvg − dayBuyQty·dayBuyAvg)   // today's cash flow
+ *       + netQty·ltp                                       // current value of net qty
+ *       − carryQty·prevClose                               // carried qty at prior close
+ *   × valueFactor (₹ per point)
+ *
+ * For a purely intraday position (carryQty = 0) this reduces to realized +
+ * unrealized. It requires a genuine previous close (`hasPrevClose`); if the feed
+ * omits one we fall back to the overall P&L instead of a bogus baseline.
+ */
+export const dayPnl = (p: Position) => {
+  if (p.hasPrevClose) {
+    return (p.daySellQty * p.daySellAvg - p.dayBuyQty * p.dayBuyAvg + netQty(p) * p.ltp - p.carryQty * p.dayBase) * p.valueFactor
+  }
+  return p.realized + unrealized(p)
+}
 
 export type OrderStatus = 'PENDING' | 'OPEN' | 'COMPLETE' | 'CANCELLED' | 'REJECTED'
 

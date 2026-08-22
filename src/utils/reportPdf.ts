@@ -110,8 +110,8 @@ export async function downloadReportPdf(data: ReportPdfData): Promise<void> {
   // ── Applied filters chip line ───────────────────────────────────────────────
   const chips: string[] = []
   if (filters.brokerName) chips.push(`Broker: ${filters.brokerName}`)
-  if (filters.groupName) chips.push(`Strategy: ${filters.groupName}`)
-  if (filters.indexName) chips.push(`Index: ${filters.indexName}`)
+  if (filters.groupNames.length) chips.push(`Strategy: ${filters.groupNames.join(', ')}`)
+  if (filters.indexNames.length) chips.push(`Index: ${filters.indexNames.join(', ')}`)
   if (filters.status && filters.status !== 'ALL') chips.push(`Status: ${filters.status}`)
   if (chips.length) {
     doc.setFont('helvetica', 'normal')

@@ -56,8 +56,15 @@ function mapPosition(r: Record<string, unknown>, b: BrokerAccount, i: number): P
   const avgPrice = (netQ !== 0 && sideEntry > 0)
     ? sideEntry
     : (netAvg || num(r, ['avgPrice', 'averagePrice', 'average_price'], (netQ >= 0 ? buyAvg : sellAvg) || dayBuyAvg || daySellAvg))
-  // Net P&L baseline = previous close (broker upldprc; falls back to netAvgPrice).
-  const dayBase = num(r, ['prevClose', 'uploadPrice', 'upldprc', 'uploadPrc', 'previousClose'], netAvg)
+  // Day-P&L baseline = previous session close (broker upldprc / previousClose).
+  // Detect whether the feed actually supplied one — if not, Day P&L falls back to
+  // overall P&L rather than using a bogus baseline (which mis-priced carried qty).
+  const PREV_CLOSE_KEYS = ['previousClose', 'prevClose', 'uploadPrice', 'upldprc', 'uploadPrc']
+  const hasPrevClose = PREV_CLOSE_KEYS.some((k) => r[k] != null && r[k] !== '' && Number(r[k]) > 0)
+  const dayBase = hasPrevClose ? num(r, PREV_CLOSE_KEYS, netAvg) : netAvg
+  // ₹ value per point = priceFactor × multiplier (1 for equity/NFO; matters for
+  // currency/commodity). Guard against a 0 that would zero out P&L.
+  const valueFactor = (num(r, ['priceFactor', 'prcftr'], 1) || 1) * (num(r, ['multiplier', 'mult'], 1) || 1)
   const ltp = num(r, ['ltp', 'lastPrice', 'last_price', 'lastTradedPrice', 'ltpPrice'], avgPrice) // seed only; live LTP overrides
   return {
     id: str(r, ['id', 'positionId'], `${b.id}-${symbol}-${i}`),
@@ -71,7 +78,7 @@ function mapPosition(r: Record<string, unknown>, b: BrokerAccount, i: number): P
     sellAvg: sellAvg || (netQ < 0 ? avgPrice : 0),
     avgPrice,
     dayBuyQty, daySellQty, dayBuyAvg, daySellAvg, carryQty,
-    dayBase, // = netAvgPrice (carry / previous-close baseline)
+    dayBase, hasPrevClose, valueFactor, // Day-P&L baseline (trusted when hasPrevClose) + ₹/point scaling
     ltp,
     prevClose: num(r, ['prevClose', 'close', 'closePrice', 'close_price'], avgPrice),
     // API sends realized under `realiasedPNL` (broker spelling). Unrealized is NOT

@@ -29,7 +29,7 @@ export function ValidateBrokerModal({ open, onClose, broker }: ValidateBrokerMod
     setMessage('')
     try {
       const res = await validateBroker({
-        brokerName: broker.brokerName,
+        brokerId: broker.brokerId ?? 0,
         brokerInfo: broker.brokerInfo,
       })
       setStatus('success')

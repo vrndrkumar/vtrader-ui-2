@@ -22,6 +22,13 @@ const uid = (p: string) => `${p}_${Date.now()}_${seq++}`
 const SPEEDS = [0.5, 1, 2, 5, 10, 25, 50] as const
 const BASE_STEP_MS = 900 // wall-clock ms per replay step at 1x
 
+/** Forward/Backward navigation step: minutes, or 'D' = one whole trading day. */
+export type NavStep = 1 | 5 | 15 | 30 | 60 | 'D'
+export const NAV_STEPS: NavStep[] = [1, 5, 15, 30, 60, 'D']
+/** Where to land after switching to another day. */
+type DayLand = 'start' | 'end' | { hhmm: string }
+const hhmmOf = (ts: number) => new Date(ts).toLocaleTimeString('en-GB', { timeZone: 'Asia/Kolkata', hour12: false, hour: '2-digit', minute: '2-digit' })
+
 interface SimState {
   synthetic: boolean
   ready: boolean
@@ -54,6 +61,11 @@ interface SimState {
   changeFrequency: (frequency: Frequency) => Promise<void>
   changeExpiry: (expiryId: string) => Promise<void>
   seekToTime: (hhmm: string) => void
+  navStep: NavStep                                    // duration used by Forward/Backward
+  setNavStep: (s: NavStep) => void
+  stepNav: (dir: 1 | -1) => Promise<void>             // move by navStep; crosses day boundaries
+  loadDay: (date: string, land: DayLand) => Promise<boolean>   // switch day, KEEP positions
+  crossDay: (dir: 1 | -1, land: DayLand) => Promise<boolean>
   play: () => void
   pause: () => void
   stepFwd: () => void
@@ -98,6 +110,7 @@ export const useSim = create<SimState>((set, get) => ({
   spot: 0,
   realized: 0,
   unrealized: 0,
+  navStep: 5,
 
   // Auto-start the workstation with sensible defaults (no setup screen).
   async autostart() {
@@ -165,6 +178,60 @@ export const useSim = create<SimState>((set, get) => ({
     let b = 0
     steps.forEach((t, i) => { if (Math.abs(t - target) < Math.abs(steps[b] - target)) b = i })
     get().seek(b)
+  },
+
+  setNavStep(s) { set({ navStep: s }) },
+
+  // Move Forward (dir +1) / Backward (dir -1) by the selected navStep. Within the
+  // day it seeks to the nearest step; at a boundary it rolls into the adjacent
+  // trading day (fixes "stuck at EOD"). 'D' jumps a whole day at the same time.
+  async stepNav(dir) {
+    const { steps, cursor, navStep } = get()
+    if (!steps.length) return
+    if (navStep === 'D') { await get().crossDay(dir, { hhmm: hhmmOf(steps[cursor]) }); return }
+    const last = steps.length - 1
+    const target = steps[cursor] + dir * navStep * 60_000
+    let b = 0
+    steps.forEach((t, i) => { if (Math.abs(t - target) < Math.abs(steps[b] - target)) b = i })
+    if (b === cursor) b = cursor + dir            // rounding didn't move us → nudge one step
+    if (b > last) { await get().crossDay(1, 'start'); return }
+    if (b < 0) { await get().crossDay(-1, 'end'); return }
+    get().seek(b)
+  },
+
+  // Switch to `date` and rebuild the step grid, KEEPING positions/events/pnl so
+  // navigation across days is continuous (unlike changeDate, which is a fresh session).
+  async loadDay(date, land) {
+    const cfg = get().config
+    if (!cfg) return false
+    clearTimer()
+    const [full, expiries] = await Promise.all([
+      provider.underlyingSession(cfg.index, date, cfg.frequency),
+      provider.expiries(cfg.index, date),
+    ])
+    const startTs = toTs(date, cfg.startTime), endTs = toTs(date, cfg.endTime)
+    const steps = full.filter(c => c.ts >= startTs && c.ts <= endTs).map(c => c.ts)
+    if (!steps.length) return false
+    const expiryId = expiries.some(e => e.id === cfg.expiryId) ? cfg.expiryId : (expiries[0]?.id ?? cfg.expiryId)
+    let cursor = land === 'end' ? steps.length - 1 : 0
+    if (typeof land === 'object') {
+      const target = toTs(date, land.hhmm)
+      let b = 0; steps.forEach((t, i) => { if (Math.abs(t - target) < Math.abs(steps[b] - target)) b = i }); cursor = b
+    }
+    set({ config: { ...cfg, date, expiryId }, expiries, steps, cursor, status: 'paused' })
+    await refreshAt(cursor, set, get)
+    return true
+  },
+
+  // Step to the adjacent trading day (sessions is newest-first: forward = earlier index).
+  async crossDay(dir, land) {
+    const { sessions, config } = get()
+    if (!config) return false
+    const idx = sessions.findIndex(s => s.date === config.date)
+    if (idx < 0) return false
+    const next = sessions[dir > 0 ? idx - 1 : idx + 1]
+    if (!next) return false           // no adjacent trading day (edge of available range)
+    return get().loadDay(next.date, land)
   },
 
   play() {

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { clsx } from 'clsx'
 import type { TradeFilters } from '@/types/reports'
 import { useHasRegisteredBrokers } from '@/hooks/useHasRegisteredBrokers'
+import { MultiSelect, type MultiOption } from '@/components/ui/MultiSelect'
 
 interface StrategyOption {
   groupName: string
@@ -34,13 +35,13 @@ const STANDARD_INDICES = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'SENSEX', 'BANKEX', 
 // Count active filters (excluding status=ALL which is default)
 function countActive(filters: TradeFilters): number {
   let c = 0
-  if (filters.brokerName)   c++
-  if (filters.groupName)    c++
+  if (filters.brokerName)      c++
+  if (filters.groupNames.length) c++
   if (filters.status !== 'ALL') c++
-  if (filters.symbolSearch) c++
-  if (filters.dateFrom)     c++
-  if (filters.dateTo)       c++
-  if (filters.indexName)    c++
+  if (filters.symbolSearch)    c++
+  if (filters.dateFrom)        c++
+  if (filters.dateTo)          c++
+  if (filters.indexNames.length) c++
   return c
 }
 
@@ -50,12 +51,22 @@ export function FilterBar({ filters, onChange, brokerOptions, strategyOptions }:
   const hasRegisteredBrokers = useHasRegisteredBrokers()
 
   const clearAll = () => onChange({
-    brokerName: '', groupName: '', status: 'ALL',
-    symbolSearch: '', dateFrom: '', dateTo: '', indexName: '',
+    brokerName: '', groupNames: [], status: 'ALL',
+    symbolSearch: '', dateFrom: '', dateTo: '', indexNames: [],
   })
 
+  const strategyMultiOptions: MultiOption[] = [
+    { value: 'Manual', label: 'Manual' },
+    ...strategyOptions.map((s) => ({ value: s.groupName, label: s.label, hint: s.groupName })),
+  ]
+  const indexMultiOptions: MultiOption[] = [
+    ...STANDARD_INDICES.map((i) => ({ value: i, label: i })),
+    { value: 'EQ', label: 'EQ / Other' },
+  ]
+  const triggerCls = `${inputBase} h-[38px] py-0`
+
   return (
-    <div className="bg-white dark:bg-card-dark rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+    <div className="relative z-20 bg-white dark:bg-card-dark rounded-2xl border border-slate-200 dark:border-slate-800">
 
       {/* Filter bar toggle header */}
       <div
@@ -96,8 +107,8 @@ export function FilterBar({ filters, onChange, brokerOptions, strategyOptions }:
       {!expanded && activeCount > 0 && (
         <div className="flex flex-wrap gap-2 px-5 pb-3">
           {filters.brokerName && <Chip label={`Broker: ${filters.brokerName}`} onRemove={() => onChange({ brokerName: '' })} />}
-          {filters.groupName  && <Chip label={`Strategy: ${filters.groupName}`} onRemove={() => onChange({ groupName: '' })} />}
-          {filters.indexName  && <Chip label={`Index: ${filters.indexName === 'EQ' ? 'EQ/Other' : filters.indexName}`} onRemove={() => onChange({ indexName: '' })} />}
+          {filters.groupNames.map((g) => <Chip key={g} label={`Strategy: ${g}`} onRemove={() => onChange({ groupNames: filters.groupNames.filter((x) => x !== g) })} />)}
+          {filters.indexNames.map((i) => <Chip key={i} label={`Index: ${i === 'EQ' ? 'EQ/Other' : i}`} onRemove={() => onChange({ indexNames: filters.indexNames.filter((x) => x !== i) })} />)}
           {filters.status !== 'ALL' && <Chip label={`Status: ${filters.status}`} onRemove={() => onChange({ status: 'ALL' })} />}
           {filters.symbolSearch && <Chip label={`Symbol: ${filters.symbolSearch}`} onRemove={() => onChange({ symbolSearch: '' })} />}
           {filters.dateFrom   && <Chip label={`From: ${filters.dateFrom}`} onRemove={() => onChange({ dateFrom: '' })} />}
@@ -135,31 +146,29 @@ export function FilterBar({ filters, onChange, brokerOptions, strategyOptions }:
               </select>
             </div>
 
-            {/* Strategy */}
+            {/* Strategy (multi) */}
             <div>
               <Label>Strategy</Label>
-              <select
-                className={clsx(inputBase, !hasRegisteredBrokers && 'opacity-50 cursor-not-allowed')}
-                value={filters.groupName}
-                onChange={(e) => onChange({ groupName: e.target.value })}
+              <MultiSelect
+                className={clsx(triggerCls, !hasRegisteredBrokers && 'opacity-50 cursor-not-allowed')}
+                allLabel="All strategies"
+                options={strategyMultiOptions}
+                selected={filters.groupNames}
+                onChange={(groupNames) => onChange({ groupNames })}
                 disabled={!hasRegisteredBrokers}
-              >
-                <option value="">All strategies</option>
-                <option value="Manual">Manual</option>
-                {strategyOptions.map((s) => (
-                  <option key={s.groupName} value={s.groupName}>{s.label}</option>
-                ))}
-              </select>
+              />
             </div>
 
-            {/* Index */}
+            {/* Index (multi) */}
             <div>
               <Label>Index</Label>
-              <select className={inputBase} value={filters.indexName} onChange={(e) => onChange({ indexName: e.target.value })}>
-                <option value="">All indices</option>
-                {STANDARD_INDICES.map((i) => <option key={i} value={i}>{i}</option>)}
-                <option value="EQ">EQ / Other</option>
-              </select>
+              <MultiSelect
+                className={triggerCls}
+                allLabel="All indices"
+                options={indexMultiOptions}
+                selected={filters.indexNames}
+                onChange={(indexNames) => onChange({ indexNames })}
+              />
             </div>
 
             {/* Status */}
@@ -200,7 +209,8 @@ export function FilterBar({ filters, onChange, brokerOptions, strategyOptions }:
           {activeCount > 0 && (
             <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-slate-100 dark:border-slate-800">
               {filters.brokerName && <Chip label={`Broker: ${filters.brokerName}`} onRemove={() => onChange({ brokerName: '' })} />}
-              {filters.groupName  && <Chip label={`Strategy: ${filters.groupName}`} onRemove={() => onChange({ groupName: '' })} />}
+              {filters.groupNames.map((g) => <Chip key={g} label={`Strategy: ${g}`} onRemove={() => onChange({ groupNames: filters.groupNames.filter((x) => x !== g) })} />)}
+              {filters.indexNames.map((i) => <Chip key={i} label={`Index: ${i === 'EQ' ? 'EQ/Other' : i}`} onRemove={() => onChange({ indexNames: filters.indexNames.filter((x) => x !== i) })} />)}
               {filters.status !== 'ALL' && <Chip label={`Status: ${filters.status}`} onRemove={() => onChange({ status: 'ALL' })} />}
               {filters.symbolSearch && <Chip label={`Symbol: ${filters.symbolSearch}`} onRemove={() => onChange({ symbolSearch: '' })} />}
               {filters.dateFrom   && <Chip label={`From: ${filters.dateFrom}`} onRemove={() => onChange({ dateFrom: '' })} />}

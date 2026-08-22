@@ -1,101 +1,90 @@
-// ── OCO monitor events ───────────────────────────────────────────────────────
-// The server watches SL/Target triggers and places the real exit order when
-// price crosses. When a leg fires (or is rejected), it pushes an OCO frame on
-// the user's socket channel. Here we react in real time:
-//  - EXECUTED → the OCO is done: clear both SL/Target lines and reload the
-//    tradebook so the chart reflects the real broker state.
-//  - REJECTED → the exit didn't go through AND the server stopped watching this
-//    leg (the monitor row is no longer ACTIVE), so remove its line — there is no
-//    active server-side stop for it anymore — and warn the user.
-//  - CANCELLED → the leg/monitor was cancelled: remove the line(s).
+// ── OCO order events → reconcile from broker truth ───────────────────────────
+// The server places the real order (entry / SL / target), polls its status until
+// COMPLETE (0.5s × 5), then pushes ONE frame on the user's OCO channel. The frame
+// is the raw broker order-status object (see OrderStatusPayload) — a "poke", not
+// a description of state. We never try to mutate chart lines from the frame's
+// fields; instead we RECONCILE: reload the tradebook (positions + order book) and
+// the OCO monitor store, and let the render layers redraw from the true state.
+//
+// Why reconcile-from-truth (and not hand-clear lines):
+//   • Chart position strips mirror tradebookStore.positions (ChartOrderLayer) and
+//     the SL/Target lines come from indexBracketStore. Reloading both makes the
+//     chart reflect exactly what the broker holds — closed positions drop, filled
+//     entries appear, partial fills resize, rejects/cancels clear. No guessing.
+//   • The frame is emitted only AFTER the broker returns COMPLETE, so a single
+//     reload is usually accurate. One short safety re-reload covers the brief lag
+//     between an exit order filling and the position API showing netqty 0.
+//
+// Scenarios all handled by the same reconcile:
+//   SL/Target hit → exit filled → position closes → strip + both lines drop.
+//   Entry (INDEX/SYMBOL bracket) filled → position appears → bracket overlay
+//     stops drawing the pending entry, position strip renders.
+//   Entry LMT still OPEN → no position yet; a later fill pushes another frame
+//     that reconciles it (user manually fills from broker → WS → reconcile).
+//   Leg REJECTED → position stays (unprotected); the rejected leg's line drops.
+//   User/other cancel (legacy CANCELLED frame) → monitor gone → lines drop.
+//   External/manual close from the broker → position gone → strip drops.
+//   Partial booking → position API shows reduced net qty → strip resizes.
 
 import toast from 'react-hot-toast'
-import type { OcoEventPayload } from '../ws/messages'
-import { useTradeStore } from '../../store/tradeStore'
+import { isOrderStatusPayload, type OcoEventPayload, type OrderStatusPayload } from '../ws/messages'
 import { useTradebookStore } from '../../features/tradebook/tradebookStore'
 import { useIndexBracketStore } from '../../store/indexBracketStore'
-import { clearStop, clearTarget } from '../trade/tradeAdapter'
 
-const legLabel = (leg: OcoEventPayload['leg']) =>
-  leg === 'SL' ? 'Stop-loss' : leg === 'TGT' ? 'Target' : leg === 'ENTRY' ? 'Entry' : 'Bracket'
-
-// An OCO leg firing PLACES the exit order — the position only closes once the
-// broker FILLS it, a moment later. A single reload at the event catches the
-// order but not yet the closed position (so the old position tag lingers until a
-// manual reload). Reload a few times over the next several seconds to pick up
-// the fill automatically. Also reload the OCO/index-bracket store each time.
-let burstTimers: ReturnType<typeof setTimeout>[] = []
-function reloadBurst(indexName?: string) {
-  burstTimers.forEach(clearTimeout)
-  burstTimers = [];
-  [0, 1200, 3000, 6000].forEach((ms) => {
-    burstTimers.push(setTimeout(() => {
-      void useTradebookStore.getState().reload()
-      void useIndexBracketStore.getState().reload(indexName)
+// Coalesce reconcile calls (several frames can land together on a bracket
+// completing) and add ONE delayed pass to catch the position-close reflection
+// lag. This is NOT a poll — it's the initial pass plus a single confirmation.
+let reconcileTimers: ReturnType<typeof setTimeout>[] = []
+function reconcileFromApi() {
+  reconcileTimers.forEach(clearTimeout)
+  reconcileTimers = [];
+  [0, 1200].forEach((ms) => {
+    reconcileTimers.push(setTimeout(() => {
+      void useTradebookStore.getState().reload()      // positions + order book (broker truth)
+      void useIndexBracketStore.getState().reload()   // OCO monitors (entry / SL / target state)
     }, ms))
   })
 }
 
-// INDEX brackets are their own overlay — just refresh the list for that index and
-// toast the transition; the chart layer re-renders from the reloaded state.
-function handleIndexEvent(e: OcoEventPayload) {
-  reloadBurst(e.indexName) // catch the broker fill (position close), not just the placed order
-  if (e.event === 'ENTRY_FILLED') toast.success(`Entry filled · ${e.symbolName}`)
-  else if (e.event === 'EXECUTED') toast.success(`${legLabel(e.leg)} hit · ${e.symbolName}`)
-  else if (e.event === 'REJECTED') toast.error(`${legLabel(e.leg)} rejected${e.message ? `: ${e.message}` : ''}`)
+// ── Toasts ───────────────────────────────────────────────────────────────────
+// Purely informational; state comes from the reconcile above. Derive a message
+// from whichever frame shape arrived.
+function toastForStatus(e: OrderStatusPayload) {
+  const sym = e.tradingSymbol
+  const st = e.status.toUpperCase()
+  if (st === 'COMPLETE' || st === 'COMPLETED' || st === 'FILLED') toast.success(`Order executed · ${sym}`)
+  else if (st === 'REJECTED') toast.error(`Order rejected · ${sym}${e.rejectionRegion?.trim() ? `: ${e.rejectionRegion.trim()}` : ''}`)
+  else if (st === 'CANCELLED' || st === 'CANCELED') toast(`Order cancelled · ${sym}`)
+  // OPEN / PENDING / TRIGGER_PENDING → resting order; no toast (reconcile shows it).
 }
 
-/** Clear both on-chart SL/Target lines mirrored for this symbol. */
-function clearLinesForSymbol(symbolName: string) {
-  const { positions } = useTradeStore.getState()
-  for (const [id, p] of Object.entries(positions)) {
-    if (p.symbolKey === symbolName) { clearStop(id); clearTarget(id) }
-  }
-}
-
-/** Clear just one leg's line for this symbol. */
-function clearLegForSymbol(symbolName: string, leg: 'SL' | 'TGT') {
-  const { positions } = useTradeStore.getState()
-  for (const [id, p] of Object.entries(positions)) {
-    if (p.symbolKey !== symbolName) continue
-    if (leg === 'SL') clearStop(id)
-    else clearTarget(id)
-  }
+function toastForLegacy(e: OcoEventPayload) {
+  const leg = e.leg === 'SL' ? 'Stop-loss' : e.leg === 'TGT' ? 'Target' : e.leg === 'ENTRY' ? 'Entry' : 'Bracket'
+  const sym = e.symbolName
+  if (e.event === 'ENTRY_FILLED') toast.success(`Entry filled · ${sym}`)
+  else if (e.event === 'EXECUTED') toast.success(`${leg} hit · ${sym}`)
+  else if (e.event === 'REJECTED') toast.error(`${leg} rejected${e.message ? `: ${e.message}` : ''} · ${sym}`)
+  // CANCELLED → silent; the line simply disappears on reconcile.
 }
 
 export function handleOcoEvent(payload: unknown) {
-  // TEMP DEBUG: print every OCO frame to the browser console so the raw event
-  // (leg / event / status / symbol) is visible even though WS frames don't show
-  // as network calls. Open DevTools → Console and copy the "[OCO WS]" lines.
+  // TEMP DEBUG: every OCO frame to the console (WS frames don't show as network
+  // calls). Open DevTools → Console and copy the "[OCO WS]" lines.
   try { console.log('[OCO WS]', JSON.stringify(payload)) } catch { console.log('[OCO WS]', payload) }
 
+  if (!payload || typeof payload !== 'object') return
+
+  // New status frame (raw broker order-status). Reconcile + status toast.
+  if (isOrderStatusPayload(payload)) {
+    reconcileFromApi()
+    toastForStatus(payload)
+    return
+  }
+
+  // Legacy OcoEventPayload (still emitted by the service on user-cancel, and as a
+  // fallback until the backend fully switches to status frames). Same reconcile.
   const e = payload as OcoEventPayload
-  if (!e || typeof e !== 'object' || !e.symbolName || !e.event) return
-
-  // Index brackets have their own overlay + store.
-  if (e.monitorType === 'INDEX' || e.leg === 'ENTRY' || e.leg === 'BRACKET') { handleIndexEvent(e); return }
-
-  // Monitor no longer ACTIVE → nothing is being watched, so both lines go.
-  const monitorInactive = e.status === 'CANCELLED' || e.status === 'COMPLETED'
-
-  if (e.event === 'EXECUTED') {
-    clearLinesForSymbol(e.symbolName)
-    toast.success(`${legLabel(e.leg)} hit — exit order placed`)
-    reloadBurst() // position closes when the broker FILLS the exit, a moment later
-    return
-  }
-
-  if (e.event === 'REJECTED') {
-    if (monitorInactive) clearLinesForSymbol(e.symbolName)
-    else clearLegForSymbol(e.symbolName, e.leg)
-    toast.error(`${legLabel(e.leg)} order rejected${e.message ? `: ${e.message}` : ''} — removed; position unprotected`)
-    reloadBurst()
-    return
-  }
-
-  if (e.event === 'CANCELLED') {
-    if (monitorInactive) clearLinesForSymbol(e.symbolName)
-    else clearLegForSymbol(e.symbolName, e.leg)
-    reloadBurst()
-  }
+  if (!e.event || !e.symbolName) return
+  reconcileFromApi()
+  toastForLegacy(e)
 }

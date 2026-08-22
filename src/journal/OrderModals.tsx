@@ -232,17 +232,19 @@ export function EditOrderModal({ order, onClose, onSaved }: {
   const [qty, setQty] = useState(String(order.quantity))
   const [price, setPrice] = useState(String(order.price))
   const [orderType, setOrderType] = useState(order.orderType || 'LMT')
+  const [symbol, setSymbol] = useState(order.symbolName)
   const [broker, setBroker] = useState(order.brokerName || '')
   const [group, setGroup] = useState(order.groupName || 'MANUAL')
   const [busy, setBusy] = useState(false)
 
   const submit = async () => {
+    if (!symbol.trim()) { toast.error('Symbol is required'); return }
     setBusy(true)
     try {
       await updateOrder(order.id, {
         price: Number(price) || 0, id: order.id, userId: order.userId,
         brokerName: broker || order.brokerName,
-        indexName: order.indexName, symbolName: order.symbolName, orderId: order.orderId,
+        indexName: order.indexName, symbolName: symbol.trim(), orderId: order.orderId,
         quantity: Number(qty) || 0, orderStatus: order.orderStatus, txnType: side,
         orderType, placedTime: order.placedTime,
         groupName: apiGroup(strategyDisabled ? 'MANUAL' : group),
@@ -254,6 +256,9 @@ export function EditOrderModal({ order, onClose, onSaved }: {
   return (
     <Shell title="Edit order" onClose={onClose} onSubmit={submit} submitLabel="Save changes" busy={busy}>
       <div className="col-span-2"><SideToggle side={side} onChange={setSide} /></div>
+      <Field label="Symbol" span2>
+        <SymbolSearch value={symbol} onChange={setSymbol} placeholder="Search or type symbol…" />
+      </Field>
       <Field label="Quantity"><input value={qty} onChange={(e) => setQty(e.target.value)} inputMode="numeric" className={inputCls} /></Field>
       <Field label="Price"><input value={price} onChange={(e) => setPrice(e.target.value)} inputMode="decimal" className={inputCls} /></Field>
       <Field label="Order type">
@@ -265,7 +270,7 @@ export function EditOrderModal({ order, onClose, onSaved }: {
       <Field label="Strategy / group" span2>
         <GroupSelect value={group} onChange={setGroup} disabled={strategyDisabled} />
       </Field>
-      <div className="col-span-2"><p className="text-[11px] text-slate-400 truncate">{order.symbolName} · #{order.id}</p></div>
+      <div className="col-span-2"><p className="text-[11px] text-slate-400 truncate">#{order.id}{order.orderId ? ` · ${order.orderId}` : ''}</p></div>
     </Shell>
   )
 }

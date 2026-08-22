@@ -14,6 +14,9 @@ import type {
   OptionContract, OptionQuote,
 } from '../types'
 import { bsPrice } from '../engine/blackScholes'
+import { fetchExpiries } from './httpExpiries'
+import { fetchChainSnapshot, fetchQuote, tokenToDate } from './httpChain'
+import { fetchIndexCandles } from './httpCandles'
 
 const FREQ_MIN: Record<Frequency, number> = { '1m': 1, '3m': 3, '5m': 5, '15m': 15, '30m': 30, '1h': 60 }
 const SESSION_START_MIN = 555   // 09:15
@@ -117,7 +120,8 @@ function contractId(index: IndexCode, expiryDate: string, optType: 'CE' | 'PE', 
 function parseContract(id: string): { index: IndexCode; expiryDate: string; optType: 'CE' | 'PE'; strike: number } | null {
   const p = id.split('_')
   if (p.length < 4) return null
-  return { index: p[0] as IndexCode, expiryDate: p[1], optType: p[2] as 'CE' | 'PE', strike: Number(p[3]) }
+  // Second segment may be an ISO date (synthetic) or an expiry token like 18AUG26 (real feed).
+  return { index: p[0] as IndexCode, expiryDate: tokenToDate(p[1]), optType: p[2] as 'CE' | 'PE', strike: Number(p[3]) }
 }
 
 export class MockOptionMarketDataProvider implements OptionMarketDataProvider {
@@ -130,30 +134,61 @@ export class MockOptionMarketDataProvider implements OptionMarketDataProvider {
     const istNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }))
     const marketClosed = istNow.getHours() > 15 || (istNow.getHours() === 15 && istNow.getMinutes() >= 30)
     const cursor = new Date(istNow); cursor.setHours(0, 0, 0, 0)
-    let added = 0
-    for (let i = 0; added < 30; i++) {
+    // Every trading weekday from 2020-01-01 up to today (newest first). Weekends are
+    // excluded; market holidays can't be known here (the real availability API will
+    // provide the exact tradable calendar).
+    const FLOOR = new Date('2020-01-01T00:00:00')
+    for (let i = 0; ; i++) {
       const d = new Date(cursor); d.setDate(d.getDate() - i)
+      if (d < FLOOR) break
       const dow = d.getDay()
       if (dow === 0 || dow === 6) continue // skip weekends
       const isToday = i === 0
       if (isToday && !marketClosed) continue // today only after close
       out.push({ date: fmtDate(d), label: d.toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' }), isToday })
-      added++
     }
     return out
   }
 
-  async expiries(index: IndexCode, date: string): Promise<Expiry[]> { return buildExpiries(index, date) }
+  // Real expiries from data.vtrader.in; fall back to synthetic only if unreachable
+  // so the workstation never blanks out.
+  async expiries(index: IndexCode, date: string): Promise<Expiry[]> {
+    try {
+      const real = await fetchExpiries(index, date)
+      if (real.length) return real
+    } catch { /* offline / CORS / 5xx → synthetic fallback below */ }
+    return buildExpiries(index, date)
+  }
 
+  // Real index candles; synthetic fallback if the feed is unreachable/empty.
   async underlyingSession(index: IndexCode, date: string, freq: Frequency): Promise<Candle[]> {
+    try {
+      const real = await fetchIndexCandles(index, date, freq)
+      if (real.length) return real
+    } catch { /* fall through */ }
     return resample(baseSeries(index, date), freq)
   }
 
   async underlyingUpTo(index: IndexCode, date: string, freq: Frequency, upToTs: number): Promise<Candle[]> {
+    try {
+      const real = await fetchIndexCandles(index, date, freq)
+      if (real.length) return real.filter(c => c.ts <= upToTs)
+    } catch { /* fall through */ }
     return resample(baseSeries(index, date), freq).filter(c => c.ts <= upToTs)
   }
 
+  // Real chain from data.vtrader.in; synthetic fallback keeps the workstation alive
+  // if the feed is unreachable.
   async chainAt(index: IndexCode, expiryId: string, _freq: Frequency, ts: number): Promise<OptionChainSnapshot> {
+    const expiryDate = expiryId.split('-').slice(1).join('-')
+    try {
+      const real = await fetchChainSnapshot(index, expiryDate, ts)
+      if (real && real.rows.length) return real
+    } catch { /* offline / CORS / 5xx → synthetic below */ }
+    return this.syntheticChain(index, expiryId, ts)
+  }
+
+  private syntheticChain(index: IndexCode, expiryId: string, ts: number): OptionChainSnapshot {
     const expiryDate = expiryId.split('-').slice(1).join('-')
     const date = new Date(ts).toLocaleString('sv', { timeZone: 'Asia/Kolkata' }).slice(0, 10)
     const spot = spotAt(index, date, ts)
@@ -185,6 +220,11 @@ export class MockOptionMarketDataProvider implements OptionMarketDataProvider {
   async quoteAt(cid: string, ts: number): Promise<number> {
     const p = parseContract(cid)
     if (!p) return 0
+    // Real LTP for fills; synthetic BS fallback if the feed is unreachable.
+    try {
+      const real = await fetchQuote(p.index, p.expiryDate, cid, ts)
+      if (real != null) return real
+    } catch { /* fall through */ }
     const date = new Date(ts).toLocaleString('sv', { timeZone: 'Asia/Kolkata' }).slice(0, 10)
     const spot = spotAt(p.index, date, ts)
     const expiryEnd = istTs(p.expiryDate, SESSION_END_MIN)

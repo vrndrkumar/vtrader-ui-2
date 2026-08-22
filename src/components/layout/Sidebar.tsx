@@ -95,6 +95,7 @@ const NAV: NavEntry[] = [
     kind: 'group', id: 'admin', label: 'Admin', adminOnly: true,
     icon: <I><path d="M12 2L3 7l9 5 9-5-9-5z" /><path d="M3 17l9 5 9-5" /><path d="M3 12l9 5 9-5" /></I>,
     children: [
+      { kind: 'link', to: '/admin/control-panel/strategies', label: 'Control Panel', icon: <I><path d="M12 2L3 7l9 5 9-5-9-5z" /><path d="M3 17l9 5 9-5" /><path d="M3 12l9 5 9-5" /></I> },
       { kind: 'link', to: '/analytics', label: 'Analytics', icon: <I><line x1="18" y1="20" x2="18" y2="10" /><line x1="12" y1="20" x2="12" y2="4" /><line x1="6" y1="20" x2="6" y2="14" /></I> },
       { kind: 'link', to: '/signals', label: 'Signal Generator', icon: <I><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></I> },
       { kind: 'link', to: '/strategy-lab', label: 'Strategy Lab', icon: <I><path d="M9 3v6l-5 9a2 2 0 002 3h12a2 2 0 002-3l-5-9V3" /><path d="M7 3h10" /></I> },

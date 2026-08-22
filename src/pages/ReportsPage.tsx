@@ -87,7 +87,7 @@ function defaultDateRange() {
 const STANDARD_INDICES = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'SENSEX', 'BANKEX', 'MIDCPNIFTY']
 
 const DEFAULT_FILTERS: TradeFilters = {
-  brokerName: '', groupName: '', status: 'ALL', symbolSearch: '', indexName: '',
+  brokerName: '', groupNames: [], status: 'ALL', symbolSearch: '', indexNames: [],
   ...defaultDateRange(),
 }
 
@@ -348,17 +348,19 @@ export default function ReportsPage() {
       if (filters.status === 'CLOSED' && t.status !== 'CLOSED') return false
       if (filters.status === 'OPEN'   && t.status === 'CLOSED') return false
     }
-    if (filters.groupName === 'Manual') {
-      if (!t.group_name || !MANUAL_CODES.has(t.group_name)) return false
-    } else if (filters.groupName && t.group_name !== filters.groupName) return false
+    if (filters.groupNames.length) {
+      const isManual = !t.group_name || MANUAL_CODES.has(t.group_name)
+      const match = filters.groupNames.some((g) => g === 'Manual' ? isManual : t.group_name === g)
+      if (!match) return false
+    }
     if (filters.symbolSearch) {
       const q = filters.symbolSearch.toUpperCase()
       if (!t.symbol_name.toUpperCase().includes(q) && !t.group_name?.toUpperCase().includes(q)) return false
     }
-    if (filters.indexName) {
+    if (filters.indexNames.length) {
       const base = t.symbol_name?.split('_')[0] ?? ''
-      if (filters.indexName === 'EQ') { if (STANDARD_INDICES.includes(base)) return false }
-      else if (base !== filters.indexName) return false
+      const match = filters.indexNames.some((i) => i === 'EQ' ? !STANDARD_INDICES.includes(base) : base === i)
+      if (!match) return false
     }
     // Date filtering is handled server-side by the API (fromDate/toDate params).
     // Client-side date filtering is intentionally skipped to avoid UTC/IST timezone mismatch.
@@ -618,8 +620,8 @@ export default function ReportsPage() {
                 title="Index-wise P&L"
                 subtitle="Realized P&L comparison by index (closed trades)"
                 action={
-                  filters.indexName
-                    ? <span className="text-[10px] font-semibold px-2 py-1 rounded-full bg-brand-50 dark:bg-brand-900/20 text-brand-600 dark:text-brand-400 border border-brand-200 dark:border-brand-800">Filtered: {filters.indexName}</span>
+                  filters.indexNames.length
+                    ? <span className="text-[10px] font-semibold px-2 py-1 rounded-full bg-brand-50 dark:bg-brand-900/20 text-brand-600 dark:text-brand-400 border border-brand-200 dark:border-brand-800">Filtered: {filters.indexNames.join(', ')}</span>
                     : undefined
                 }
               >

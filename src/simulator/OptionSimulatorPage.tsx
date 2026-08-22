@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { clsx } from 'clsx'
 import { useSim } from './store'
+import { NAV_STEPS, type NavStep } from './store'
 import type { Frequency, IndexCode, OptType, PositionLeg, Side } from './types'
 import { bsGreeks } from './engine/blackScholes'
 import { computePayoffCurve, computeStats, inr, type OptionLeg } from '@/components/PayoffEChart'
@@ -67,12 +68,12 @@ function StatsBox() {
 
 // ── Replay bar (scrubber + quick jumps) ───────────────────────────────────────
 function ReplayBar() {
-  const { config, steps, cursor, status, speed, spot, realized, unrealized, reset, play, pause, seek, cycleSpeed, changeIndex, changeFrequency, events } = useSim()
-  const ts = steps[cursor]
+  const { config, steps, cursor, status, speed, spot, realized, unrealized, reset, play, pause, seek, cycleSpeed, changeIndex, changeFrequency, navStep, setNavStep, stepNav, events } = useSim()
   const total = realized + unrealized
   const pct = steps.length > 1 ? (cursor / (steps.length - 1)) * 100 : 0
-  const seekMin = (dm: number) => { if (!ts) return; const target = ts + dm * 60000; let b = 0; steps.forEach((t, i) => { if (Math.abs(t - target) < Math.abs(steps[b] - target)) b = i }); seek(b) }
-  const jump = 'h-6 px-1.5 rounded text-[11px] font-bold text-slate-500 dark:text-white/45 hover:bg-slate-100 dark:hover:bg-white/[0.06] tabular-nums'
+  const navLabel = navStep === 'D' ? '1 day' : navStep === 60 ? '1 hour' : `${navStep} min`
+  const jump = 'h-7 px-2 rounded-lg border border-slate-200 dark:border-white/[0.1] text-[11px] font-bold text-slate-500 dark:text-white/50 hover:bg-slate-50 dark:hover:bg-white/[0.06] tabular-nums'
+  const navBtn = 'h-7 w-7 grid place-items-center rounded-lg border border-slate-200 dark:border-white/[0.1] text-slate-600 dark:text-white/70 hover:bg-slate-50 dark:hover:bg-white/[0.06]'
   const evColor = (k: string) => k === 'EXIT' || k.includes('SL') ? '#dc2626' : k.includes('TARGET') || k === 'ENTRY' || k === 'ADD' ? '#16a34a' : '#818CF8'
   return (
     <div className="shrink-0 border-b border-slate-200 dark:border-white/[0.06] bg-white dark:bg-[#0b1220]">
@@ -97,14 +98,17 @@ function ReplayBar() {
         </div>
         {/* date + time picker */}
         <DateTimePicker />
-        {/* jump back */}
-        <div className="flex items-center gap-0.5">
+        {/* time navigation: SOD · ◀ · step · ▶ · EOD */}
+        <div className="flex items-center gap-1">
           <button onClick={() => seek(0)} className={jump} title="Start of day">SOD</button>
-          {[-60, -30, -15, -5, -1].map(m => <button key={m} onClick={() => seekMin(m)} className={jump}>{m < -59 ? '-1h' : `${m}m`}</button>)}
-        </div>
-        {/* jump fwd */}
-        <div className="flex items-center gap-0.5">
-          {[1, 5, 15, 30, 60].map(m => <button key={m} onClick={() => seekMin(m)} className={jump}>{m > 59 ? '+1h' : `+${m}m`}</button>)}
+          <button onClick={() => void stepNav(-1)} className={navBtn} title={`Backward ${navLabel}`}>
+            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.4"><path d="M15 18l-6-6 6-6" /></svg>
+          </button>
+          <PillSelect value={String(navStep)} onChange={v => setNavStep((v === 'D' ? 'D' : Number(v)) as NavStep)}
+            options={NAV_STEPS.map(s => ({ value: String(s), label: s === 'D' ? '1D' : s === 60 ? '1h' : `${s}m` }))} />
+          <button onClick={() => void stepNav(1)} className={navBtn} title={`Forward ${navLabel}`}>
+            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.4"><path d="M9 6l6 6-6 6" /></svg>
+          </button>
           <button onClick={() => seek(steps.length - 1)} className={jump} title="End of day">EOD</button>
         </div>
         {/* autoplay */}

@@ -14,9 +14,9 @@ export interface Filters {
   datePreset: DatePreset
   from: string; to: string
   broker: string
-  strategy: string
+  strategies: string[]     // [] = all; may include 'MANUAL'
   symbol: string
-  index: string           // '' = all; 'NIFTY' / 'BANKNIFTY' / …; 'EQ' = non-index
+  indexes: string[]        // [] = all; 'NIFTY' / … / 'EQ' = non-index
   instrument: InstrumentF
   outcome: Outcome
   status: StatusF
@@ -56,7 +56,7 @@ export function presetRange(p: DatePreset): { from: string; to: string } | null 
 export function defaultFilters(): Filters {
   const r = presetRange('month')!
   return {
-    datePreset: 'month', from: r.from, to: r.to, broker: '', strategy: '', symbol: '', index: '',
+    datePreset: 'month', from: r.from, to: r.to, broker: '', strategies: [], symbol: '', indexes: [],
     instrument: 'ALL', outcome: 'ALL', status: 'ALL', pnlMin: '', pnlMax: '', qtyMin: '', qtyMax: '',
     tags: [], hasNotes: 'ALL', source: 'ALL', review: 'ALL',
   }
@@ -65,7 +65,7 @@ export function defaultFilters(): Filters {
 /** Number of non-date filters currently active (for the "Filters" badge). */
 export function activeCount(f: Filters): number {
   let n = 0
-  if (f.broker) n++; if (f.strategy) n++; if (f.symbol) n++; if (f.index) n++
+  if (f.broker) n++; if (f.strategies.length) n++; if (f.symbol) n++; if (f.indexes.length) n++
   if (f.instrument !== 'ALL') n++; if (f.outcome !== 'ALL') n++; if (f.status !== 'ALL') n++
   if (f.pnlMin || f.pnlMax) n++; if (f.qtyMin || f.qtyMax) n++
   if (f.tags.length) n++; if (f.hasNotes !== 'ALL') n++; if (f.source !== 'ALL') n++; if (f.review !== 'ALL') n++
@@ -86,15 +86,15 @@ export function applyFilters(
   return trades.filter((t) => {
     const pnl = pnlOf(t)
     if (f.broker && t.broker_name !== f.broker) return false
-    if (f.strategy) {
-      if (f.strategy === 'MANUAL') { if (!isManual(t.group_name)) return false }
-      else if (t.group_name !== f.strategy) return false
+    if (f.strategies.length) {
+      const match = f.strategies.some((s) => s === 'MANUAL' ? isManual(t.group_name) : t.group_name === s)
+      if (!match) return false
     }
     if (f.symbol && !t.symbol_name?.toLowerCase().includes(f.symbol.toLowerCase())) return false
-    if (f.index) {
+    if (f.indexes.length) {
       const base = t.symbol_name?.split('_')[0] ?? ''
-      if (f.index === 'EQ') { if (STANDARD_INDICES.includes(base)) return false }
-      else if (base !== f.index) return false
+      const match = f.indexes.some((i) => i === 'EQ' ? !STANDARD_INDICES.includes(base) : base === i)
+      if (!match) return false
     }
     if (f.instrument !== 'ALL' && parseInstrument(t.symbol_name).kind !== f.instrument) return false
     if (f.outcome === 'WIN' && pnl <= 0) return false
@@ -123,8 +123,19 @@ export function applyFilters(
  * every relative preset; only 'custom' keeps its stored dates.
  */
 export function rehydratePreset(f: Filters): Filters {
-  const r = presetRange(f.datePreset)
-  return r ? { ...f, ...r } : f
+  const migrated = migrateFilters(f)
+  const r = presetRange(migrated.datePreset)
+  return r ? { ...migrated, ...r } : migrated
+}
+
+/** Migrate legacy single-value presets (strategy/index strings) to arrays. */
+function migrateFilters(f: Filters): Filters {
+  const legacy = f as Filters & { strategy?: string; index?: string }
+  return {
+    ...f,
+    strategies: Array.isArray(f.strategies) ? f.strategies : (legacy.strategy ? [legacy.strategy] : []),
+    indexes: Array.isArray(f.indexes) ? f.indexes : (legacy.index ? [legacy.index] : []),
+  }
 }
 
 // ── Saved filter presets ─────────────────────────────────────────────────────

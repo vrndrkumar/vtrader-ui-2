@@ -82,12 +82,12 @@ export interface UpdateOrderPayload {
 
 export interface TradeFilters {
   brokerName: string
-  groupName: string
+  groupNames: string[]   // [] = all; may include 'Manual'
   status: 'ALL' | 'OPEN' | 'CLOSED'
   symbolSearch: string
   dateFrom: string
   dateTo: string
-  indexName: string   // '' = all; 'NIFTY' / 'BANKNIFTY' / …; 'EQ' = non-index
+  indexNames: string[]   // [] = all; 'NIFTY' / … / 'EQ' = non-index
 }
 
 // ── Computed analytics ────────────────────────────────────────────────────────
