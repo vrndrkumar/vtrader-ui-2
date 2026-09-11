@@ -6,7 +6,7 @@ import { buildReport } from './report.js'
 import {
   ensureSchema, getLatestAnalysis, getHistory, queryUniverse, getFacets,
   getDashboard, getRankContext, getStandout, getFailures, getFailureSymbols, pruneOldSnapshots,
-  queryTransitions, getTransitionFacets, backfillTransitions,
+  queryTransitions, getTransitionFacets, backfillTransitions, enginePercentile,
 } from './analysisStore.js'
 import { conviction as convictionOf } from './engines.js'
 import { analyseSymbol, startBatch, stopBatch, jobStatus } from './batch.js'
@@ -19,6 +19,9 @@ import {
 const criState = () => ({ ...criCaptureState })
 import { ensureFundamentalsSchema, getFundamentals, fundamentalsHealth, prefetchFundamentals, prefetchState } from './fundamentals.js'
 import { ensurePaperSchema, capturePaperCohort, computeScorecard, getCohortHoldings, computeTransitionScorecard, computeTransitionOutcomes, transComputeState } from './paper.js'
+import { ensureSettingsSchema, getTimeframeMode, setTimeframeMode } from './settings.js'
+import { ensureOptionLabSchema, recordSignal, evaluateOpenOutcomes, getLiveSignals, getSignals, getMetrics, outcomeState, marketOpenNow } from './optionLab.js'
+import { runOptionSignals, runnerState } from './optionRunner.js'
 import { srZones } from './structure.js'
 
 const app = express()
@@ -31,6 +34,7 @@ const STARTED_AT = new Date().toISOString()
 const FEATURES = [
   'engine-v2.1', 'cri', 'nightly-batch', 'fundamentals-display',
   'fundamentals-filter', 'fundamentals-prefetch', 'gems-x-fundamentals',
+  'timeframe-mode', 'option-lab',
 ]
 app.get('/health', (_req, res) => res.json({ ok: true, service: 'insight-server', startedAt: STARTED_AT, features: FEATURES }))
 
@@ -90,6 +94,47 @@ app.post('/paper/transition-compute', async (_req, res) => {
 })
 app.get('/paper/transition-compute/status', (_req, res) => res.json({ ...transComputeState }))
 
+// ── Timeframe mode (admin feature flag): CURRENT (default) | BASE_FAST ────────
+// Global switch. Default CURRENT = today's behaviour for everyone. When an admin
+// sets BASE_FAST, the NEXT analysis batch computes on the 4H base and everyone
+// sees it seamlessly. Instantly reversible. Guarded by ADMIN_KEY when configured.
+const adminOk = (req) => !process.env.ADMIN_KEY || req.get('x-admin-key') === process.env.ADMIN_KEY
+app.get('/admin/timeframe-mode', async (_req, res) => {
+  try { res.json({ mode: await getTimeframeMode() }) } catch (e) { res.status(502).json({ error: e.message }) }
+})
+app.post('/admin/timeframe-mode', async (req, res) => {
+  if (!adminOk(req)) return res.status(403).json({ error: 'admin key required' })
+  const mode = String(req.query.mode || req.body?.mode || '').toUpperCase()
+  if (!['CURRENT', 'BASE_FAST'].includes(mode)) return res.status(400).json({ error: 'mode must be CURRENT or BASE_FAST' })
+  try {
+    await setTimeframeMode(mode)
+    res.json({ mode, note: 'Saved. Run POST /analyze/all (or wait for nightly) to recompute the universe under this mode; per-stock insight reflects it immediately.' })
+  } catch (e) { res.status(502).json({ error: e.message }) }
+})
+
+// ── Option Lab: log every suggested/would-be option trade + track outcomes ────
+app.post('/option-lab/signal', async (req, res) => {
+  try { res.json(await recordSignal(req.body || {})) } catch (e) { res.status(500).json({ error: e.message }) }
+})
+app.get('/option-lab/live', async (_req, res) => {
+  try { res.json({ rows: await getLiveSignals() }) } catch (e) { res.status(502).json({ error: e.message }) }
+})
+app.get('/option-lab/signals', async (req, res) => {
+  try { res.json({ rows: await getSignals(req.query) }) } catch (e) { res.status(502).json({ error: e.message }) }
+})
+app.get('/option-lab/metrics', async (req, res) => {
+  try { res.json(await getMetrics(req.query)) } catch (e) { res.status(502).json({ error: e.message }) }
+})
+app.post('/option-lab/evaluate', async (_req, res) => {
+  try { res.json(await evaluateOpenOutcomes()) } catch (e) { res.status(500).json({ error: e.message }) }
+})
+app.get('/option-lab/evaluate/status', (_req, res) => res.json({ ...outcomeState }))
+// Headless signal generation (server-side, like the stock batch) — manual trigger + status
+app.post('/option-lab/run', async (_req, res) => {
+  try { res.json(await runOptionSignals()) } catch (e) { res.status(500).json({ error: e.message }) }
+})
+app.get('/option-lab/run/status', (_req, res) => res.json({ ...runnerState }))
+
 app.get('/universe/facets', async (_req, res) => {
   try {
     res.json(await getFacets())
@@ -121,11 +166,15 @@ app.get('/stock/:symbol/insight', async (req, res) => {
   if (!symbol) return res.status(400).json({ error: 'symbol required' })
   try {
     const master = await getSymbol(symbol).catch(() => null)
-    let stored = req.query.refresh === '1' ? null : await getLatestAnalysis(symbol).catch(() => null)
+    // Admin live A/B: ?tf=CURRENT|BASE_FAST recomputes in that mode WITHOUT
+    // storing (preview only). Absent → normal stored behaviour (global mode).
+    const tfOverride = String(req.query.tf || '').toUpperCase()
+    const previewMode = ['CURRENT', 'BASE_FAST'].includes(tfOverride) ? tfOverride : null
+    let stored = (req.query.refresh === '1' || previewMode) ? null : await getLatestAnalysis(symbol).catch(() => null)
     let analysis = null
     if (!stored) {
-      analysis = await analyseSymbol(master ?? { symbol_code: symbol })
-      stored = await getLatestAnalysis(symbol).catch(() => null)
+      analysis = await analyseSymbol(master ?? { symbol_code: symbol }, previewMode ? { mode: previewMode, save: false } : {})
+      if (!previewMode) stored = await getLatestAnalysis(symbol).catch(() => null)
     }
     // chart context (cached candle fetch; daily/weekly/monthly from one series)
     let weeklyChart = null
@@ -144,14 +193,15 @@ app.get('/stock/:symbol/insight', async (req, res) => {
     const history = await getHistory(symbol, 30).catch(() => [])
     const rankContext = await getRankContext(symbol).catch(() => null)
     const finalAnalysis = analysis ?? unpackStored(stored)
-    // live conviction from current market percentile of the strongest engine
+    // live conviction — percentile measured among stocks ACTIVE in the strongest
+    // engine (not the whole universe, which inflated momentum/transition picks).
     let conviction = null
     if (finalAnalysis) {
       const fam = finalAnalysis.family ?? 'discovery'
-      const pct = rankContext?.[fam]?.market?.topPct != null ? 100 - rankContext[fam].market.topPct : null
+      const pct = await enginePercentile(symbol, fam).catch(() => null)
       conviction = convictionOf(finalAnalysis.scores, pct, finalAnalysis.scores.risk)
     }
-    const standout = await getStandout(symbol, rankContext, history).catch(() => [])
+    const standout = await getStandout(symbol, rankContext, history, finalAnalysis).catch(() => [])
     res.json({
       meta: master ?? { symbol_code: symbol, symbol_name: symbol },
       analysis: finalAnalysis,
@@ -379,6 +429,31 @@ scheduleNightly()
 ensureFundamentalsSchema()
   .then(() => console.log('fundamentals schema ready'))
   .catch((e) => console.error('⚠ fundamentals schema init failed:', e.message))
+
+ensureSettingsSchema()
+  .then(async () => console.log('settings schema ready — timeframe mode:', await getTimeframeMode()))
+  .catch((e) => console.error('⚠ settings schema init failed:', e.message))
+
+// Option Lab: schema + outcome evaluator every 3 min during market hours, plus a
+// post-close sweep so intraday trades get squared-off/EXPIRED and resolved.
+ensureOptionLabSchema()
+  .then(() => {
+    console.log('option-lab schema ready')
+    // Generate fresh signals every 2 min during market hours (headless — no tab needed)
+    setInterval(() => {
+      if (marketOpenNow()) runOptionSignals().catch((e) => console.error('option-lab run:', e.message))
+    }, 2 * 60 * 1000)
+    setInterval(() => {
+      if (marketOpenNow()) evaluateOpenOutcomes().catch((e) => console.error('option-lab evaluate:', e.message))
+    }, 3 * 60 * 1000)
+    setInterval(() => { // 15:45 IST sweep to close any still-open intraday trades
+      const ist = new Date(Date.now() + 5.5 * 3600e3)
+      if (ist.getUTCHours() === 15 && ist.getUTCMinutes() >= 45 && ist.getUTCMinutes() < 50) {
+        evaluateOpenOutcomes().catch((e) => console.error('option-lab EOD sweep:', e.message))
+      }
+    }, 4 * 60 * 1000)
+  })
+  .catch((e) => console.error('⚠ option-lab schema init failed:', e.message))
 
 // Strategy Lab: seed this week's cohort now (Wednesday start), then capture a
 // fresh cohort every Monday 09:30 IST when the market has settled.

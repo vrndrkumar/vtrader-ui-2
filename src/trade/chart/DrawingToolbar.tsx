@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { clsx } from 'clsx'
 import { useChartLayoutStore } from '../store/chartLayoutStore'
 import { engineRegistry } from './engineRegistry'
+import { getToolDefault } from './drawingDefaults'
 
 interface Tool { name: string; label: string; d: string; draw: boolean }
 
@@ -14,7 +15,7 @@ const TOOLS: Tool[] = [
   { name: 'horizontalStraightLine', label: 'Horizontal line', draw: true, d: 'M3 12h18M6 9v6M18 9v6' },
   { name: 'verticalStraightLine', label: 'Vertical line', draw: true, d: 'M12 3v18M9 6h6M9 18h6' },
   { name: 'parallelStraightLine', label: 'Parallel channel', draw: true, d: 'M4 15L20 6M4 20L20 11' },
-  { name: 'fibonacciLine', label: 'Fibonacci retracement', draw: true, d: 'M4 5h16M4 10h16M4 14h16M4 19h16' },
+  { name: 'fibRetracement', label: 'Fibonacci retracement', draw: true, d: 'M4 5h16M4 10h16M4 14h16M4 19h16' },
   { name: 'priceLine', label: 'Price line', draw: true, d: 'M3 12h12M15 9l5 3-5 3' },
   { name: 'simpleAnnotation', label: 'Text / note', draw: true, d: 'M6 5h12M12 5v14' },
 ]
@@ -25,7 +26,7 @@ export function DrawingToolbar() {
 
   const pick = (t: Tool) => {
     setSelected(t.name)
-    if (t.draw) engineRegistry.get(activeId)?.startDrawing(t.name)
+    if (t.draw) engineRegistry.get(activeId)?.startDrawing(t.name, getToolDefault(t.name))
   }
   const clearAll = () => engineRegistry.get(activeId)?.clearDrawings()
 

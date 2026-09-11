@@ -22,6 +22,11 @@ export type OptIndex = 'NIFTY' | 'BANKNIFTY' | 'SENSEX'
 const RECOMPUTE_MS = 3000
 const CANDLE_REFRESH_MS = 45_000
 
+// NOTE: Option-Lab logging is now done SERVER-SIDE by the headless runner
+// (insight-server/src/optionRunner.js) — the single source of truth, like Stock
+// Lab. The browser no longer posts signals, to avoid double-logging the same
+// decision from two producers.
+
 const fmt = (d: Date) => d.toISOString().slice(0, 10)
 
 async function fetchFresh(symbol: string, frequency: string, days: number): Promise<OCandle[]> {
@@ -40,8 +45,12 @@ async function fetchFresh(symbol: string, frequency: string, days: number): Prom
 function chainInput(index: string, expiry: string): ChainStrikeInput[] {
   return getSortedStrikes(index, expiry).map((strike) => {
     const row = getStrikeRow(index, expiry, strike)
-    const m = (c?: { ltp: number; volume: number; bidPrice: number; askPrice: number; symbol: string }) =>
-      c ? { ltp: c.ltp, volume: c.volume ?? 0, bid: c.bidPrice ?? 0, ask: c.askPrice ?? 0, symbol: c.symbol } : undefined
+    const m = (c?: { ltp: number; volume: number; bidPrice: number; askPrice: number; symbol: string; oi?: number; iv?: number; greeks?: { delta?: number; gamma?: number; theta?: number; vega?: number } }) =>
+      c ? {
+        ltp: c.ltp, volume: c.volume ?? 0, bid: c.bidPrice ?? 0, ask: c.askPrice ?? 0, symbol: c.symbol,
+        oi: c.oi ?? null, iv: c.iv ?? null,
+        delta: c.greeks?.delta ?? null, gamma: c.greeks?.gamma ?? null, theta: c.greeks?.theta ?? null, vega: c.greeks?.vega ?? null,
+      } : undefined
     return { strike, ce: m(row?.CE), pe: m(row?.PE) }
   })
 }
@@ -66,8 +75,18 @@ export function useOptionInsights(index: OptIndex) {
   vixRef.current = vixQ
   useEffect(() => { dirtyRef.current = true }, [spotQ?.ltp, vixQ?.ltp])
 
-  // index change → memory resets (a new instrument is a new conversation)
-  useEffect(() => { memoryRef.current = null }, [index])
+  // index change → reset everything tied to the previous instrument. Without
+  // this, stale candles from the old index (e.g. NIFTY) get evaluated under the
+  // new index's chain/spot (e.g. SENSEX) until the refetch lands — producing
+  // wrong pivots/levels (the "SENSEX S1 = 24,188" cross-wiring bug).
+  useEffect(() => {
+    memoryRef.current = null
+    candlesRef.current = { daily: [], m3: [], m5: [], m15: [], m30: [] }
+    vixPrevCloseRef.current = null
+    setReport(null)
+    setLoading(true)
+    dirtyRef.current = true
+  }, [index])
 
   // WS subscriptions (ref-counted by the shared manager)
   useEffect(() => {
@@ -140,6 +159,7 @@ export function useOptionInsights(index: OptIndex) {
         memoryRef.current = rep.memory
         setReport(rep)
         setLoading(false)
+        // (Option-Lab logging happens server-side now — see optionRunner.js)
       } catch (e) {
         console.error('option insights engine failed:', e)
       }

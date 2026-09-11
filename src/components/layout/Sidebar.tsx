@@ -3,6 +3,7 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { clsx } from 'clsx'
 import { useAuth } from '@/hooks/useAuth'
 import { ThemeToggle } from '@/components/ui/ThemeToggle'
+import { LauncherDock } from '@/trade/layout/LauncherDock'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -99,8 +100,14 @@ const NAV: NavEntry[] = [
       { kind: 'link', to: '/analytics', label: 'Analytics', icon: <I><line x1="18" y1="20" x2="18" y2="10" /><line x1="12" y1="20" x2="12" y2="4" /><line x1="6" y1="20" x2="6" y2="14" /></I> },
       { kind: 'link', to: '/signals', label: 'Signal Generator', icon: <I><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></I> },
       { kind: 'link', to: '/strategy-lab', label: 'Strategy Lab', icon: <I><path d="M9 3v6l-5 9a2 2 0 002 3h12a2 2 0 002-3l-5-9V3" /><path d="M7 3h10" /></I> },
+      { kind: 'link', to: '/insight/option-lab', label: 'Option Lab', icon: <I><path d="M9 3v6l-5 9a2 2 0 002 3h12a2 2 0 002-3l-5-9V3" /><path d="M7 3h10" /><circle cx="12" cy="15" r="1.5" /></I> },
       { kind: 'link', to: '/admin/option-simulator', label: 'Option Simulator', icon: <I><path d="M3 3v18h18" /><path d="M7 13l3-4 3 3 4-6" /><circle cx="7" cy="13" r="0.5" fill="currentColor" /></I> },
     ],
+  },
+
+  {
+    kind: 'link', to: '/admin/docs', label: 'Confluence', adminOnly: true,
+    icon: <I><path d="M4 4a2 2 0 012-2h9l5 5v13a2 2 0 01-2 2H6a2 2 0 01-2-2z" /><path d="M14 2v6h6M8 13h8M8 17h5" /></I>,
   },
 ]
 
@@ -353,6 +360,9 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           return <Leaf key={entry.to} item={entry} collapsed={collapsed} locked={locked} />
         })}
       </nav>
+
+      {/* ── Trade tool launchers (in the empty gap above the footer) ── */}
+      <LauncherDock collapsed={collapsed} />
 
       {/* ── Footer ── */}
       <div className="relative shrink-0 p-3 border-t border-slate-200/70 dark:border-white/[0.06]">

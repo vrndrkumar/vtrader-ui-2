@@ -5,10 +5,28 @@ import { netQty, dayPnl, totalPnl, type Position } from './types'
 import { inr, pnlCls, px } from './format'
 import { Stepper, ManageButton } from './Act'
 import { lotSizeFor } from '@/services/orders/lotSize'
+import { useGroupMonitorStore } from '@/trade/store/groupMonitorStore'
+import type { GroupLeg } from '@/api/groupMonitors'
 
 export function PositionsTab({ rows }: { rows: Position[] }) {
   const [selId, setSelId] = useState<string | null>(null)
   const sel = rows.find((p) => p.id === selId && p.status === 'OPEN') ?? null
+
+  // Multi-select for combined "group protect" (single index at a time).
+  const gm = useGroupMonitorStore()
+  const selectable = (p: Position) => p.status === 'OPEN' && netQty(p) !== 0
+  const selectedRows = rows.filter((p) => gm.selectedIds.includes(p.id))
+  // Running P&L exactly as shown in the table (realized + live unrealized). The
+  // monitor triggers on the CHANGE from this value at arm time.
+  const selPnl = selectedRows.reduce((a, p) => a + totalPnl(p), 0)
+  const openProtect = () => {
+    const legs: GroupLeg[] = selectedRows.map((p) => ({
+      brokerName: p.brokerName, brokerLabel: p.brokerLabel, symbolName: p.symbol, display: p.display, product: p.product,
+      lockedQty: netQty(p), lockedAvg: p.avgPrice, valueFactor: p.valueFactor,
+      armPrice: p.ltp, // live premium at arm — the P&L reference
+    }))
+    gm.openCreate(legs, gm.selIndex ?? selectedRows[0]?.indexName ?? '', selPnl)
+  }
 
   const totals = useMemo(() => rows.reduce((a, p) => ({ day: a.day + dayPnl(p), net: a.net + totalPnl(p) }), { day: 0, net: 0 }), [rows])
 
@@ -22,6 +40,7 @@ export function PositionsTab({ rows }: { rows: Position[] }) {
           <table className="w-full text-sm">
             <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-white/[0.03] text-[10px] uppercase tracking-wide text-slate-400">
               <tr>
+                <th className="w-9 px-2 py-2" aria-hidden />
                 <th className="text-left font-medium px-3 py-2">Instrument</th>
                 <th className="text-left font-medium px-3 py-2">Product</th>
                 <th className="text-right font-medium px-3 py-2">Qty</th>
@@ -41,6 +60,26 @@ export function PositionsTab({ rows }: { rows: Position[] }) {
                 return (
                   <tr key={p.id} onClick={() => !closed && setSelId(active ? null : p.id)}
                     className={clsx('group border-t border-slate-100 dark:border-slate-800/60', !closed && 'cursor-pointer', active ? 'bg-brand-50/60 dark:bg-brand-900/15' : 'hover:bg-slate-50 dark:hover:bg-white/5', closed && 'opacity-50')}>
+                    <td className="w-9 px-2 py-2" onClick={(e) => e.stopPropagation()}>
+                      {(() => {
+                        const checked = gm.isSelected(p.id)
+                        const blocked = !checked && gm.selIndex != null && p.indexName !== gm.selIndex
+                        const disabled = !selectable(p) || blocked
+                        return (
+                          <button
+                            type="button"
+                            disabled={disabled}
+                            onClick={() => gm.toggleSelect({ id: p.id, indexName: p.indexName })}
+                            title={blocked ? `Group protects one index — clear ${gm.selIndex} first` : checked ? 'Remove from protect' : 'Select for combined protect'}
+                            className={clsx('h-4 w-4 grid place-items-center rounded-[5px] border transition active:scale-90',
+                              checked ? 'bg-violet-500 border-violet-500 text-white shadow-sm shadow-indigo-900/20'
+                                : disabled ? 'border-slate-200 dark:border-slate-700 opacity-40 cursor-not-allowed'
+                                  : 'border-slate-300 dark:border-slate-600 hover:border-violet-400')}>
+                            {checked && <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 13l4 4L19 7" /></svg>}
+                          </button>
+                        )
+                      })()}
+                    </td>
                     <td className="px-3 py-2">
                       <div className="flex items-center gap-2">
                         <span className={clsx('px-1.5 py-0.5 rounded text-[9px] font-bold', n >= 0 ? 'bg-brand-50 text-brand-600 dark:bg-brand-900/30' : 'bg-red-50 text-red-600 dark:bg-red-900/30')}>{n >= 0 ? 'LONG' : 'SHORT'}</span>
@@ -71,6 +110,24 @@ export function PositionsTab({ rows }: { rows: Position[] }) {
             </tbody>
           </table>
         </div>
+
+        {/* Combined-protect action bar (appears while positions are selected) */}
+        {selectedRows.length > 0 && (
+          <div className="flex items-center gap-3 px-4 py-2 border-t border-violet-200 dark:border-violet-900/40 bg-gradient-to-r from-slate-50 to-violet-50/60 dark:from-white/[0.03] dark:to-violet-950/20 animate-slide-up">
+            <span className="inline-flex items-center gap-1.5 text-xs font-bold text-violet-700 dark:text-violet-300">
+              <span className="grid place-items-center h-5 min-w-5 px-1.5 rounded-full bg-violet-500 text-white text-[10px]">{selectedRows.length}</span>
+              {gm.selIndex} selected
+            </span>
+            <span className="text-xs text-slate-500 dark:text-slate-400">Running P&L <b className={clsx('tabular-nums', pnlCls(selPnl))}>{inr(selPnl, true)}</b></span>
+            <div className="flex-1" />
+            <button onClick={gm.clearSelection} className="h-8 px-3 rounded-lg text-xs font-semibold text-slate-500 hover:bg-white/60 dark:hover:bg-white/5 transition active:scale-95">Clear</button>
+            <button onClick={openProtect}
+              className="h-8 px-4 rounded-lg text-xs font-bold text-white bg-violet-600 hover:bg-violet-700 transition active:scale-95 inline-flex items-center gap-1.5">
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l8 3v6c0 4.5-3.2 7.8-8 9-4.8-1.2-8-4.5-8-9V6z" /></svg>
+              Protect
+            </button>
+          </div>
+        )}
 
         {/* Totals footer */}
         <div className="flex items-center justify-end gap-6 px-4 py-2 border-t border-slate-200 dark:border-slate-800 text-xs">

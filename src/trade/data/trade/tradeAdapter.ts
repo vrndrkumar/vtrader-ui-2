@@ -46,16 +46,17 @@ export function placeMarket(
 export function syncOcoMonitor(positionId: string) {
   const p = useTradeStore.getState().positions[positionId]
   if (!p) return
+  const brokerName = useBrokerStore.getState().accounts.find((a) => a.id === p.brokerId)?.brokerName
+  if (!brokerName) return
   const hasLeg = p.stopLoss != null || p.target != null
+  // Broker-aware: two brokers can hold the same strike, each with its OWN monitor.
   const monitorExists = useIndexBracketStore.getState().all.some(
-    (r) => r.monitorType !== 'INDEX' && r.symbolName === p.symbolKey
+    (r) => r.monitorType !== 'INDEX' && r.symbolName === p.symbolKey && String(r.brokerName ?? '') === brokerName
       && (r.entryStatus == null || r.entryStatus === 'FILLED'),
   )
   if (!hasLeg && !monitorExists) return // nothing to save, nothing to clear
   const long = p.netQty >= 0
   const posQty = Math.abs(p.netQty)
-  const brokerName = useBrokerStore.getState().accounts.find((a) => a.id === p.brokerId)?.brokerName
-  if (!brokerName) return
   void saveOcoMonitor({
     brokerName,
     indexName: p.symbolKey.split('_')[0],

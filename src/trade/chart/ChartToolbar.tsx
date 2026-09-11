@@ -129,7 +129,8 @@ function SymbolPicker({ active }: { active: ChartSymbol | null }) {
       onChange={(code) => {
         applySymbol(indexSymbolOf(code))
         useChartStore.getState().setSymbol(code) // keep the global index in sync (drives option sync)
-      }} />
+      }}
+      onPickSymbol={(symbol, name) => applySymbol({ key: symbol, candleSymbol: symbol, display: name, kind: 'INDEX' })} />
   )
 }
 

@@ -46,8 +46,9 @@ export interface ChartEngine {
   hasIndicator(name: string): boolean
   activeIndicators(): string[]
 
-  /** Enter draw mode for a drawing tool (e.g. 'segment', 'fibonacciLine'). */
-  startDrawing(name: string): void
+  /** Enter draw mode for a drawing tool (e.g. 'segment', 'fibonacciLine').
+   *  `styles` seeds the new drawing with the tool's saved default look. */
+  startDrawing(name: string, styles?: unknown): void
   clearDrawings(): void
 
   // ── Single-drawing editing (drives the floating TradingView-style toolbar) ──
@@ -81,6 +82,11 @@ export interface ChartEngine {
   priceToY(price: number): number | null
   /** Convert a y pixel back to a price within the price pane. */
   yToPrice(y: number): number | null
+  /** X pixel for a timestamp (continuous), null if unavailable. */
+  xForTime(ts: number): number | null
+  /** Visible x-axis ticks for a custom axis: date-boundary labels flagged so the
+   *  UI can highlight them apart from times, spread across the whole visible range. */
+  xAxisTicks(width: number): { x: number; label: string; isDate: boolean }[]
 
   resize(): void
   dispose(): void

@@ -7,6 +7,13 @@ import { StrategyBuilder } from './features/strategy/StrategyBuilder'
 import { realtime } from './data/realtime/realtimeService'
 import { applySymbol } from './store/chartLayoutStore'
 import { OrderWindow } from '@/components/order/OrderWindow'
+import { BasketPanel } from './basket/Basket'
+import { ProtectModal } from './features/protect/ProtectModal'
+import { GroupManager } from './features/protect/GroupManager'
+import { useGroupMonitorStore } from './store/groupMonitorStore'
+import { ScheduleBasketModal } from './basket/ScheduleBasketModal'
+import { ScheduledBasketManager } from './basket/ScheduledBasketManager'
+import { useScheduledBasketStore } from './store/scheduledBasketStore'
 import { ensureLotSizes } from '@/services/orders/lotSize'
 import { TradebookPanel } from './features/tradebook/TradebookPanel'
 import { SYMBOLS, type ChartSymbol } from './types/market'
@@ -23,6 +30,8 @@ export default function TradePage() {
   useEffect(() => {
     realtime.start()
     void ensureLotSizes() // preload index lot sizes for order quantity
+    void useGroupMonitorStore.getState().load() // load this user's active combined protects
+    void useScheduledBasketStore.getState().load() // load this user's scheduled baskets
     const unsubs = SYMBOLS.flatMap((s) => [realtime.subscribeOptionChain(s.code), realtime.subscribeIndexTick(s.code)])
     return () => unsubs.forEach((u) => u())
   }, [])
@@ -74,6 +83,11 @@ export default function TradePage() {
         </div>
       </div>
       <OrderWindow />
+      <BasketPanel />
+      <ProtectModal />
+      <GroupManager />
+      <ScheduleBasketModal />
+      <ScheduledBasketManager />
     </div>
   )
 }

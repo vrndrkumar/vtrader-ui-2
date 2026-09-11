@@ -23,6 +23,20 @@ import { CARD, TYPE, PRICE, AT, COLORS, money } from './tagStyles'
 const EMPTY_POS: Position[] = []
 const optType = (s: string) => (/_CE_/.test(s) ? 'CE' : /_PE_/.test(s) ? 'PE' : '')
 const strikeLabel = (s: string) => s.split('_').slice(-2).join(' ')
+
+// Stable per-broker accent colour + short label, so each broker's rows/lines are
+// instantly distinguishable when the same strike is held on multiple brokers.
+const BROKER_COLORS = ['#6366f1', '#0891b2', '#ca8a04', '#dc2626', '#7c3aed', '#059669', '#db2777', '#ea580c']
+const brokerColor = (b: string) => BROKER_COLORS[Math.abs([...(b || '?')].reduce((a, c) => a * 31 + c.charCodeAt(0), 7)) % BROKER_COLORS.length]
+const brokerShort = (b: string) => (b || '').replace(/\[.*\]/, '').trim().slice(0, 8).toUpperCase()
+
+function BrokerChip({ name }: { name: string }) {
+  const c = brokerColor(name)
+  return (
+    <span className="shrink-0 px-1 py-px rounded text-[9px] font-bold tracking-wide whitespace-nowrap" title={name}
+      style={{ color: c, background: `${c}1f`, border: `1px solid ${c}55` }}>{brokerShort(name)}</span>
+  )
+}
 // Index bias of the option position: bullish (LONG) for BUY-CE / SELL-PE.
 const biasOf = (p: Position): 'LONG' | 'SHORT' => {
   const t = optType(p.symbol); const long = netQty(p) > 0
@@ -45,23 +59,27 @@ export function IndexPositionMirror({ engineRef, index, ltp }: {
   useEffect(() => { void reload() }, [reload])
 
   const positions = tbPositions.filter((p) => p.status === 'OPEN' && p.indexName === index && netQty(p) !== 0 && !!optType(p.symbol))
-  const monitorFor = (sym: string) => ocoAll.find((r) => r.monitorType === 'INDEX' && r.entryStatus == null && r.symbolName === sym)
+  // Unique key per (broker, strike): two brokers can hold the SAME strike, each
+  // with its OWN index SL/Target monitor. Keying by symbol alone conflated them —
+  // the line/icon showed on both rows and cancel hit the wrong monitor.
+  const pkey = (p: Position) => `${p.brokerId}:${p.symbol}`
+  const monitorFor = (p: Position) => ocoAll.find((r) => r.monitorType === 'INDEX' && r.entryStatus == null && r.symbolName === p.symbol && String(r.brokerName ?? '') === p.brokerName)
 
   const wrapRef = useRef<HTMLDivElement>(null)
   const elMap = useRef(new Map<string, HTMLDivElement>())
   const priceMap = useRef(new Map<string, number>())
   const ovRef = useRef<Record<string, number>>({})
-  const dragRef = useRef<{ sym: string; leg: Leg } | null>(null)
+  const dragRef = useRef<{ pk: string; leg: Leg } | null>(null)
   const [, setTick] = useState(0)
   const rerender = () => setTick((t) => t + 1)
   const [dragging, setDragging] = useState<string | null>(null)
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = useState(true) // start minimized (header only)
 
   const num = (v: unknown) => (v == null ? null : Number(v))
-  const legLevel = (sym: string, leg: Leg): number | null => {
-    const k = `${sym}:${leg}`
+  const legLevel = (p: Position, leg: Leg): number | null => {
+    const k = `${pkey(p)}:${leg}`
     if (k in ovRef.current) return ovRef.current[k]
-    const m = monitorFor(sym)
+    const m = monitorFor(p)
     if (!m) return null
     const v = leg === 'sl' ? num(m.slTriggerPrice) : num(m.tgtTriggerPrice)
     const status = leg === 'sl' ? m.slStatus : m.tgtStatus
@@ -89,13 +107,13 @@ export function IndexPositionMirror({ engineRef, index, ltp }: {
   // Panel "SL"/"Target" → create the leg at a sensible index level; the resulting
   // line is then draggable on the chart to fine-tune.
   const addLeg = (p: Position, leg: Leg) => {
-    persist(p, leg === 'sl' ? defLevel(biasOf(p), 'sl') : legLevel(p.symbol, 'sl'), leg === 'tgt' ? defLevel(biasOf(p), 'tgt') : legLevel(p.symbol, 'tgt'))
+    persist(p, leg === 'sl' ? defLevel(biasOf(p), 'sl') : legLevel(p, 'sl'), leg === 'tgt' ? defLevel(biasOf(p), 'tgt') : legLevel(p, 'tgt'))
   }
   const removeLeg = (p: Position, leg: Leg) => {
-    persist(p, leg === 'sl' ? null : legLevel(p.symbol, 'sl'), leg === 'tgt' ? null : legLevel(p.symbol, 'tgt'))
+    persist(p, leg === 'sl' ? null : legLevel(p, 'sl'), leg === 'tgt' ? null : legLevel(p, 'tgt'))
   }
   const cancelAll = (p: Position) => {
-    const m = monitorFor(p.symbol)
+    const m = monitorFor(p)
     if (!m) return
     cancelIndexBracket(m.id as number | string).then(() => reload()).catch((e) => toast.error(errMsg(e)))
   }
@@ -115,8 +133,8 @@ export function IndexPositionMirror({ engineRef, index, ltp }: {
   // Only SL/Target lines live on the price scale.
   priceMap.current = new Map()
   for (const p of positions) {
-    const sl = legLevel(p.symbol, 'sl'); if (sl != null) priceMap.current.set(`${p.symbol}:sl`, sl)
-    const tg = legLevel(p.symbol, 'tgt'); if (tg != null) priceMap.current.set(`${p.symbol}:tgt`, tg)
+    const sl = legLevel(p, 'sl'); if (sl != null) priceMap.current.set(`${pkey(p)}:sl`, sl)
+    const tg = legLevel(p, 'tgt'); if (tg != null) priceMap.current.set(`${pkey(p)}:tgt`, tg)
   }
 
   useEffect(() => {
@@ -150,16 +168,16 @@ export function IndexPositionMirror({ engineRef, index, ltp }: {
       if (!d || !eng || !rect) return
       const price = eng.yToPrice(e.clientY - rect.top)
       if (price == null || price <= 0) return
-      ovRef.current[`${d.sym}:${d.leg}`] = +price.toFixed(2)
+      ovRef.current[`${d.pk}:${d.leg}`] = +price.toFixed(2)
       rerender()
     }
     const end = () => {
       const d = dragRef.current; dragRef.current = null; setDragging(null)
       if (!d) return
       const s = latest.current
-      const p = s.positions.find((x) => x.symbol === d.sym)
-      if (p) s.persist(p, s.legLevel(d.sym, 'sl'), s.legLevel(d.sym, 'tgt'))
-      delete ovRef.current[`${d.sym}:${d.leg}`]
+      const p = s.positions.find((x) => pkey(x) === d.pk)
+      if (p) s.persist(p, s.legLevel(p, 'sl'), s.legLevel(p, 'tgt'))
+      delete ovRef.current[`${d.pk}:${d.leg}`]
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', end)
@@ -168,7 +186,7 @@ export function IndexPositionMirror({ engineRef, index, ltp }: {
   }, [engineRef])
 
   const refCb = (id: string) => (el: HTMLDivElement | null) => { if (el) elMap.current.set(id, el); else elMap.current.delete(id) }
-  const startDrag = (sym: string, leg: Leg) => (e: React.PointerEvent) => { e.preventDefault(); e.stopPropagation(); dragRef.current = { sym, leg }; setDragging(`${sym}:${leg}`) }
+  const startDrag = (pk: string, leg: Leg) => (e: React.PointerEvent) => { e.preventDefault(); e.stopPropagation(); dragRef.current = { pk, leg }; setDragging(`${pk}:${leg}`) }
 
   if (!positions.length) return null
   const totalPnl = positions.reduce((a, p) => a + pnlOf(p), 0)
@@ -176,7 +194,7 @@ export function IndexPositionMirror({ engineRef, index, ltp }: {
   return (
     <div ref={wrapRef} className="absolute inset-0 z-10 overflow-hidden pointer-events-none">
       {/* Docked, collapsible Positions panel */}
-      <div className="absolute left-1.5 top-[62px] pointer-events-auto w-[312px] max-w-[calc(100%-16px)] rounded-xl bg-white/92 dark:bg-surface-dark/92 backdrop-blur-sm border border-slate-200 dark:border-slate-700 shadow-lg overflow-hidden">
+      <div className="absolute left-1.5 top-[62px] pointer-events-auto w-[352px] max-w-[calc(100%-16px)] rounded-xl bg-white/92 dark:bg-surface-dark/92 backdrop-blur-sm border border-slate-200 dark:border-slate-700 shadow-lg overflow-hidden">
         <button onClick={() => setCollapsed((c) => !c)} className="flex items-center gap-2 w-full px-2.5 py-1.5 bg-slate-50/80 dark:bg-white/5 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors">
           <span className="text-[11px] font-bold text-slate-600 dark:text-slate-200">Positions</span>
           <span className="text-[10px] font-bold px-1.5 rounded-full bg-slate-200 dark:bg-white/10 text-slate-500 dark:text-slate-300">{positions.length}</span>
@@ -185,12 +203,13 @@ export function IndexPositionMirror({ engineRef, index, ltp }: {
         </button>
         {!collapsed && positions.map((p) => {
           const long = netQty(p) > 0; const kind = long ? 'long' : 'short'
-          const sl = legLevel(p.symbol, 'sl'); const tg = legLevel(p.symbol, 'tgt')
+          const sl = legLevel(p, 'sl'); const tg = legLevel(p, 'tgt')
           const pnl = pnlOf(p); const hasOco = sl != null || tg != null
           return (
-            <div key={p.symbol} className="flex items-center gap-1.5 px-2 py-1.5 border-t border-slate-100 dark:border-slate-800">
-              <span className={clsx('shrink-0 px-1.5 py-px rounded border text-[10px] font-bold tabular-nums whitespace-nowrap text-center min-w-[50px]', TYPE[kind].badge)}>{long ? 'LONG' : 'SHORT'} {Math.abs(netQty(p))}</span>
-              <span className="shrink-0 min-w-[52px] text-[11px] font-semibold text-slate-500 dark:text-slate-300 whitespace-nowrap">{strikeLabel(p.symbol)}</span>
+            <div key={pkey(p)} className="flex items-center gap-1.5 px-2 py-1.5 border-t border-slate-100 dark:border-slate-800">
+              <span title={long ? 'Long' : 'Short'} className={clsx('shrink-0 px-1.5 py-px rounded border text-[10px] font-bold tabular-nums whitespace-nowrap text-center', TYPE[kind].badge)}>{long ? 'B' : 'S'} {Math.abs(netQty(p))}</span>
+              <BrokerChip name={p.brokerName} />
+              <span className="shrink-0 text-[11px] font-semibold text-slate-500 dark:text-slate-300 whitespace-nowrap">{strikeLabel(p.symbol)}</span>
               <span className={clsx('shrink-0 min-w-[50px] text-right text-[11px] font-bold tabular-nums whitespace-nowrap', pnl >= 0 ? 'text-emerald-600' : 'text-rose-600')}>{money(pnl)}</span>
               <span className="ml-auto flex items-center gap-1 shrink-0">
                 {sl == null && <MiniBtn tone="sl" onClick={() => addLeg(p, 'sl')} />}
@@ -209,22 +228,23 @@ export function IndexPositionMirror({ engineRef, index, ltp }: {
 
       {/* SL / Target lines at INDEX levels (draggable) */}
       {positions.map((p) => {
-        const sl = legLevel(p.symbol, 'sl'); const tg = legLevel(p.symbol, 'tgt')
+        const sl = legLevel(p, 'sl'); const tg = legLevel(p, 'tgt')
+        const pk = pkey(p)
         return (
-          <div key={`lines:${p.symbol}`}>
+          <div key={`lines:${pk}`}>
             {sl != null && (
-              <div ref={refCb(`${p.symbol}:sl`)} className="absolute left-0 right-0 top-0 opacity-0 will-change-transform">
+              <div ref={refCb(`${pk}:sl`)} className="absolute left-0 right-0 top-0 opacity-0 will-change-transform">
                 <div className="absolute left-0 right-0 -translate-y-1/2 flex items-center">
                   <div className="absolute inset-x-0 border-t border-dashed pointer-events-none" style={{ borderColor: COLORS.sl, opacity: 0.9 }} />
-                  <LineTag kind="sl" label="SL" value={sl} sub={strikeLabel(p.symbol)} dragging={dragging === `${p.symbol}:sl`} onDown={startDrag(p.symbol, 'sl')} onRemove={() => removeLeg(p, 'sl')} />
+                  <LineTag kind="sl" label="SL" value={sl} sub={strikeLabel(p.symbol)} broker={p.brokerName} dragging={dragging === `${pk}:sl`} onDown={startDrag(pk, 'sl')} onRemove={() => removeLeg(p, 'sl')} />
                 </div>
               </div>
             )}
             {tg != null && (
-              <div ref={refCb(`${p.symbol}:tgt`)} className="absolute left-0 right-0 top-0 opacity-0 will-change-transform">
+              <div ref={refCb(`${pk}:tgt`)} className="absolute left-0 right-0 top-0 opacity-0 will-change-transform">
                 <div className="absolute left-0 right-0 -translate-y-1/2 flex items-center">
                   <div className="absolute inset-x-0 border-t border-dashed pointer-events-none" style={{ borderColor: COLORS.tp, opacity: 0.9 }} />
-                  <LineTag kind="tp" label="Target" value={tg} sub={strikeLabel(p.symbol)} dragging={dragging === `${p.symbol}:tgt`} onDown={startDrag(p.symbol, 'tgt')} onRemove={() => removeLeg(p, 'tgt')} />
+                  <LineTag kind="tp" label="Target" value={tg} sub={strikeLabel(p.symbol)} broker={p.brokerName} dragging={dragging === `${pk}:tgt`} onDown={startDrag(pk, 'tgt')} onRemove={() => removeLeg(p, 'tgt')} />
                 </div>
               </div>
             )}
@@ -251,8 +271,8 @@ function MiniBtn({ tone, onClick }: { tone: 'sl' | 'tp'; onClick: () => void }) 
   )
 }
 
-function LineTag({ kind, label, value, sub, dragging, onDown, onRemove }: {
-  kind: 'sl' | 'tp'; label: string; value: number; sub: string
+function LineTag({ kind, label, value, sub, broker, dragging, onDown, onRemove }: {
+  kind: 'sl' | 'tp'; label: string; value: number; sub: string; broker?: string
   dragging: boolean; onDown: (e: React.PointerEvent) => void; onRemove: () => void
 }) {
   const color = kind === 'sl' ? COLORS.sl : COLORS.tp
@@ -261,6 +281,7 @@ function LineTag({ kind, label, value, sub, dragging, onDown, onRemove }: {
       <span className={clsx('px-1.5 py-px rounded border text-[10px] font-bold', TYPE[kind].badge)}>{label}</span>
       <span className={clsx('text-[10px]', AT)}>idx</span>
       <span className={clsx('text-[12px] font-extrabold tabular-nums', PRICE)}>{value.toFixed(2)}</span>
+      {broker && <BrokerChip name={broker} />}
       <span className={clsx('text-[9px]', AT)}>{sub}</span>
       <button title="Remove" onPointerDown={(e) => e.stopPropagation()} onClick={onRemove} className={clsx('h-5 w-5 grid place-items-center rounded-md hover:text-rose-500 hover:bg-black/5 dark:hover:bg-white/10', AT)} style={{ color }}>
         <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 6l12 12M18 6L6 18" /></svg>

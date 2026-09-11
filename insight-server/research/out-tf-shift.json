@@ -1,0 +1,211 @@
+{
+  "params": {
+    "N": 40,
+    "SYMBOLS": null,
+    "MINTO": 100,
+    "MOVE": 20,
+    "WINDOW": 20,
+    "FROM": "2020-01-01",
+    "HORIZONS": [
+      5,
+      10,
+      21
+    ]
+  },
+  "symbols": 40,
+  "totalBlasts": 841,
+  "configs": {
+    "CURRENT  (base D / turn W)": {
+      "agg": {
+        "signals": 689,
+        "h5": {
+          "n": 688,
+          "winRate": 19,
+          "avgRet": 1.81,
+          "avgMaxGain": 5.19,
+          "avgMaxDD": -2.7
+        },
+        "h10": {
+          "n": 688,
+          "winRate": 31.7,
+          "avgRet": 2.55,
+          "avgMaxGain": 7.45,
+          "avgMaxDD": -3.93
+        },
+        "h21": {
+          "n": 688,
+          "winRate": 50.6,
+          "avgRet": 4.06,
+          "avgMaxGain": 11.38,
+          "avgMaxDD": -5.66
+        }
+      },
+      "late": {
+        "blasts": 841,
+        "caught": 225,
+        "catchPct": 26.8,
+        "medLead": 17
+      }
+    },
+    "TURN-FAST(base D / turn D)": {
+      "agg": {
+        "signals": 1441,
+        "h5": {
+          "n": 1441,
+          "winRate": 14.9,
+          "avgRet": 0.76,
+          "avgMaxGain": 4.65,
+          "avgMaxDD": -3.23
+        },
+        "h10": {
+          "n": 1441,
+          "winRate": 28.2,
+          "avgRet": 1.19,
+          "avgMaxGain": 6.76,
+          "avgMaxDD": -4.73
+        },
+        "h21": {
+          "n": 1441,
+          "winRate": 44.4,
+          "avgRet": 3.02,
+          "avgMaxGain": 10.47,
+          "avgMaxDD": -6.66
+        }
+      },
+      "late": {
+        "blasts": 841,
+        "caught": 433,
+        "catchPct": 51.5,
+        "medLead": 14
+      }
+    },
+    "BASE-FAST(base 4H/ turn W)": {
+      "agg": {
+        "signals": 1757,
+        "h5": {
+          "n": 1756,
+          "winRate": 18.7,
+          "avgRet": 1.64,
+          "avgMaxGain": 5.21,
+          "avgMaxDD": -2.87
+        },
+        "h10": {
+          "n": 1756,
+          "winRate": 33,
+          "avgRet": 2.5,
+          "avgMaxGain": 7.72,
+          "avgMaxDD": -4.17
+        },
+        "h21": {
+          "n": 1756,
+          "winRate": 50.7,
+          "avgRet": 3.77,
+          "avgMaxGain": 11.52,
+          "avgMaxDD": -6
+        }
+      },
+      "late": {
+        "blasts": 841,
+        "caught": 306,
+        "catchPct": 36.4,
+        "medLead": 15
+      }
+    },
+    "SHIFTED  (base 4H/ turn D)": {
+      "agg": {
+        "signals": 2408,
+        "h5": {
+          "n": 2406,
+          "winRate": 15.4,
+          "avgRet": 0.73,
+          "avgMaxGain": 4.76,
+          "avgMaxDD": -3.29
+        },
+        "h10": {
+          "n": 2406,
+          "winRate": 29.6,
+          "avgRet": 1.53,
+          "avgMaxGain": 7,
+          "avgMaxDD": -4.75
+        },
+        "h21": {
+          "n": 2406,
+          "winRate": 47.1,
+          "avgRet": 3.51,
+          "avgMaxGain": 11.07,
+          "avgMaxDD": -6.56
+        }
+      },
+      "late": {
+        "blasts": 841,
+        "caught": 570,
+        "catchPct": 67.8,
+        "medLead": 12
+      }
+    },
+    "TURN-FAST+Q (D/D gated)": {
+      "agg": {
+        "signals": 168,
+        "h5": {
+          "n": 168,
+          "winRate": 11.3,
+          "avgRet": -0.08,
+          "avgMaxGain": 4.39,
+          "avgMaxDD": -4.01
+        },
+        "h10": {
+          "n": 168,
+          "winRate": 23.2,
+          "avgRet": 0.55,
+          "avgMaxGain": 6.21,
+          "avgMaxDD": -5.39
+        },
+        "h21": {
+          "n": 168,
+          "winRate": 40.5,
+          "avgRet": 1.94,
+          "avgMaxGain": 10.06,
+          "avgMaxDD": -7.66
+        }
+      },
+      "late": {
+        "blasts": 841,
+        "caught": 90,
+        "catchPct": 10.7,
+        "medLead": 19
+      }
+    },
+    "SHIFTED+Q  (4H/D gated)": {
+      "agg": {
+        "signals": 216,
+        "h5": {
+          "n": 216,
+          "winRate": 13.9,
+          "avgRet": 0.15,
+          "avgMaxGain": 4.47,
+          "avgMaxDD": -3.88
+        },
+        "h10": {
+          "n": 216,
+          "winRate": 25.9,
+          "avgRet": 1.21,
+          "avgMaxGain": 6.52,
+          "avgMaxDD": -5.03
+        },
+        "h21": {
+          "n": 216,
+          "winRate": 44.4,
+          "avgRet": 2.53,
+          "avgMaxGain": 10.16,
+          "avgMaxDD": -6.97
+        }
+      },
+      "late": {
+        "blasts": 841,
+        "caught": 101,
+        "catchPct": 12,
+        "medLead": 21
+      }
+    }
+  }
+}

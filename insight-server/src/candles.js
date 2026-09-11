@@ -99,3 +99,9 @@ export async function fetchAllTimeframes(symbol) {
 export function fetchDaily(symbol, fromDate = '2023-01-01') {
   return fetchRaw(symbol, 'D', fromDate, today())
 }
+
+/** 4H candles (60m resampled). Used by BASE_FAST timeframe mode. */
+export async function fetch4h(symbol, fromDate = daysAgo(220)) {
+  const h1 = await fetchRaw(symbol, '60', fromDate, today()).catch(() => [])
+  return resample4h(h1)
+}

@@ -185,36 +185,30 @@ export function executiveSummary(f, engines, badgeInfo, life, riskInfo) {
   const { discovery, transition, momentum } = engines
   const parts = []
 
-  // 1. Why interesting today (or why not)
-  const best = [
-    { name: 'Discovery', ev: discovery, s: discovery.score },
-    { name: 'Transition', ev: transition, s: transition.score },
-    { name: 'Momentum', ev: momentum, s: momentum.score },
-  ].sort((a, b) => b.s - a.s)[0]
-  const topEvidence = best.ev.items.slice(0, 2).map((i) => i.label.toLowerCase())
-  if (best.s >= 40 && topEvidence.length) {
-    parts.push(`This stock is on the radar because of ${topEvidence.join(' and ')}.`)
+  // Plain-language summary of the ACTUAL reasons — no engine names or scores.
+  const best = [discovery, transition, momentum].sort((a, b) => b.score - a.score)[0]
+  const topEvidence = best.items.slice(0, 2).map((i) => i.label.toLowerCase())
+  if (best.score >= 40 && topEvidence.length) {
+    parts.push(`This stock stands out for ${topEvidence.join(' and ')}.`)
   } else {
-    parts.push('No strong opportunity evidence at the moment — this profile is quiet across all three engines.')
+    parts.push('No strong technical evidence right now — the setup is quiet.')
   }
 
-  // 2. Strongest engine + stage
-  parts.push(`Conviction is strongest in the ${best.name} engine (${best.s}/100). ${life.earliness}.`)
+  // Stage, described in plain words (not engine terms)
+  const stage = life.stage === 'discovery'
+    ? 'It looks early — the move has not yet been widely recognised.'
+    : life.stage === 'transition'
+      ? 'It is turning — strength is building and recognition is beginning.'
+      : life.stage === 'momentum'
+        ? 'It is already a recognised leader — a later-stage move.'
+        : 'No clear opportunity stage yet.'
+  parts.push(stage)
 
-  // 3. Discovery-vs-momentum gap (the product's core question)
-  const gap = engines.discovery.score - engines.momentum.score
-  if (gap >= 20 && engines.discovery.score >= 50) {
-    parts.push('Early evidence is much stronger than current momentum — the market has NOT yet recognised this stock. That is the hidden-gem profile this platform exists to surface.')
-  } else if (-gap >= 20 && engines.momentum.score >= 50) {
-    parts.push('The trend is already recognised by the market — this is a later-stage opportunity, not an undiscovered one.')
-  }
-
-  // 4. Biggest strength & biggest risk
-  const strongest = best.ev.items[0]
+  const strongest = best.items[0]
   if (strongest) parts.push(`Biggest strength: ${strongest.label.toLowerCase()}.`)
   const topRisk = riskInfo.factors.find((x) => x.level === 'high') ?? riskInfo.factors[0]
-  if (topRisk) parts.push(`Biggest risk: ${topRisk.label.toLowerCase()} (risk ${riskInfo.level}).`)
-  else parts.push('No elevated risk factors detected.')
+  if (topRisk) parts.push(`Main risk to watch: ${topRisk.label.toLowerCase()}.`)
+  else parts.push('No elevated risks detected.')
 
   return parts.join(' ')
 }

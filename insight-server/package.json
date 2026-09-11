@@ -8,6 +8,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
+    "build:engine": "npx --yes esbuild@0.23.1 ../src/insight/options/engine.ts --bundle --format=esm --platform=node --outfile=src/optionEngine.bundle.js",
     "test:engine": "node test/engine.offline.test.js",
     "research": "node research/run.js",
     "research:phase2": "node research/phase2.js",

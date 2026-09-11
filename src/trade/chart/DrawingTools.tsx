@@ -3,6 +3,7 @@ import { clsx } from 'clsx'
 import { useChartLayoutStore } from '../store/chartLayoutStore'
 import { engineRegistry } from './engineRegistry'
 import { setPendingText } from './customOverlays'
+import { getToolDefault } from './drawingDefaults'
 
 interface Tool { name: string; label: string; d: string; text?: boolean; soon?: boolean }
 interface Section { label?: string; tools: Tool[] }
@@ -23,7 +24,7 @@ const GROUPS: Group[] = [
     { name: 'priceLine', label: 'Price line', d: 'M3 12h12M15 9l5 3-5 3' },
   ] }] },
   { key: 'fib', label: 'Fibonacci', d: 'M4 5h16M4 10h16M4 14h16M4 19h16', sections: [{ tools: [
-    { name: 'fibonacciLine', label: 'Fib retracement', d: 'M4 5h16M4 10h16M4 14h16M4 19h16' },
+    { name: 'fibRetracement', label: 'Fib retracement', d: 'M4 5h16M4 10h16M4 14h16M4 19h16' },
   ] }] },
   { key: 'forecast', label: 'Forecast & Measure', d: 'M6 20V4h9l-2 3 2 3H6', sections: [
     { label: 'Forecasting', tools: [
@@ -58,7 +59,7 @@ const ALL: Record<string, Tool> = {}
 GROUPS.forEach((g) => g.sections.forEach((s) => s.tools.forEach((t) => { ALL[t.name] = t })))
 
 const FAV_KEY = 'vt_draw_favs'
-const loadFavs = (): string[] => { try { const r = localStorage.getItem(FAV_KEY); if (r) return JSON.parse(r) } catch { /* */ } return ['segment', 'horizontalStraightLine', 'fibonacciLine'] }
+const loadFavs = (): string[] => { try { const r = localStorage.getItem(FAV_KEY); if (r) return JSON.parse(r).map((n: string) => (n === 'fibonacciLine' ? 'fibRetracement' : n)) } catch { /* */ } return ['segment', 'horizontalStraightLine', 'fibRetracement'] }
 
 const Icon = ({ d, className }: { d: string; className?: string }) => (
   <svg viewBox="0 0 24 24" className={className ?? 'h-[18px] w-[18px]'} fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d={d} /></svg>
@@ -76,7 +77,7 @@ export function DrawingTools() {
   const pick = (t: Tool) => {
     if (t.soon) return
     if (t.text) { const v = window.prompt('Enter text', 'Text'); if (v == null) return; setPendingText(v || 'Text') }
-    engineRegistry.get(activeId)?.startDrawing(t.name)
+    engineRegistry.get(activeId)?.startDrawing(t.name, getToolDefault(t.name))
     setSelected(t.name); setOpenGroup(null)
   }
   const toggleFav = (name: string) => setFavs((f) => {

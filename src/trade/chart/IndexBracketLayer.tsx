@@ -52,9 +52,16 @@ export function IndexBracketLayer({ engineRef, index, symbol, ltp }: {
 
   const posFor = (sym: string) => tbPositions.find((p) => p.symbol === sym && p.status === 'OPEN')
 
+  // The entry has effectively FILLED if the monitor says so, OR it was PLACED and
+  // an open position now exists for the strike. This covers a limit entry that
+  // fills LATER than the backend's status poll (so entryStatus lingers at PLACED)
+  // — the position is the source of truth, so we flip the tag to a live position
+  // instead of showing a stale "PENDING".
+  const isArmed = (b: IndexBracket) => b.entryStatus === 'FILLED' || (b.entryStatus === 'PLACED' && !!posFor(b.symbolName))
+
   // Subscribe to filled brackets' option ticks so unrealised P&L updates live
   // (realized comes from the positions API; unrealized is computed off the tick).
-  const filledKey = brackets.filter((b) => b.entryStatus === 'FILLED').map((b) => b.symbolName).sort().join(',')
+  const filledKey = brackets.filter(isArmed).map((b) => b.symbolName).sort().join(',')
   useEffect(() => {
     if (!filledKey) return
     const unsubs = filledKey.split(',').map((sym) => realtime.subscribeSymbolTick(sym, { prime: false }))
@@ -168,7 +175,7 @@ export function IndexBracketLayer({ engineRef, index, symbol, ltp }: {
   // monitor(s); FILLED (running position) → cancel the monitor(s) then square off
   // every broker's position for the strike (MKT), like the exit button.
   const closeOrCancel = (b: IndexBracket) => {
-    const armed = b.entryStatus === 'FILLED'
+    const armed = isArmed(b)
     Promise.all(idsOf(b.id).map((x) => cancelIndexBracket(x)))
       .then(() => {
         if (armed) tbPositions.filter((p) => p.symbol === b.symbolName && p.status === 'OPEN').forEach((p) => useTradebookStore.getState().squareOff(p.id))
@@ -193,13 +200,17 @@ export function IndexBracketLayer({ engineRef, index, symbol, ltp }: {
     const arr = groupsMap.get(k)
     if (arr) arr.push(b); else groupsMap.set(k, [b])
   }
-  const groupReps = [...groupsMap.values()].map((g) => g[0])
+  // On a STRIKE chart, once a bracket's entry has produced a position, the order
+  // layer (ChartOrderLayer) owns the position + SL/Target — so hide the bracket
+  // here to avoid a duplicate strip. (On the INDEX chart, `symbol` is unset and
+  // this layer keeps owning the filled bracket.)
+  const groupReps = [...groupsMap.values()].map((g) => g[0]).filter((b) => !(symbol && isArmed(b)))
   groupIdsRef.current = new Map(groupReps.map((rep) => [rep.id, (groupsMap.get(`${rep.symbolName}|${rep.entryTriggerPrice}`) ?? [rep]).map((x) => x.id)]))
 
   return (
     <div ref={wrapRef} className="absolute inset-0 z-10 overflow-hidden pointer-events-none">
       {groupReps.map((b) => {
-        const armed = b.entryStatus === 'FILLED'
+        const armed = isArmed(b)
         const pos = armed ? posFor(b.symbolName) : undefined
         const long = pos ? netQty(pos) > 0 : b.direction === 'LONG'
         const sl = eff(b, 'sl'); const tg = eff(b, 'tgt')

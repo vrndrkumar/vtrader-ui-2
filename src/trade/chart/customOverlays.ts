@@ -3,6 +3,7 @@
 // drawing rail can offer a professional set.
 
 import { registerOverlay, type OverlayCreateFiguresCallbackParams, type OverlayFigure } from 'klinecharts'
+import { readFib } from './fibConfig'
 
 const BLUE = '#3b82f6'
 const GREEN_FILL = 'rgba(34,197,94,0.15)'
@@ -68,7 +69,50 @@ function boxMeasure(coords: P[], points: Params['overlay']['points'], mode: 'pri
   ]
 }
 
+// TradingView-style Fibonacci retracement: per-level enable + color, price/ratio
+// labels, extend / reverse, optional trend line. Config comes from styles.fib
+// (see fibConfig.ts); the two endpoints are draggable (needDefaultPointFigure).
+function fibFigures({ coordinates, bounding, overlay, precision }: Params): OverlayFigure[] {
+  if (coordinates.length < 2) return []
+  const pts = overlay.points
+  const v0 = pts[0]?.value, v1 = pts[1]?.value
+  if (typeof v0 !== 'number' || typeof v1 !== 'number') return []
+  const cfg = readFib(overlay.styles)
+  const c0 = coordinates[0], c1 = coordinates[1]
+  const yDif = c0.y - c1.y
+  const vDif = v0 - v1
+  const minX = Math.min(c0.x, c1.x), maxX = Math.max(c0.x, c1.x)
+  const startX = (cfg.extend === 'both' || cfg.extend === 'left') ? 0 : minX
+  const endX = (cfg.extend === 'right' || cfg.extend === 'both') ? bounding.width : maxX
+  const prec = (precision as { price?: number })?.price ?? 2
+  const figs: OverlayFigure[] = []
+  // Lines are event-responsive so clicking anywhere on the fib SELECTS it (opens
+  // the edit toolbar) — same as TradingView. Only the text labels ignore events.
+  if (cfg.trend.on) figs.push({ type: 'line', attrs: { coordinates: [{ x: c0.x, y: c0.y }, { x: c1.x, y: c1.y }] }, styles: { color: cfg.trend.color, style: 'dashed', size: 1 } })
+  for (const lv of cfg.levels) {
+    if (!lv.on) continue
+    const rr = cfg.reverse ? 1 - lv.r : lv.r
+    const y = c1.y + yDif * rr
+    const price = v1 + vDif * rr
+    figs.push({ type: 'line', attrs: { coordinates: [{ x: startX, y }, { x: endX, y }] }, styles: { color: lv.color, size: 1 } })
+    const parts: string[] = []
+    if (cfg.showRatio) parts.push(String(lv.r))
+    if (cfg.showPrice) parts.push(`(${price.toFixed(prec)})`)
+    const text = parts.join(' ')
+    // TradingView-style label: clean text (NO background box — klinecharts'
+    // default overlay text style paints a blue box, so we force it transparent),
+    // per-level colour, right-aligned at the line end, sitting just above the line.
+    if (text) figs.push({
+      type: 'text', ignoreEvent: true,
+      attrs: { x: endX - 4, y: y - 2, text, align: 'right', baseline: 'bottom' },
+      styles: { color: lv.color, size: 11, family: 'inherit', weight: 'normal', backgroundColor: 'transparent', borderColor: 'transparent', borderSize: 0, paddingLeft: 0, paddingRight: 0, paddingTop: 0, paddingBottom: 0 },
+    })
+  }
+  return figs
+}
+
 const OVERLAYS = [
+  { name: 'fibRetracement', totalStep: 3, createPointFigures: fibFigures },
   { name: 'shapeRect', totalStep: 3, createPointFigures: ({ coordinates, overlay }: Params): OverlayFigure[] => coordinates.length < 2 ? [] : [{ type: 'rect', attrs: { x: Math.min(coordinates[0].x, coordinates[1].x), y: Math.min(coordinates[0].y, coordinates[1].y), width: Math.abs(coordinates[1].x - coordinates[0].x), height: Math.abs(coordinates[1].y - coordinates[0].y) }, styles: st(overlay).polygon?.color || st(overlay).rect?.color ? { style: 'stroke_fill', color: fillColor(overlay, 'rgba(59,130,246,0.12)'), borderColor: lineColor(overlay), borderSize: lineSize(overlay), borderStyle: lineDash(overlay) } : { style: 'stroke', borderColor: lineColor(overlay), borderSize: lineSize(overlay), borderStyle: lineDash(overlay) } }] },
   { name: 'shapeCircle', totalStep: 3, createPointFigures: ({ coordinates, overlay }: Params): OverlayFigure[] => coordinates.length < 2 ? [] : [{ type: 'circle', attrs: { x: coordinates[0].x, y: coordinates[0].y, r: Math.hypot(coordinates[1].x - coordinates[0].x, coordinates[1].y - coordinates[0].y) }, styles: st(overlay).circle?.color ? { style: 'stroke_fill', color: fillColor(overlay, 'rgba(59,130,246,0.12)'), borderColor: lineColor(overlay), borderSize: lineSize(overlay), borderStyle: lineDash(overlay) } : { style: 'stroke', borderColor: lineColor(overlay), borderSize: lineSize(overlay), borderStyle: lineDash(overlay) } }] },
   { name: 'shapeText', totalStep: 2, createPointFigures: ({ coordinates, overlay }: Params): OverlayFigure[] => !coordinates.length ? [] : [{ type: 'text', attrs: { x: coordinates[0].x, y: coordinates[0].y, text: (overlay?.extendData as string) || pendingText }, styles: { color: textColor(overlay), size: textSize(overlay), weight: 'bold' } }] },

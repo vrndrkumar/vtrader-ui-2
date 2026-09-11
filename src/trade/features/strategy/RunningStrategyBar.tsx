@@ -12,6 +12,7 @@ import type { Trade } from '@/types/reports'
 import { tagFallbackColor } from '@/journal/TagCombobox'
 import { defaultLegQty } from '../../store/strategyStore'
 import type { OptType, Side, StrategyLeg } from '../../types/options'
+import { useBrokerStore } from '@/store/brokerStore'
 
 const BROKER_COLORS = ['#6366f1', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899']
 function brokerColor(name: string): string {
@@ -112,7 +113,14 @@ function BrokerMultiSelect({ brokers, selected, onChange, disabled }: { brokers:
     document.addEventListener('mousedown', h); return () => document.removeEventListener('mousedown', h)
   }, [])
   const allSelected = selected.size === 0 || selected.size === brokers.length
-  function toggle(b: string) { const next = new Set(selected); if (next.has(b)) next.delete(b); else next.add(b); onChange(next.size === brokers.length ? new Set() : next) }
+  function toggle(b: string) {
+    // In the "all selected" state (stored as an empty set), materialize the full
+    // set first so clicking one broker DESELECTS just that one — instead of the
+    // old bug where add() on an empty set left only the clicked broker selected.
+    const next = allSelected ? new Set(brokers) : new Set(selected)
+    if (next.has(b)) next.delete(b); else next.add(b)
+    onChange(next.size === brokers.length ? new Set() : next) // full = "all" (empty)
+  }
   return (
     <div ref={rootRef} className="relative">
       <button onClick={() => !disabled && setOpen(o => !o)} disabled={disabled}
@@ -127,7 +135,7 @@ function BrokerMultiSelect({ brokers, selected, onChange, disabled }: { brokers:
         <svg viewBox="0 0 24 24" className={clsx('h-3.5 w-3.5 text-slate-400 transition-transform shrink-0', open && 'rotate-180')} fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 9l6 6 6-6" /></svg>
       </button>
       {open && brokers.length > 0 && (
-        <div className="absolute z-50 top-full left-0 mt-2 w-52 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl overflow-hidden">
+        <div onMouseDown={(e) => e.stopPropagation()} className="absolute z-50 top-full left-0 mt-2 w-52 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl overflow-hidden">
           <button onMouseDown={e => { e.preventDefault(); onChange(new Set()) }}
             className={clsx('w-full flex items-center gap-2.5 px-3.5 py-2.5 border-b border-slate-100 dark:border-white/[0.06]', allSelected ? 'bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-400' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/[0.04]')}>
             <span className={clsx('h-4 w-4 rounded border-2 flex items-center justify-center shrink-0', allSelected ? 'border-brand-500 bg-brand-500' : 'border-slate-300 dark:border-white/20')}>
@@ -195,7 +203,11 @@ export function RunningStrategyBar({ expiries, onLoad }: Props) {
   }, [])
 
   const distinctGroups = useMemo(() => [...new Set(allTrades.map(t => t.group_name).filter(Boolean))].sort(), [allTrades])
-  const distinctBrokers = useMemo(() => [...new Set(allTrades.map(t => t.broker_name).filter(Boolean))].sort(), [allTrades])
+  // Broker options = the USER's connected accounts (same source as the Trade page),
+  // not every broker_name found in trades (which includes master/template brokers
+  // like PAPER-TRADE / ZERODHA the user hasn't connected).
+  const brokerAccounts = useBrokerStore((s) => s.accounts)
+  const distinctBrokers = useMemo(() => [...new Set(brokerAccounts.map(a => a.displayName).filter(Boolean))].sort(), [brokerAccounts])
   useEffect(() => { if (distinctGroups.length && !selectedGroup) setSelectedGroup(distinctGroups[0]) }, [distinctGroups, selectedGroup])
 
   const filtered = useMemo(() => {

@@ -267,7 +267,7 @@ export default function StockReportPage() {
 
             {/* ── Overall evidence + chart ── */}
             <div className="grid gap-5 lg:grid-cols-5">
-              <SectionCard title="Overall evidence" className="lg:col-span-2" right={<span className="text-[10px] text-slate-400">signals shared across engines</span>}>
+              <SectionCard title="Key reasons" className="lg:col-span-2" right={<span className="text-[10px] text-slate-400">strongest confirmed signals</span>}>
                 {split && split.overall.length > 0 ? (
                   <div className="space-y-2.5">{split.overall.map((it, i) => <EvidenceLine key={i} it={it} />)}</div>
                 ) : (
@@ -314,32 +314,32 @@ export default function StockReportPage() {
             {/* ── Engine-specific evidence (deduplicated) ── */}
             {a.evidence && split && (
               <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
-                <SectionCard title={`Discovery · ${a.scores.discovery}`} right={<span className="text-[10px] text-violet-500 font-bold">EARLY</span>}>
-                  <p className="text-[11px] text-slate-400 mb-3">Evidence unique to early discovery.</p>
+                <SectionCard title="Early accumulation signals" right={<span className="text-[10px] text-violet-500 font-bold">EARLY</span>}>
+                  <p className="text-[11px] text-slate-400 mb-3">Quiet, pre-breakout clues that accumulation is under way.</p>
                   <div className="space-y-2.5">
                     {split.unique.discovery.map((it, i) => <EvidenceLine key={i} it={it} />)}
                     {a.evidence.discovery.missing.map((m, i) => <MissingLine key={`m${i}`} label={m.label} detail={m.detail} />)}
                     {split.unique.discovery.length === 0 && a.evidence.discovery.missing.length === 0 && (
-                      <p className="text-xs text-slate-400">All discovery signals appear in shared evidence above.</p>
+                      <p className="text-xs text-slate-400">All early signals are shown in the shared list above.</p>
                     )}
                   </div>
                 </SectionCard>
-                <SectionCard title={`Transition · ${a.scores.transition}`} right={<span className="text-[10px] text-brand-500 font-bold">BUILDING</span>}>
-                  <p className="text-[11px] text-slate-400 mb-3">Evidence unique to the transition phase.</p>
+                <SectionCard title="Trend-change signals" right={<span className="text-[10px] text-brand-500 font-bold">TURNING</span>}>
+                  <p className="text-[11px] text-slate-400 mb-3">Signs a decline is turning into an uptrend.</p>
                   <div className="space-y-2.5">
                     {split.unique.transition.map((it, i) => <EvidenceLine key={i} it={it} />)}
                     {a.evidence.transition.missing.map((m, i) => <MissingLine key={`m${i}`} label={m.label} detail={m.detail} />)}
                   </div>
                 </SectionCard>
-                <SectionCard title={`Momentum · ${a.scores.momentum}`} right={<span className="text-[10px] text-emerald-500 font-bold">ESTABLISHED</span>}>
-                  <p className="text-[11px] text-slate-400 mb-3">Evidence unique to established leadership.</p>
+                <SectionCard title="Leadership & momentum" right={<span className="text-[10px] text-emerald-500 font-bold">ESTABLISHED</span>}>
+                  <p className="text-[11px] text-slate-400 mb-3">Confirmed strength — an already-recognised leader.</p>
                   <div className="space-y-2.5">
                     {split.unique.momentum.map((it, i) => <EvidenceLine key={i} it={it} />)}
                     {a.evidence.momentum.missing.map((m, i) => <MissingLine key={`m${i}`} label={m.label} detail={m.detail} />)}
                   </div>
                 </SectionCard>
-                <SectionCard title={`Risk · ${a.scores.risk} (${a.riskLevel})`} right={<span className="text-[10px] text-red-500 font-bold">SEPARATE</span>}>
-                  <p className="text-[11px] text-slate-400 mb-3">What can go wrong — never blended into opportunity scores.</p>
+                <SectionCard title={`Risks to watch — ${a.riskLevel}`} right={<span className="text-[10px] text-red-500 font-bold">RISK</span>}>
+                  <p className="text-[11px] text-slate-400 mb-3">What can go wrong — kept separate from the reasons to buy.</p>
                   <RiskLines factors={a.riskFactors} />
                 </SectionCard>
               </div>

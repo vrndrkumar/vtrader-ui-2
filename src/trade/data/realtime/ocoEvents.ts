@@ -29,7 +29,30 @@
 import toast from 'react-hot-toast'
 import { isOrderStatusPayload, type OcoEventPayload, type OrderStatusPayload } from '../ws/messages'
 import { useTradebookStore } from '../../features/tradebook/tradebookStore'
+import { netQty } from '../../features/tradebook/types'
 import { useIndexBracketStore } from '../../store/indexBracketStore'
+import { cancelIndexBracket } from '@/api/trade'
+
+// Cancel any POSITION-BACKED OCO monitor (SL/Target with no pending entry) whose
+// position no longer exists — e.g. the user closed it from the broker terminal.
+// Otherwise the monitor lingers ACTIVE (ghost strip on the chart + it could still
+// fire). Positions API is the source of truth. Only runs once the book has loaded
+// (never acts on an unloaded/failed book).
+async function cleanupStaleOcoMonitors() {
+  const tb = useTradebookStore.getState()
+  if (!tb.loadedAt) return
+  const openKeys = new Set(
+    tb.positions.filter((p) => p.status === 'OPEN' && netQty(p) !== 0).map((p) => `${p.brokerName}|${p.symbol}`),
+  )
+  const all = useIndexBracketStore.getState().all
+  // No-entry (classic SL/Target on a position) or a FILLED bracket → position-backed.
+  const posBacked = (r: Record<string, unknown>) => r.entryStatus == null || r.entryStatus === 'FILLED'
+  const stale = all.filter((r) => posBacked(r) && !openKeys.has(`${String(r.brokerName ?? '')}|${String(r.symbolName ?? '')}`))
+  try { console.log('[OCO CLEANUP] openPositions=', [...openKeys], 'stale=', stale.map((m) => ({ id: m.id, broker: m.brokerName, sym: m.symbolName }))) } catch { /* noop */ }
+  if (!stale.length) return
+  await Promise.all(stale.map((m) => cancelIndexBracket(m.id as number | string).catch(() => { /* ignore */ })))
+  await useIndexBracketStore.getState().reload()
+}
 
 // Coalesce reconcile calls (several frames can land together on a bracket
 // completing) and add ONE delayed pass to catch the position-close reflection
@@ -38,10 +61,14 @@ let reconcileTimers: ReturnType<typeof setTimeout>[] = []
 function reconcileFromApi() {
   reconcileTimers.forEach(clearTimeout)
   reconcileTimers = [];
-  [0, 1200].forEach((ms) => {
-    reconcileTimers.push(setTimeout(() => {
-      void useTradebookStore.getState().reload()      // positions + order book (broker truth)
-      void useIndexBracketStore.getState().reload()   // OCO monitors (entry / SL / target state)
+  // 0 / 1.5 / 4s: the broker's Positions API often still shows a just-closed
+  // position for a second or two, so re-confirm before deciding a monitor is
+  // stale. Not a poll — a few confirmations after a WS event.
+  [0, 1500, 4000].forEach((ms) => {
+    reconcileTimers.push(setTimeout(async () => {
+      await useTradebookStore.getState().reload()      // positions + order book (broker truth)
+      await useIndexBracketStore.getState().reload()   // OCO monitors (entry / SL / target state)
+      await cleanupStaleOcoMonitors()                  // drop monitors whose position is gone
     }, ms))
   })
 }
@@ -76,6 +103,13 @@ export function handleOcoEvent(payload: unknown) {
 
   // New status frame (raw broker order-status). Reconcile + status toast.
   if (isOrderStatusPayload(payload)) {
+    // WS-driven fill: if this frame reports a COMPLETE order, mark the matching
+    // bracket entry FILLED immediately (by entry order id) — don't wait for the DB
+    // row to flip or for the positions API to catch up.
+    const st = payload.status.toUpperCase()
+    if ((st === 'COMPLETE' || st === 'COMPLETED' || st === 'FILLED') && payload.orderId) {
+      useIndexBracketStore.getState().markFilledByOrderId(payload.orderId)
+    }
     reconcileFromApi()
     toastForStatus(payload)
     return

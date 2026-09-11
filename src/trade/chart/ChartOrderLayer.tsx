@@ -75,8 +75,14 @@ export function ChartOrderLayer({ engineRef, symbolKey, ltp }: {
   const rows = useMemo(() => Object.values(positions).filter((p) => p.symbolKey === symbolKey), [positions, symbolKey])
 
   // Pending (not-yet-executed) orders for THIS strike — shown as draggable lines.
+  // Only orders that actually rest on the price scale: a real limit/stop has a
+  // positive price or trigger. Market orders (priceType 'MKT') and zero-price
+  // placeholders execute immediately / have no level, so drawing them pins a
+  // "dummy" line at 0 — exclude those.
   const tbOrders = useTradebookStore((s) => s.orders)
-  const pending = useMemo(() => tbOrders.filter((o) => o.symbol === symbolKey && isLiveStatus(o.status)), [tbOrders, symbolKey])
+  const pending = useMemo(() => tbOrders.filter((o) =>
+    o.symbol === symbolKey && isLiveStatus(o.status) && o.priceType !== 'MKT' && ((o.price ?? 0) > 0 || (o.triggerPrice ?? 0) > 0),
+  ), [tbOrders, symbolKey])
   // Some brokers return the SL trigger in `price` (no separate triggerPrice) —
   // fall back to `price` when triggerPrice is absent.
   const orderLinePrice = (o: (typeof pending)[number]) => (o.priceType === 'SL-LMT' && o.triggerPrice > 0 ? o.triggerPrice : o.price)
@@ -91,7 +97,11 @@ export function ChartOrderLayer({ engineRef, symbolKey, ltp }: {
     const want = new Set<string>()
     for (const p of tbPositions) {
       if (p.symbol !== symbolKey || p.status !== 'OPEN') continue
-      const id = `tb:${p.id}`
+      // Broker-unique key: two broker accounts on the SAME strike can return the
+      // same position id from their APIs, which collapsed them into one strip
+      // (so SL/Target could only be set once). Prefix the broker so each broker's
+      // position is its own strip with its own SL/Target.
+      const id = `tb:${p.brokerId}:${p.id}`
       want.add(id)
       const net = p.buyQty - p.sellQty
       const ex = st.positions[id]
@@ -111,87 +121,106 @@ export function ChartOrderLayer({ engineRef, symbolKey, ltp }: {
   //   • if NO live position is loaded → synthesize a chart position from the
   //     monitor so the SL/Target are still visible (uses current LTP as a
   //     placeholder entry; replaced the moment the real position loads).
-  type Oco = { sl?: number; slQty?: number; tgt?: number; tgtQty?: number; direction?: string; quantity?: number; brokerName?: string }
-  const ocoDataRef = useRef<Oco | null>(null)
   const restoredRef = useRef<Set<string>>(new Set())
-  const applyOco = () => {
-    const o = ocoDataRef.current
-    if (!o) return
-    const st = useTradeStore.getState()
-    const synthId = `oco:${symbolKey}`
-    const reals = Object.entries(st.positions).filter(([id, p]) => p.symbolKey === symbolKey && !id.startsWith('oco:'))
-    if (reals.length > 0) {
-      st.removePosition(synthId)
-      for (const [id] of reals) {
-        if (restoredRef.current.has(id)) continue
-        restoredRef.current.add(id)
-        if (o.sl != null || o.tgt != null) st.updatePosition(id, { stopLoss: o.sl, stopQty: o.slQty, target: o.tgt, targetQty: o.tgtQty })
-      }
-      return
-    }
-    if (o.sl == null && o.tgt == null) { st.removePosition(synthId); return }
-    if (!st.positions[synthId]) {
-      const brokerId = useBrokerStore.getState().accounts.find((a) => a.brokerName === o.brokerName)?.id ?? 0
-      const net = (o.direction === 'SHORT' ? -1 : 1) * (o.quantity || 1)
-      st.upsertPosition({ id: synthId, brokerId, symbolKey, display: symbolKey, netQty: net, avgPrice: ltp || o.sl || o.tgt || 0, stopLoss: o.sl, stopQty: o.slQty, target: o.tgt, targetQty: o.tgtQty })
-    }
-  }
-  // One shared OCO store (loads ALL active monitors — index + symbol). The
-  // strike chart reads its own SYMBOL monitor from it, consistently with how the
-  // index chart reads its INDEX brackets.
+  const brokerNameOf = (brokerId: number) => useBrokerStore.getState().accounts.find((a) => a.id === brokerId)?.brokerName ?? ''
+
+  // ALL active SYMBOL monitors for this strike — ONE PER BROKER. Position-backed:
+  // no entry leg (classic SL/Target), a FILLED bracket, OR a PLACED bracket whose
+  // entry already produced a position (limit entry that filled after the backend's
+  // status poll, so entryStatus lingers at PLACED). Gating PLACED on an existing
+  // position means the order layer OWNS the filled position (bracket layer hides
+  // it) while a still-resting entry stays with the bracket layer — no duplicate.
   const ocoAll = useIndexBracketStore((s) => s.all)
   const reloadOco = useIndexBracketStore((s) => s.reload)
   useEffect(() => { void reloadOco() }, [reloadOco])
-  // Only a monitor with NO pending triggered-entry belongs here (a real/filled
-  // position, or a classic SL/Target-on-position monitor with no entry leg). A
-  // bracket whose entry is still PENDING/PLACED is drawn by IndexBracketLayer;
-  // picking it up here would synthesize a bogus position line (the "LONG @ ltp"
-  // ghost) for an order that hasn't actually filled.
-  const symMon = useMemo(
-    () => ocoAll.find((r) => r.monitorType !== 'INDEX' && r.symbolName === symbolKey
-      && (r.entryStatus == null || r.entryStatus === 'FILLED')),
-    [ocoAll, symbolKey],
+  const openBrokers = useMemo(
+    () => new Set(tbPositions.filter((p) => p.symbol === symbolKey && p.status === 'OPEN' && (p.buyQty - p.sellQty) !== 0).map((p) => p.brokerName)),
+    [tbPositions, symbolKey],
   )
+  const symMons = useMemo(
+    () => ocoAll.filter((r) => r.monitorType !== 'INDEX' && r.symbolName === symbolKey
+      && (r.entryStatus == null || r.entryStatus === 'FILLED'
+        || (r.entryStatus === 'PLACED' && openBrokers.has(String(r.brokerName ?? ''))))),
+    [ocoAll, symbolKey, openBrokers],
+  )
+  // Re-apply whenever ANY broker's SL/Target changes.
+  const monSig = useMemo(
+    () => symMons.map((m) => `${m.brokerName}:${m.slStatus}:${m.slTriggerPrice}:${m.slLimitPrice}:${m.tgtStatus}:${m.tgtTriggerPrice}:${m.tgtLimitPrice}`).join('|'),
+    [symMons],
+  )
+
+  const numOr = (v: unknown) => (v == null ? undefined : Number(v))
+  const ocoOf = (m: Record<string, unknown>) => ({
+    sl: m.slStatus === 'PENDING' ? (numOr(m.slLimitPrice) ?? numOr(m.slTriggerPrice)) : undefined,
+    slQty: numOr(m.slQuantity),
+    tgt: m.tgtStatus === 'PENDING' ? (numOr(m.tgtLimitPrice) ?? numOr(m.tgtTriggerPrice)) : undefined,
+    tgtQty: numOr(m.tgtQuantity),
+    direction: m.direction != null ? String(m.direction) : undefined,
+    quantity: numOr(m.quantity),
+    brokerName: m.brokerName != null ? String(m.brokerName) : undefined,
+  })
+
+  // Apply each broker's OWN monitor to its OWN position strip, so two brokers on
+  // the same strike get INDEPENDENT SL/Target. (Previously a single monitor was
+  // mirrored onto both strips, which hid the second broker's "Set SL/Target".)
+  const applyOco = () => {
+    const st = useTradeStore.getState()
+    const reals = Object.entries(st.positions).filter(([id, p]) => p.symbolKey === symbolKey && !id.startsWith('oco:'))
+    const monFor = (brokerId: number) => symMons.find((r) => String(r.brokerName ?? '') === brokerNameOf(brokerId))
+    if (reals.length > 0) {
+      for (const id of Object.keys(st.positions)) if (id.startsWith(`oco:${symbolKey}`)) st.removePosition(id)
+      for (const [id, p] of reals) {
+        if (restoredRef.current.has(id)) continue
+        restoredRef.current.add(id)
+        const m = monFor(p.brokerId)
+        const o = m ? ocoOf(m) : null
+        st.updatePosition(id, { stopLoss: o?.sl, stopQty: o?.slQty, target: o?.tgt, targetQty: o?.tgtQty })
+      }
+      return
+    }
+    // No real positions loaded → synthesize one strip PER broker's monitor.
+    const want = new Set<string>()
+    for (const m of symMons) {
+      const o = ocoOf(m)
+      if (o.sl == null && o.tgt == null) continue
+      const synthId = `oco:${symbolKey}:${o.brokerName ?? ''}`
+      want.add(synthId)
+      if (!st.positions[synthId]) {
+        const brokerId = useBrokerStore.getState().accounts.find((a) => a.brokerName === o.brokerName)?.id ?? 0
+        const net = (o.direction === 'SHORT' ? -1 : 1) * (o.quantity || 1)
+        st.upsertPosition({ id: synthId, brokerId, symbolKey, display: symbolKey, netQty: net, avgPrice: ltp || o.sl || o.tgt || 0, stopLoss: o.sl, stopQty: o.slQty, target: o.tgt, targetQty: o.tgtQty })
+      }
+    }
+    for (const id of Object.keys(st.positions)) if (id.startsWith(`oco:${symbolKey}`) && !want.has(id)) st.removePosition(id)
+  }
+
   useEffect(() => {
     restoredRef.current = new Set()
-    const numOr = (v: unknown) => (v == null ? undefined : Number(v))
-    const m = symMon
-    ocoDataRef.current = m
-      ? {
-        sl: m.slStatus === 'PENDING' ? (numOr(m.slLimitPrice) ?? numOr(m.slTriggerPrice)) : undefined,
-        slQty: numOr(m.slQuantity),
-        tgt: m.tgtStatus === 'PENDING' ? (numOr(m.tgtLimitPrice) ?? numOr(m.tgtTriggerPrice)) : undefined,
-        tgtQty: numOr(m.tgtQuantity),
-        direction: m.direction != null ? String(m.direction) : undefined,
-        quantity: numOr(m.quantity),
-        brokerName: m.brokerName != null ? String(m.brokerName) : undefined,
-      }
-      : {}
     applyOco()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symMon, symbolKey])
+  }, [monSig, symbolKey])
 
-  // Cancel any active SL/Target OCO monitor(s) watching this strike. Without this,
-  // exiting the position leaves the monitor ACTIVE — it keeps watching (could fire
-  // a fresh order later) and the chart re-draws it as a ghost position + SL line.
-  const cancelOcoForSymbol = (symbolKey: string) => {
+  // Cancel the SL/Target monitor for a SPECIFIC position's broker only — so
+  // exiting one broker's position never clears the other broker's SL/Target.
+  const cancelOcoForPosition = (p: Position) => {
     const mons = useIndexBracketStore.getState().all.filter(
-      (r) => r.monitorType !== 'INDEX' && r.symbolName === symbolKey,
+      (r) => r.monitorType !== 'INDEX' && r.symbolName === p.symbolKey && String(r.brokerName ?? '') === brokerNameOf(p.brokerId),
     )
     if (!mons.length) return
     void Promise.all(mons.map((m) => cancelIndexBracket(m.id as number | string)))
       .then(() => useIndexBracketStore.getState().reload())
-      .catch(() => { /* ignore — position exit already dispatched */ })
+      .catch(() => { /* ignore — exit already dispatched */ })
   }
 
   const onExit = (p: Position) => {
-    cancelOcoForSymbol(p.symbolKey) // always drop the SL/Target monitor with the position
+    cancelOcoForPosition(p) // drop THIS broker's SL/Target monitor with the position
     // Synthetic OCO ghost (drawn only to show a monitor's SL when no real position
     // is loaded) → there's NOTHING to close, so just cancel the monitor + clear the
     // line. Placing a MKT order here would open a spurious new position.
     if (p.id.startsWith('oco:')) { exitPosition(p.id); return }
     // Mirrored live position → square off through the tradebook (MKT close).
-    if (p.id.startsWith('tb:')) { useTradebookStore.getState().squareOff(p.id.slice(3)); exitPosition(p.id); return }
+    // Strip key is `tb:${brokerId}:${realId}` — recover the real tradebook id.
+    if (p.id.startsWith('tb:')) { useTradebookStore.getState().squareOff(p.id.slice(`tb:${p.brokerId}:`.length)); exitPosition(p.id); return }
     // Non-mirrored running position (e.g. restored from an OCO when the live
     // position isn't loaded) → place a real MKT closing order on its broker,
     // just like the side-panel exit — not merely clear the line.

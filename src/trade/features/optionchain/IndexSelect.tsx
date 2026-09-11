@@ -3,6 +3,8 @@ import { clsx } from 'clsx'
 import { useQuote } from '../../store/marketStore'
 import { realtime } from '../../data/realtime/realtimeService'
 import { OPTION_CHAIN_INDICES, type Exchange, type StripIndex } from '../../config/indices'
+import { useStocksStore } from '../../store/stocksStore'
+import type { Stock } from '@/api/stocks'
 
 // ── Recently viewed (persisted) ──────────────────────────────────────────────
 const RECENT_KEY = 'vtrader_oc_recent'
@@ -56,15 +58,33 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'recent', label: 'Recently Viewed' },
 ]
 
+function StockPickRow({ s, onPick }: { s: Stock; onPick: () => void }) {
+  return (
+    <button onClick={onPick} className="flex items-center justify-between w-full px-3 py-2.5 text-left hover:bg-slate-50 dark:hover:bg-white/5 transition-colors">
+      <div className="min-w-0">
+        <p className="text-sm font-semibold text-slate-800 dark:text-slate-100 truncate">{s.symbolCode}</p>
+        <p className="text-[11px] text-slate-400 truncate">{s.symbolName}</p>
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        {s.exchange && <span className="px-1.5 rounded text-[9px] font-bold bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-400">{s.exchange}</span>}
+        <span className="text-sm font-semibold tabular-nums text-slate-700 dark:text-slate-200">{s.ltp != null ? s.ltp.toFixed(2) : '—'}</span>
+      </div>
+    </button>
+  )
+}
+
 /** Reusable index picker (searchable, tabbed, live quotes). Used by the option
  *  chain AND the chart toolbar so both dropdowns are identical.
  *  - `compact`: renders a small inline trigger (toolbar) instead of the full-width
  *    header trigger (option-chain panel).
  *  - `triggerLabel` / `triggerText`: override the muted label / main text on the
  *    compact trigger (e.g. show the active chart symbol's display). */
-export function IndexSelect({ value, onChange, compact = false, triggerLabel = 'Option Chain', triggerText }: {
+export function IndexSelect({ value, onChange, onPickSymbol, compact = false, triggerLabel = 'Option Chain', triggerText }: {
   value: string
   onChange: (code: string) => void
+  /** When provided, the picker also searches STOCKS and loads them as charts
+   *  (used by the chart toolbar; the option chain omits it → indices only). */
+  onPickSymbol?: (symbol: string, name: string) => void
   compact?: boolean
   triggerLabel?: string
   triggerText?: string
@@ -75,6 +95,12 @@ export function IndexSelect({ value, onChange, compact = false, triggerLabel = '
   const [recent, setRecent] = useState<string[]>(loadRecent)
   const ref = useRef<HTMLDivElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
+  const stocks = useStocksStore((s) => s.list)
+  const loadStocks = useStocksStore((s) => s.load)
+  const stocksLoading = useStocksStore((s) => s.loading)
+
+  // Load the stock universe when the menu opens (only where stock picking is on).
+  useEffect(() => { if (open && onPickSymbol) void loadStocks() }, [open, onPickSymbol, loadStocks])
 
   const current = OPTION_CHAIN_INDICES.find((i) => i.code === value)
   const currentQ = useQuote(value)
@@ -106,7 +132,17 @@ export function IndexSelect({ value, onChange, compact = false, triggerLabel = '
     return base
   }, [tab, query, recent])
 
+  // Matching stocks for the current query / the "All F&O Stocks" tab.
+  const stockList = useMemo<Stock[]>(() => {
+    if (!onPickSymbol) return []
+    const q = query.trim().toUpperCase()
+    if (q) return stocks.filter((s) => s.symbolCode.toUpperCase().includes(q) || s.symbolName.toUpperCase().includes(q)).slice(0, 80)
+    if (tab === 'stocks') return stocks.slice(0, 300)
+    return []
+  }, [onPickSymbol, query, tab, stocks])
+
   const pick = (code: string) => { setRecent(pushRecent(code)); onChange(code); setOpen(false); setQuery('') }
+  const pickStock = (s: Stock) => { onPickSymbol?.(s.symbolCode, s.symbolName); setOpen(false); setQuery('') }
   const up = (currentQ?.chgPct ?? 0) >= 0
 
   return (
@@ -152,15 +188,21 @@ export function IndexSelect({ value, onChange, compact = false, triggerLabel = '
             ))}
           </div>
 
-          {/* List */}
+          {/* List — indices and/or stocks */}
           <div className="max-h-72 overflow-y-auto">
-            {list.length === 0 ? (
+            {list.length === 0 && stockList.length === 0 ? (
               <div className="flex flex-col items-center justify-center gap-1 py-8 px-6 text-center text-slate-400">
                 <svg viewBox="0 0 24 24" className="h-7 w-7 opacity-60" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4-4" /></svg>
-                <p className="text-xs font-medium">{tab === 'stocks' ? 'Stock F&O coming soon' : tab === 'recent' ? 'No recently viewed indices' : 'No matches'}</p>
+                <p className="text-xs font-medium">
+                  {tab === 'stocks' ? (stocksLoading ? 'Loading stocks…' : onPickSymbol ? 'No stocks available' : 'Stock F&O coming soon')
+                    : tab === 'recent' ? 'No recently viewed' : 'No matches'}
+                </p>
               </div>
             ) : (
-              list.map((idx) => <IndexRow key={idx.code} idx={idx} active={idx.code === value} onPick={() => pick(idx.code)} />)
+              <>
+                {list.map((idx) => <IndexRow key={idx.code} idx={idx} active={idx.code === value} onPick={() => pick(idx.code)} />)}
+                {stockList.map((s) => <StockPickRow key={s.symbolCode} s={s} onPick={() => pickStock(s)} />)}
+              </>
             )}
           </div>
         </div>

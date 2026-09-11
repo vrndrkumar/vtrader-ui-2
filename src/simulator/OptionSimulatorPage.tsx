@@ -7,12 +7,20 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { clsx } from 'clsx'
 import { useSim } from './store'
 import { NAV_STEPS, type NavStep } from './store'
-import type { Frequency, IndexCode, OptType, PositionLeg, Side } from './types'
+import type { Frequency, IndexCode, OptionQuote, OptType, PositionLeg, Side } from './types'
 import { bsGreeks } from './engine/blackScholes'
 import { computePayoffCurve, computeStats, inr, type OptionLeg } from '@/components/PayoffEChart'
 import { SimPayoffChart } from './SimPayoffChart'
 
 const FREQS: Frequency[] = ['1m', '3m', '5m', '15m', '30m', '1h']
+const fmtCompact = (n?: number) => {
+  if (n == null) return ''
+  const a = Math.abs(n)
+  if (a >= 1e7) return (n / 1e7).toFixed(2) + 'Cr'
+  if (a >= 1e5) return (n / 1e5).toFixed(2) + 'L'
+  if (a >= 1e3) return (n / 1e3).toFixed(1) + 'K'
+  return String(Math.round(n))
+}
 const istTime = (ts: number) => (ts ? new Date(ts).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false }) : '--:--:--')
 const istHM = (ts: number) => (ts ? new Date(ts).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false, hour: '2-digit', minute: '2-digit' }) : '--:--')
 const istDay = (d: string) => new Date(`${d}T00:00:00+05:30`).toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short', year: '2-digit' })
@@ -39,29 +47,38 @@ function Workstation() {
     <>
       <ReplayBar />
       <div className="flex-1 min-h-0 flex">
-        {/* Left — option chain only (dominant) */}
-        <div className="flex-[1.75_1.75_0%] min-w-0 border-r border-slate-200 dark:border-white/[0.06] flex flex-col"><RichChain /></div>
-        {/* Right — three cards: stats · positions · payoff */}
-        <div className="flex-1 min-w-0 flex flex-col gap-2 p-2 min-h-0 bg-slate-50 dark:bg-white/[0.015]">
-          <StatsBox />
-          <div className="flex-[1.1_1.1_0%] min-h-0 rounded-xl border border-slate-200 dark:border-white/[0.07] bg-white dark:bg-[#0b1220] shadow-sm flex flex-col overflow-hidden"><PositionsPanel /></div>
-          <div className="flex-1 min-h-0 rounded-xl border border-slate-200 dark:border-white/[0.07] bg-white dark:bg-[#0b1220] shadow-sm flex flex-col overflow-hidden"><Analysis /></div>
+        {/* Left — option chain (full greeks matrix) */}
+        <div className="w-[clamp(720px,54%,880px)] shrink-0 border-r border-slate-200 dark:border-white/[0.06] flex flex-col">
+          <RichChain />
+        </div>
+        {/* Right — strategy workspace (payoff-led, no cards) */}
+        <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-white dark:bg-[#0a0f1a]">
+          <MetricsStrip />
+          <div className="flex-[1.8_1.8_0%] min-h-0 border-b border-slate-200 dark:border-white/[0.06] flex flex-col"><Analysis /></div>
+          <div className="flex-1 min-h-0 flex flex-col"><PositionsPanel /></div>
         </div>
       </div>
     </>
   )
 }
 
-// ── Box 1: key stats ─────────────────────────────────────────────────────────────
-function StatsBox() {
+// ── Strategy metrics — thin inline strip (no card) ───────────────────────────────
+function MetricsStrip() {
   const { legs, stats } = usePayoff()
   const has = legs.length > 0
+  const items: { l: string; v: string; t?: 'green' | 'red' | 'indigo' }[] = [
+    { l: 'Max profit', v: has ? `+₹${inr(Math.abs(stats.maxProfit))}` : '—', t: has ? 'green' : undefined },
+    { l: 'Max loss', v: !has ? '—' : stats.maxLoss <= -1e7 ? 'Unlimited' : `−₹${inr(Math.abs(stats.maxLoss))}`, t: has ? 'red' : undefined },
+    { l: 'POP', v: has ? `${stats.pop}%` : '—' },
+    { l: 'Breakeven', v: !has ? '—' : stats.breakevens.length ? stats.breakevens.map(b => b.toLocaleString('en-IN')).join(' · ') : 'None', t: has ? 'indigo' : undefined },
+  ]
   return (
-    <div className="shrink-0 rounded-xl border border-slate-200 dark:border-white/[0.07] bg-white dark:bg-[#0b1220] shadow-sm px-4 py-2.5 flex items-center gap-6 flex-wrap">
-      <Stat label="Max profit" value={has ? `+₹${inr(Math.abs(stats.maxProfit))}` : '—'} tone={has ? 'green' : undefined} />
-      <Stat label="Max loss" value={!has ? '—' : stats.maxLoss <= -1e7 ? 'Unlimited' : `−₹${inr(Math.abs(stats.maxLoss))}`} tone={has ? 'red' : undefined} />
-      <Stat label="POP" value={has ? `${stats.pop}%` : '—'} />
-      <Stat label="Breakeven" value={!has ? '—' : stats.breakevens.length ? stats.breakevens.map(b => b.toLocaleString('en-IN')).join(' · ') : 'No breakeven'} tone={has ? 'indigo' : undefined} />
+    <div className="shrink-0 flex items-center h-12 px-4 border-b border-slate-200 dark:border-white/[0.06]">
+      {items.map((it, i) => (
+        <div key={it.l} className={clsx('pr-6', i > 0 && 'pl-6 border-l border-slate-200 dark:border-white/[0.06]')}>
+          <Stat label={it.l} value={it.v} tone={it.t} />
+        </div>
+      ))}
     </div>
   )
 }
@@ -287,7 +304,7 @@ function RichChain() {
   const { chain, positions, config, steps, cursor, addLeg } = useSim()
   const [lots, setLots] = useState(1)
   const scrollRef = useRef<HTMLDivElement>(null)
-  const atmRef = useRef<HTMLTableRowElement>(null)
+  const atmRef = useRef<HTMLDivElement>(null)
   useEffect(() => { const c = scrollRef.current, a = atmRef.current; if (c && a) { const cr = c.getBoundingClientRect(), ar = a.getBoundingClientRect(); c.scrollTop += (ar.top - cr.top) - (c.clientHeight / 2 - ar.height / 2) } }, [chain?.atm])
   const dte = useMemo(() => { if (!config) return 1; const ed = config.expiryId.split('-').slice(1).join('-'); return Math.max(0.5, (Date.parse(`${ed}T00:00:00+05:30`) + 930 * 60000 - steps[cursor]) / 86_400_000) }, [config, steps, cursor])
   if (!chain) return <div className="h-full flex items-center justify-center text-[12px] text-slate-400 dark:text-white/25">Loading chain…</div>
@@ -295,58 +312,137 @@ function RichChain() {
   const posBy = new Map<string, number>()
   for (const l of positions) if (l.status === 'OPEN') posBy.set(`${l.optType}-${l.strike}`, (posBy.get(`${l.optType}-${l.strike}`) ?? 0) + (l.side === 'BUY' ? l.qty : -l.qty))
   const lotSz = positions[0]?.lotSize
-  const delta = (S: number, K: number, iv: number, ot: OptType) => bsGreeks(S, K, dte / 365, iv || 0.15, ot).delta
-  const cols = '50px 1fr 42px 82px 46px 42px 1fr 50px'
+  // Prefer the feed's delta; fall back to a BS estimate from IV.
+  const deltaOf = (q: { delta?: number; iv?: number } | undefined, K: number, ot: OptType) =>
+    q ? (q.delta != null && q.delta !== 0 ? q.delta : bsGreeks(chain.spot, K, dte / 365, (q.iv ?? 0) || 0.15, ot).delta) : 0
+  const COLS = '42px 44px 42px minmax(64px,1fr) 76px 78px 82px 78px 76px minmax(64px,1fr) 42px 44px 42px'
+  const maxOi = Math.max(1, ...chain.rows.flatMap(r => [r.ce?.oi ?? 0, r.pe?.oi ?? 0]))
+  const maxOiChg = Math.max(1, ...chain.rows.flatMap(r => [Math.abs(r.ce?.oiChange ?? 0), Math.abs(r.pe?.oiChange ?? 0)]))
 
-  const BS = (ot: OptType, strike: number, cid?: string, r?: boolean) => (
-    <span className={clsx('inline-flex h-5 rounded overflow-hidden ring-1 ring-slate-300 dark:ring-white/15 opacity-0 group-hover:opacity-100 transition-opacity', r && 'flex-row-reverse')}>
-      <button onClick={() => cid && void addLeg(cid, strike, ot, 'BUY', lots)} className="w-5 grid place-items-center text-[10px] font-black bg-emerald-500 text-white hover:bg-emerald-600">B</button>
-      <button onClick={() => cid && void addLeg(cid, strike, ot, 'SELL', lots)} className="w-5 grid place-items-center text-[10px] font-black bg-red-500 text-white hover:bg-red-600">S</button>
-    </span>
-  )
   const posLots = (q?: number) => q == null || lotSz == null ? '' : `${q > 0 ? '+' : ''}${Math.round(q / lotSz)}`
+  const posPill = (q?: number) => q == null ? null : (
+    <span className={clsx('shrink-0 text-[9px] font-black tabular-nums px-1 rounded-[3px]', q > 0 ? 'bg-cyan-500/15 text-cyan-600 dark:text-cyan-300' : 'bg-rose-500/15 text-rose-600 dark:text-rose-300')}>{posLots(q)}</span>
+  )
+  const greekTip = (q: OptionQuote | undefined, K: number, ot: OptType) => q
+    ? `${ot} ${K}\nΔ ${deltaOf(q, K, ot).toFixed(3)}   Γ ${(q.gamma ?? 0).toFixed(4)}\nΘ ${(q.theta ?? 0).toFixed(2)}   Vega ${(q.vega ?? 0).toFixed(2)}\nIV ${q.iv ? (q.iv * 100).toFixed(1) : '—'}%   OI ${fmtCompact(q.oi) || '—'}\nVol ${fmtCompact(q.volume) || '—'}${q.bid ? `   Bid ${q.bid} / Ask ${q.ask}` : ''}`
+    : ''
+  // Greek cell.
+  const G = ({ v, cls, d = 2 }: { v?: number; cls: string; d?: number }) => (
+    <div className={clsx('flex items-center justify-center text-[10.5px] font-mono tabular-nums', cls)}>{v != null ? v.toFixed(d) : ''}</div>
+  )
+  // OI total with a subtle inline heatmap bar (green calls / red puts) anchored to the strike side.
+  const OiTotal = ({ q, side, tint }: { q?: OptionQuote; side: 'call' | 'put'; tint?: string }) => (
+    <div className={clsx('relative flex items-center overflow-hidden', side === 'call' ? 'justify-end pr-2.5' : 'justify-start pl-2.5', tint)}>
+      <div className={clsx('absolute inset-y-0 pointer-events-none', side === 'call' ? 'right-0 bg-emerald-500/10 dark:bg-emerald-500/[0.08]' : 'left-0 bg-rose-500/10 dark:bg-rose-500/[0.08]')} style={{ width: `${Math.min(100, ((q?.oi ?? 0) / maxOi) * 100)}%` }} />
+      <span className={clsx('relative text-[11px] font-mono tabular-nums font-semibold', side === 'call' ? 'text-emerald-700 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400')}>{q?.oi ? fmtCompact(q.oi) : ''}</span>
+    </div>
+  )
+  // OI-change chip: absolute OI change + mini bar (scaled to the chain's max change).
+  const OiChip = ({ q, side }: { q?: OptionQuote; side: 'call' | 'put' }) => {
+    const v = q?.oiChange
+    if (v == null) return <div />
+    const up = v >= 0
+    return (
+      <div className="flex items-center justify-center px-1" title={q?.oiChangePct != null ? `${up ? '+' : ''}${q.oiChangePct.toFixed(2)}%` : undefined}>
+        <div className={clsx('flex items-center gap-1.5 h-[18px] px-1.5 rounded border border-slate-200 dark:border-white/10 bg-white dark:bg-white/[0.04]', side === 'put' && 'flex-row-reverse')}>
+          <span className={clsx('text-[9.5px] font-mono font-bold tabular-nums', v === 0 ? 'text-slate-400' : up ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-500 dark:text-rose-400')}>{up ? '+' : ''}{fmtCompact(v)}</span>
+          <div className={clsx('w-7 h-1.5 rounded-sm bg-slate-100 dark:bg-white/10 overflow-hidden flex', side === 'call' ? 'justify-end' : 'justify-start')}>
+            <div className={clsx('h-full rounded-sm', up ? 'bg-emerald-500' : 'bg-rose-500')} style={{ width: `${Math.min(100, (Math.abs(v) / maxOiChg) * 100)}%` }} />
+          </div>
+        </div>
+      </div>
+    )
+  }
+  // LTP with BUY/SELL revealed on row hover. The action panel extends over the
+  // neighbouring OI-change column (away from the strike) so both buttons fit.
+  const LtpCell = ({ q, K, ot, side, tint }: { q?: OptionQuote; K: number; ot: OptType; side: 'call' | 'put'; tint?: string }) => (
+    <div title={greekTip(q, K, ot)} className={clsx('relative flex items-center cursor-default', side === 'call' ? 'justify-end pr-2.5' : 'justify-start pl-2.5', tint)}>
+      <span className="font-mono text-[13px] font-bold text-slate-800 dark:text-white/85 transition-opacity group-hover:opacity-0">{q ? q.ltp.toFixed(2) : '—'}</span>
+      {q?.contractId && (
+        <div className={clsx('absolute top-0 bottom-0 z-30 flex items-center gap-1 px-1.5 opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto bg-slate-100/95 dark:bg-[#141b2e]/95 shadow-sm', side === 'call' ? 'right-0 justify-end' : 'left-0 justify-start')} style={{ width: 132 }}>
+          <button onClick={() => void addLeg(q.contractId, K, ot, 'BUY', lots)} className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] px-2.5 py-1 rounded shadow-sm">BUY</button>
+          <button onClick={() => void addLeg(q.contractId, K, ot, 'SELL', lots)} className="bg-rose-600 hover:bg-rose-700 text-white font-bold text-[10px] px-2.5 py-1 rounded shadow-sm">SELL</button>
+        </div>
+      )}
+    </div>
+  )
+  const cellHdr = 'px-2 py-2.5'
 
   return (
     <div className="flex flex-col h-full">
-      {/* sub-header: index/lot/spot */}
-      <div className="flex items-center gap-3 px-4 h-9 border-b border-slate-100 dark:border-white/[0.05] shrink-0">
-        <span className="text-[12px] font-black text-slate-800 dark:text-white/85">{config?.index}</span>
-        <span className="text-[11px] text-slate-400 dark:text-white/35">Lot {lotSz ?? '—'}</span>
-        <span className="text-[13px] font-black tabular-nums text-slate-700 dark:text-white/80">{chain.spot.toLocaleString('en-IN')}</span>
-        <span className="flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wide bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400"><svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 9v4M12 17h.01M10.3 3.9L2 18a2 2 0 001.7 3h16.6a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" /></svg>Simulated</span>
-        <div className="ml-auto flex items-center gap-1.5">
-          <span className="text-[10px] font-bold text-slate-400 dark:text-white/30">Lots</span>
-          <button onClick={() => setLots(l => Math.max(1, l - 1))} className="h-6 w-6 rounded border border-slate-200 dark:border-white/[0.1] text-slate-500">−</button>
-          <span className="w-7 text-center text-[12px] font-bold tabular-nums text-slate-700 dark:text-white/70">{lots}</span>
-          <button onClick={() => setLots(l => l + 1)} className="h-6 w-6 rounded border border-slate-200 dark:border-white/[0.1] text-slate-500">+</button>
+      {/* header: index · spot · ATM · lots */}
+      <div className="flex items-center gap-2.5 px-3 h-11 border-b border-slate-200 dark:border-white/[0.06] shrink-0">
+        <div className="flex items-baseline gap-2 min-w-0">
+          <span className="text-[13px] font-black text-slate-900 dark:text-white tracking-tight">{config?.index}</span>
+          <span className="text-[15px] font-black tabular-nums text-slate-900 dark:text-white leading-none">{chain.spot.toLocaleString('en-IN')}</span>
+        </div>
+        <span className="flex items-center gap-1.5 px-2 h-6 rounded bg-brand-50 dark:bg-brand-500/10 text-brand-700 dark:text-brand-300 text-[11px] font-bold tabular-nums">
+          <span className="text-[9px] font-black uppercase tracking-wider opacity-60">ATM</span>{chain.atm.toLocaleString('en-IN')}
+        </span>
+        <span className="text-[10px] text-slate-400 dark:text-white/30">Lot {lotSz ?? '—'}</span>
+        <span title="Simulated data" className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+        <div className="ml-auto flex items-center gap-1">
+          <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-white/30 mr-0.5">Lots</span>
+          <button onClick={() => setLots(l => Math.max(1, l - 1))} className="h-6 w-6 grid place-items-center rounded text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.06]">−</button>
+          <span className="w-6 text-center text-[12px] font-black tabular-nums text-slate-800 dark:text-white/80">{lots}</span>
+          <button onClick={() => setLots(l => l + 1)} className="h-6 w-6 grid place-items-center rounded text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.06]">+</button>
         </div>
       </div>
       {/* expiry tabs */}
       <ExpiryTabs />
+      {/* CALLS | STRIKE | PUTS band */}
+      <div className="grid shrink-0 items-center h-7 bg-slate-50 dark:bg-white/[0.02] border-b border-slate-100 dark:border-white/[0.04]" style={{ gridTemplateColumns: COLS }}>
+        <div className="col-span-6 text-center text-[10px] font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-400/80">Calls</div>
+        <div className="text-center text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-white/40">Strike</div>
+        <div className="col-span-6 text-center text-[10px] font-black uppercase tracking-widest text-rose-600 dark:text-rose-400/80">Puts</div>
+      </div>
       {/* column header */}
-      <div className="grid shrink-0 border-b border-slate-200 dark:border-white/[0.06] bg-slate-50 dark:bg-white/[0.02] text-[9px] font-black uppercase tracking-wide text-slate-400 dark:text-white/30" style={{ gridTemplateColumns: cols }}>
-        <div className="px-2 py-1.5">Δ</div><div className="px-2 py-1.5 text-right">Call LTP</div><div className="px-1 py-1.5 text-center">Pos</div>
-        <div className="px-1 py-1.5 text-center">Strike</div><div className="px-1 py-1.5 text-center">IV</div>
-        <div className="px-1 py-1.5 text-center">Pos</div><div className="px-2 py-1.5">Put LTP</div><div className="px-2 py-1.5 text-right">Δ</div>
+      <div className="grid shrink-0 border-b border-slate-200 dark:border-white/[0.06] text-[9px] font-bold uppercase tracking-wide text-slate-400 dark:text-white/30" style={{ gridTemplateColumns: COLS }}>
+        <div className={clsx(cellHdr, 'text-center')}>Δ</div><div className={clsx(cellHdr, 'text-center')}>Θ</div><div className={clsx(cellHdr, 'text-center')}>V</div><div className={clsx(cellHdr, 'text-right')}>OI</div><div className={clsx(cellHdr, 'text-center')}>OI Chg</div><div className={clsx(cellHdr, 'text-right')}>LTP</div>
+        <div className={clsx(cellHdr, 'text-center')} />
+        <div className={clsx(cellHdr, 'text-left')}>LTP</div><div className={clsx(cellHdr, 'text-center')}>OI Chg</div><div className={clsx(cellHdr, 'text-left')}>OI</div><div className={clsx(cellHdr, 'text-center')}>V</div><div className={clsx(cellHdr, 'text-center')}>Θ</div><div className={clsx(cellHdr, 'text-center')}>Δ</div>
       </div>
       {/* rows */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
-        {chain.rows.map(r => {
+        {chain.rows.map((r, i) => {
           const isAtm = r.strike === chain.atm
           const ceItm = r.strike < chain.spot, peItm = r.strike > chain.spot
           const ceRun = posBy.get(`CE-${r.strike}`), peRun = posBy.get(`PE-${r.strike}`)
+          const ceTint = ceItm ? 'bg-emerald-500/[0.04]' : '', peTint = peItm ? 'bg-rose-500/[0.04]' : ''
+          const next = chain.rows[i + 1]
+          const showSpot = r.strike <= chain.spot && (!next || next.strike > chain.spot)
           return (
-            <table key={r.strike} className="w-full border-collapse table-fixed"><tbody><tr ref={isAtm ? atmRef : undefined}
-              className={clsx('border-b border-slate-50 dark:border-white/[0.03]', isAtm && 'bg-brand-50/70 dark:bg-brand-900/15 ring-1 ring-inset ring-brand-200 dark:ring-brand-900/40')}>
-              <td className="p-0" style={{ width: 50 }}><div className="px-2 py-1.5 text-[10px] tabular-nums text-slate-400 dark:text-white/30">{r.ce ? delta(chain.spot, r.strike, r.ce.iv ?? 0, 'CE').toFixed(2) : ''}</div></td>
-              <td className={clsx('p-0', ceItm && 'bg-amber-50/60 dark:bg-amber-900/[0.08]')}><div className="group flex items-center justify-end gap-2 px-2 py-1.5">{BS('CE', r.strike, r.ce?.contractId)}<span className={clsx('text-[9px] tabular-nums', (r.ce?.changePct ?? 0) >= 0 ? 'text-emerald-500' : 'text-red-500')}>{(r.ce?.changePct ?? 0) >= 0 ? '+' : ''}{r.ce?.changePct ?? 0}%</span><span className="tabular-nums text-[13px] font-bold text-slate-800 dark:text-white/85">{r.ce ? r.ce.ltp.toFixed(2) : '—'}</span></div></td>
-              <td className="p-0 text-center" style={{ width: 42 }}>{ceRun != null && <span className={clsx('text-[10px] font-black tabular-nums', ceRun > 0 ? 'text-cyan-600 dark:text-cyan-400' : 'text-rose-600 dark:text-rose-400')}>{posLots(ceRun)}</span>}</td>
-              <td className="p-0 text-center bg-slate-50/80 dark:bg-white/[0.03]" style={{ width: 82 }}><div className="py-1.5"><span className={clsx('text-[12px] font-black tabular-nums', isAtm ? 'text-brand-600 dark:text-brand-400' : 'text-slate-700 dark:text-slate-200')}>{r.strike.toLocaleString('en-IN')}</span></div></td>
-              <td className="p-0 text-center" style={{ width: 46 }}><span className="text-[10px] tabular-nums text-slate-400 dark:text-white/35">{r.ce?.iv ? (r.ce.iv * 100).toFixed(1) : ''}</span></td>
-              <td className="p-0 text-center" style={{ width: 42 }}>{peRun != null && <span className={clsx('text-[10px] font-black tabular-nums', peRun > 0 ? 'text-cyan-600 dark:text-cyan-400' : 'text-rose-600 dark:text-rose-400')}>{posLots(peRun)}</span>}</td>
-              <td className={clsx('p-0', peItm && 'bg-amber-50/60 dark:bg-amber-900/[0.08]')}><div className="group flex items-center gap-2 px-2 py-1.5"><span className="tabular-nums text-[13px] font-bold text-slate-800 dark:text-white/85">{r.pe ? r.pe.ltp.toFixed(2) : '—'}</span><span className={clsx('text-[9px] tabular-nums', (r.pe?.changePct ?? 0) >= 0 ? 'text-emerald-500' : 'text-red-500')}>{(r.pe?.changePct ?? 0) >= 0 ? '+' : ''}{r.pe?.changePct ?? 0}%</span>{BS('PE', r.strike, r.pe?.contractId, true)}</div></td>
-              <td className="p-0 text-right" style={{ width: 50 }}><div className="px-2 py-1.5 text-[10px] tabular-nums text-slate-400 dark:text-white/30">{r.pe ? delta(chain.spot, r.strike, r.pe.iv ?? 0, 'PE').toFixed(2) : ''}</div></td>
-            </tr></tbody></table>
+            <div key={r.strike}>
+              <div ref={isAtm ? atmRef : undefined}
+                className={clsx('group grid items-stretch h-[38px] border-b border-slate-100 dark:border-white/[0.03]',
+                  isAtm ? 'bg-amber-50 dark:bg-amber-500/[0.08]' : (ceRun != null || peRun != null) ? 'bg-slate-50 dark:bg-white/[0.03]' : 'hover:bg-slate-50/60 dark:hover:bg-white/[0.02]')}
+                style={{ gridTemplateColumns: COLS }}>
+                {/* CALL: Δ Θ V · OI · OIchg · LTP */}
+                <G v={r.ce ? deltaOf(r.ce, r.strike, 'CE') : undefined} cls={clsx('font-bold text-emerald-600 dark:text-emerald-400', ceTint)} />
+                <G v={r.ce?.theta} cls={clsx('text-amber-600 dark:text-amber-500', ceTint)} d={1} />
+                <G v={r.ce?.vega} cls={clsx('text-slate-500 dark:text-white/45', ceTint)} />
+                <OiTotal q={r.ce} side="call" tint={ceTint} />
+                <div className={ceTint}><OiChip q={r.ce} side="call" /></div>
+                <div className="relative flex items-center">{posPill(ceRun) && <span className="absolute left-1 z-20">{posPill(ceRun)}</span>}<div className="flex-1 h-full"><LtpCell q={r.ce} K={r.strike} ot="CE" side="call" tint={ceTint} /></div></div>
+                {/* STRIKE */}
+                <div className={clsx('flex items-center justify-center border-x', isAtm ? 'border-amber-300/60 dark:border-amber-700/50 bg-amber-100/40 dark:bg-amber-500/[0.06]' : 'border-slate-200/70 dark:border-white/[0.05] bg-slate-50 dark:bg-white/[0.02]')}>
+                  <span className={clsx('font-mono tabular-nums font-black', isAtm ? 'text-[13.5px] text-amber-700 dark:text-amber-300' : 'text-[13px] text-blue-600 dark:text-blue-400')}>{r.strike.toLocaleString('en-IN')}</span>
+                </div>
+                {/* PUT: LTP · OIchg · OI · V Θ Δ */}
+                <div className="relative flex items-center"><div className="flex-1 h-full"><LtpCell q={r.pe} K={r.strike} ot="PE" side="put" tint={peTint} /></div>{posPill(peRun) && <span className="absolute right-1 z-20">{posPill(peRun)}</span>}</div>
+                <div className={peTint}><OiChip q={r.pe} side="put" /></div>
+                <OiTotal q={r.pe} side="put" tint={peTint} />
+                <G v={r.pe?.vega} cls={clsx('text-slate-500 dark:text-white/45', peTint)} />
+                <G v={r.pe?.theta} cls={clsx('text-amber-600 dark:text-amber-500', peTint)} d={1} />
+                <G v={r.pe ? deltaOf(r.pe, r.strike, 'PE') : undefined} cls={clsx('font-bold text-rose-600 dark:text-rose-400', peTint)} />
+              </div>
+              {showSpot && (
+                <div className="relative h-0 z-10">
+                  <div className="absolute inset-x-0 -top-px h-[1.5px] bg-brand-500 dark:bg-brand-400" />
+                  <span className="absolute right-1.5 -top-[9px] px-1.5 py-px rounded bg-brand-500 text-white text-[9px] font-black tabular-nums shadow">{chain.spot.toLocaleString('en-IN')}</span>
+                </div>
+              )}
+            </div>
           )
         })}
       </div>
@@ -521,8 +617,12 @@ function usePayoff() {
     if (!config) return []
     const ed = config.expiryId.split('-').slice(1).join('-')
     const dte = Math.max(0.5, (Date.parse(`${ed}T00:00:00+05:30`) + 930 * 60000 - ts) / 86_400_000)
-    return positions.filter(l => l.status === 'OPEN').map(l => ({ optType: l.optType, strike: l.strike, qty: l.side === 'BUY' ? l.qty : -l.qty, entry: l.avgEntry, dte, iv: 0.15 }))
-  }, [positions, config, ts])
+    const ivOf = (cid: string) => {
+      for (const r of chain?.rows ?? []) { if (r.ce?.contractId === cid) return r.ce.iv; if (r.pe?.contractId === cid) return r.pe.iv }
+      return undefined
+    }
+    return positions.filter(l => l.status === 'OPEN').map(l => ({ optType: l.optType, strike: l.strike, qty: l.side === 'BUY' ? l.qty : -l.qty, entry: l.avgEntry, dte, iv: ivOf(l.contractId) || 0.15 }))
+  }, [positions, config, ts, chain])
   const data = useMemo(() => computePayoffCurve(legs), [legs])
   const spot = chain?.spot ?? 0
   const step = chain?.step ?? 50
@@ -554,18 +654,71 @@ function PnlView() {
   )
 }
 
+// Net portfolio greeks = Σ (contract greek × signed qty), using the live chain snapshot.
+function usePortfolioGreeks() {
+  const { positions, chain } = useSim()
+  return useMemo(() => {
+    const g = { delta: 0, gamma: 0, theta: 0, vega: 0, hasData: false }
+    if (!chain) return g
+    const byId = new Map<string, OptionQuote>()
+    for (const r of chain.rows) { if (r.ce) byId.set(r.ce.contractId, r.ce); if (r.pe) byId.set(r.pe.contractId, r.pe) }
+    for (const l of positions) {
+      if (l.status !== 'OPEN') continue
+      const q = byId.get(l.contractId); if (!q) continue
+      const sq = l.side === 'BUY' ? l.qty : -l.qty
+      g.delta += (q.delta ?? 0) * sq
+      g.gamma += (q.gamma ?? 0) * sq
+      g.theta += (q.theta ?? 0) * sq
+      g.vega += (q.vega ?? 0) * sq
+      g.hasData = true
+    }
+    return g
+  }, [positions, chain])
+}
+
+function GreeksBar() {
+  const g = usePortfolioGreeks()
+  const cards: { k: string; sub: string; txt: string; tone: 'green' | 'red' | 'slate' }[] = [
+    { k: 'Delta', sub: 'Directional (units)', txt: signed(g.delta, 1), tone: g.delta >= 0 ? 'green' : 'red' },
+    { k: 'Gamma', sub: 'Δ per point', txt: g.gamma.toFixed(3), tone: 'slate' },
+    { k: 'Theta', sub: '₹ / day', txt: money(g.theta), tone: g.theta >= 0 ? 'green' : 'red' },
+    { k: 'Vega', sub: '₹ / 1% IV', txt: money(g.vega), tone: g.vega >= 0 ? 'green' : 'red' },
+  ]
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+      {cards.map((c) => (
+        <div key={c.k} className="relative rounded-xl border border-slate-200 dark:border-white/[0.07] bg-gradient-to-br from-white to-slate-50/60 dark:from-white/[0.03] dark:to-transparent px-3 py-2.5 overflow-hidden">
+          <div className="text-[9px] font-black uppercase tracking-widest text-slate-400 dark:text-white/30">{c.k}</div>
+          <div className={clsx('text-[16px] font-black tabular-nums leading-tight mt-0.5',
+            !g.hasData ? 'text-slate-300 dark:text-white/20' : c.tone === 'green' ? 'text-emerald-600 dark:text-emerald-400' : c.tone === 'red' ? 'text-red-500 dark:text-red-400' : 'text-slate-700 dark:text-white/80')}>
+            {g.hasData ? c.txt : '—'}
+          </div>
+          <div className="text-[9.5px] text-slate-400 dark:text-white/25">{c.sub}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function RiskView() {
   const { positions, realized, unrealized, pnl } = useSim()
   const open = positions.filter(l => l.status === 'OPEN')
   const total = realized + unrealized
   let dd = 0, pk = 0; for (const p of pnl) { pk = Math.max(pk, p.total); dd = Math.min(dd, p.total - pk) }
   return (
-    <div className="flex-1 overflow-y-auto p-3">
+    <div className="flex-1 overflow-y-auto p-3 space-y-3">
+      <div>
+        <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-white/30 mb-1.5">Net position greeks</p>
+        <GreeksBar />
+      </div>
       <div className="grid grid-cols-2 gap-2"><Kpi label="Open legs" value={open.length} raw /><Kpi label="Max drawdown" value={dd} /><Kpi label="Net exposure" value={open.reduce((s, l) => s + (l.side === 'BUY' ? l.qty : -l.qty), 0)} raw /><Kpi label="Total · gross" value={total} strong /></div>
-      <div className="mt-3 rounded-lg border border-slate-100 dark:border-white/[0.06] p-3"><p className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-white/30 mb-1">Not modeled yet</p><p className="text-[11px] text-slate-400 dark:text-white/30">Margin, capital used and cost-adjusted risk arrive with the cost/margin model and the real historical option API.</p></div>
+      <div className="rounded-lg border border-slate-100 dark:border-white/[0.06] p-3"><p className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-white/30 mb-1">Not modeled yet</p><p className="text-[11px] text-slate-400 dark:text-white/30">Margin, capital used and cost-adjusted risk arrive with the cost/margin model.</p></div>
     </div>
   )
 }
+
+const signed = (v: number, d = 0) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(d)}`
+const money = (v: number) => `${v >= 0 ? '+' : '−'}₹${inr(Math.abs(Math.round(v)))}`
 
 function Stat({ label, value, tone }: { label: string; value: string; tone?: 'green' | 'red' | 'indigo' }) {
   const c = tone === 'green' ? 'text-emerald-600 dark:text-emerald-400' : tone === 'red' ? 'text-red-500 dark:text-red-400' : tone === 'indigo' ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-700 dark:text-white/70'

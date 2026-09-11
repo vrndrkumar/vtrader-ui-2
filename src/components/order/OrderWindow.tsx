@@ -30,6 +30,10 @@ export function OrderWindow() {
   const [price, setPrice] = useState('')
   const [lots, setLots] = useState<Record<number, number>>({})
   const [lotSize, setLotSize] = useState(1)
+  // Per-trade broker selection — defaults to ALL currently-selected brokers, but
+  // the user can uncheck one here to skip it for THIS order only (no change to
+  // the global top-bar selection).
+  const [enabled, setEnabled] = useState<Record<number, boolean>>({})
 
   // ── Draggable window (by the header) ──
   const [pos, setPos] = useState({ x: 0, y: 0 })
@@ -52,6 +56,7 @@ export function OrderWindow() {
     void ensureLotSizes().then(() => {
       setLotSize(lotSizeFor(intent.indexName))
       setLots(Object.fromEntries(brokers.map((b) => [b.id, intent.lot ?? defaultLotsFor(b, intent.indexName)])))
+      setEnabled(Object.fromEntries(brokers.map((b) => [b.id, true]))) // default: all on
     })
   }, [open, intent, brokers])
 
@@ -59,16 +64,19 @@ export function OrderWindow() {
 
   const placed = results.length > 0
   const isBuy = intent.side === 'BUY'
-  const totalLots = brokers.reduce((s, b) => s + (lots[b.id] ?? 0), 0)
+  const isOn = (id: number) => enabled[id] !== false
+  const activeBrokers = brokers.filter((b) => isOn(b.id))
+  const totalLots = activeBrokers.reduce((s, b) => s + (lots[b.id] ?? 0), 0)
   const totalQty = totalLots * lotSize
   const resultOf = (id: number) => results.find((r) => r.brokerId === id)
   const statusOf = (id: number) => resultOf(id)?.status
   const priceMissing = needsPrice(orderType) && !(Number(price) > 0)
 
   const place = () => {
+    // Only the checked brokers are traded.
     void submitOrder(
       { ...intent, priceType: orderType, product, price: needsPrice(orderType) ? Number(price) || 0 : undefined },
-      brokers.map((b) => ({ broker: b, lots: lots[b.id] ?? 0 })),
+      activeBrokers.map((b) => ({ broker: b, lots: lots[b.id] ?? 0 })),
     )
   }
 
@@ -112,7 +120,7 @@ export function OrderWindow() {
           {/* Per-broker legs — input is QTY (in multiples of the lot size) */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <p className="text-[11px] font-medium text-slate-400">Brokers ({brokers.length}) · Qty</p>
+              <p className="text-[11px] font-medium text-slate-400">Brokers ({activeBrokers.length}{activeBrokers.length !== brokers.length ? ` of ${brokers.length}` : ''}) · Qty</p>
               <p className="text-[11px] text-slate-400">Lot size <span className="font-semibold text-slate-600 dark:text-slate-300 tabular-nums">{lotSize}</span></p>
             </div>
             <div className="space-y-1.5">
@@ -120,9 +128,17 @@ export function OrderWindow() {
                 const st = statusOf(b.id)
                 const res = resultOf(b.id)
                 const l = lots[b.id] ?? 0
+                const on = isOn(b.id)
                 const setQtyFor = (id: number, q: number) => setLots((m) => ({ ...m, [id]: Math.max(0, Math.round(q / lotSize)) }))
                 return (
-                  <div key={b.id} className="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-slate-50 dark:bg-white/5">
+                  <div key={b.id} className={clsx('flex items-center gap-2 px-2.5 py-2 rounded-lg bg-slate-50 dark:bg-white/5 transition-opacity', !on && 'opacity-55')}>
+                    {/* Include / exclude this broker for THIS trade (hidden once placed). */}
+                    {!placed && (
+                      <button onClick={() => setEnabled((m) => ({ ...m, [b.id]: !on }))} title={on ? 'Exclude this broker from this trade' : 'Include this broker'}
+                        className={clsx('h-4 w-4 shrink-0 rounded border grid place-items-center transition-colors', on ? 'bg-brand-600 border-brand-600' : 'border-slate-300 dark:border-slate-600')}>
+                        {on && <svg viewBox="0 0 24 24" className="h-3 w-3 text-white" fill="none" stroke="currentColor" strokeWidth="4"><path d="M5 12l5 5L20 6" /></svg>}
+                      </button>
+                    )}
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium text-slate-700 dark:text-slate-200 truncate">{b.displayName}</p>
                       {st === 'failed' && res?.message
@@ -131,12 +147,16 @@ export function OrderWindow() {
                     </div>
                     {st ? (
                       <span className={clsx('text-[10px] font-semibold px-2 py-0.5 rounded capitalize', statusStyle[st])}>{st === 'failed' ? 'Rejected' : st}</span>
-                    ) : (
+                    ) : placed ? (
+                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-slate-100 text-slate-400 dark:bg-white/10">Skipped</span>
+                    ) : on ? (
                       <div className="flex items-center gap-1">
                         <button onClick={() => setLots((q) => ({ ...q, [b.id]: Math.max(0, (q[b.id] ?? 0) - 1) }))} className="h-6 w-6 rounded bg-white dark:bg-slate-700 text-slate-500">−</button>
                         <input value={l * lotSize} onChange={(e) => setQtyFor(b.id, Number(e.target.value) || 0)} className="w-14 h-6 text-center text-sm tabular-nums bg-white dark:bg-slate-700 rounded outline-none" />
                         <button onClick={() => setLots((q) => ({ ...q, [b.id]: (q[b.id] ?? 0) + 1 }))} className="h-6 w-6 rounded bg-white dark:bg-slate-700 text-slate-500">+</button>
                       </div>
+                    ) : (
+                      <span className="text-[10px] font-medium text-slate-400">Excluded</span>
                     )}
                   </div>
                 )
@@ -151,7 +171,7 @@ export function OrderWindow() {
           {placed ? (
             <button onClick={close} className="px-6 py-2 rounded-lg bg-slate-800 dark:bg-white/10 text-white text-sm font-semibold">Done</button>
           ) : (
-            <button onClick={place} disabled={brokers.length === 0 || totalQty === 0 || priceMissing} className={clsx('px-8 py-2 rounded-lg text-white text-sm font-semibold disabled:opacity-40', isBuy ? 'bg-brand-600 hover:bg-brand-700' : 'bg-red-600 hover:bg-red-700')}>
+            <button onClick={place} disabled={activeBrokers.length === 0 || totalQty === 0 || priceMissing} className={clsx('px-8 py-2 rounded-lg text-white text-sm font-semibold disabled:opacity-40', isBuy ? 'bg-brand-600 hover:bg-brand-700' : 'bg-red-600 hover:bg-red-700')}>
               {isBuy ? 'Buy' : 'Sell'}
             </button>
           )}

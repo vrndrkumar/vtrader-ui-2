@@ -51,13 +51,21 @@ function norm(r: Record<string, unknown>): IndexBracket {
 }
 
 const kindOf = (r: Record<string, unknown>) => (r.monitorType === 'INDEX' ? 'INDEX' : 'SYMBOL')
+// Broker order ids sometimes come doubled ("123##123"); compare on the base part.
+const normId = (v: unknown) => String(v ?? '').split('##')[0].trim()
 
 interface State {
   all: Record<string, unknown>[]
   byIndex: Record<string, IndexBracket[]>   // INDEX brackets, keyed by index
   bySymbol: Record<string, IndexBracket[]>  // SYMBOL brackets with a PENDING entry, keyed by strike
+  // Entry orders the WS confirmed FILLED (by entry broker order id) that the DB
+  // may still show as PLACED — applied on every reload so the UI reflects the fill.
+  filledOverride: Set<string>
   /** Reload ALL active monitors (index arg kept for call-site compatibility). */
   reload: (index?: string) => Promise<void>
+  /** Mark a bracket's entry FILLED from a WS fill notification (matched by the
+   *  entry order id), without waiting for the DB / positions API. */
+  markFilledByOrderId: (orderId: string) => void
   /** The active SYMBOL OCO monitor for a strike, if any (SL/Target on a position). */
   symbolMonitor: (symbol: string) => Record<string, unknown> | undefined
 }
@@ -66,6 +74,14 @@ export const useIndexBracketStore = create<State>((set, get) => ({
   all: [],
   byIndex: {},
   bySymbol: {},
+  filledOverride: new Set<string>(),
+  markFilledByOrderId: (orderId) => {
+    const id = normId(orderId)
+    if (!id) return
+    const next = new Set(get().filledOverride); next.add(id)
+    set({ filledOverride: next })
+    void get().reload()
+  },
   reload: async () => {
     try {
       const raw = await getOcoMonitors({}) // ALL active monitors for the user (every broker)
@@ -76,6 +92,16 @@ export const useIndexBracketStore = create<State>((set, get) => ({
       const selNames = new Set(bs.accounts.filter((a) => bs.selectedIds.includes(a.id)).map((a) => a.brokerName))
       const brokerOf = (r: Record<string, unknown>) => String(r.brokerName ?? r.broker_name ?? '')
       const rows = selNames.size ? raw.filter((r) => selNames.has(brokerOf(r))) : raw
+      // Apply WS-confirmed entry fills the DB still shows as PLACED/PENDING.
+      const filled = get().filledOverride
+      if (filled.size) {
+        for (const r of rows) {
+          if ((r.entryStatus === 'PLACED' || r.entryStatus === 'PENDING')
+            && filled.has(normId(r.entryBrokerOrderId ?? r.entry_broker_order_id))) {
+            r.entryStatus = 'FILLED'
+          }
+        }
+      }
       const byIndex: Record<string, IndexBracket[]> = {}
       const bySymbol: Record<string, IndexBracket[]> = {}
       for (const r of rows) {

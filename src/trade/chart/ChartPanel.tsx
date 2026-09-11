@@ -71,6 +71,48 @@ function StrikeSwitcher({ panelId, symbolKey }: { panelId: string; symbolKey: st
 }
 const fmtVol = (v: number) => (v >= 1e7 ? `${(v / 1e7).toFixed(2)}Cr` : v >= 1e5 ? `${(v / 1e5).toFixed(2)}L` : v >= 1e3 ? `${(v / 1e3).toFixed(1)}K` : String(Math.round(v)))
 
+// Custom x-axis labels: DATE boundaries highlighted (amber/bold) apart from the
+// muted times, spread across the WHOLE visible range so today's time always shows
+// — identically on every chart, regardless of zoom. A live "now" label sits at
+// the right edge. The default klinecharts x-axis text is made transparent.
+function ChartXAxis({ engineRef }: { engineRef: React.MutableRefObject<ChartEngine | null> }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [ticks, setTicks] = useState<{ x: number; label: string; isDate: boolean }[]>([])
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => {
+    let raf = 0
+    let last = 0
+    const loop = (t: number) => {
+      if (t - last > 250) { // ~4/s — cheap, no visible lag
+        last = t
+        const eng = engineRef.current
+        const el = ref.current
+        if (eng && el) setTicks(eng.xAxisTicks(el.clientWidth))
+        setNow(new Date())
+      }
+      raf = requestAnimationFrame(loop)
+    }
+    raf = requestAnimationFrame(loop)
+    return () => cancelAnimationFrame(raf)
+  }, [engineRef])
+  const p = (n: number) => String(n).padStart(2, '0')
+  return (
+    <div ref={ref} className="absolute left-0 right-0 bottom-[3px] h-4 z-[5] pointer-events-none overflow-hidden">
+      {ticks.map((tk, i) => (
+        <span key={i} style={{ left: tk.x }}
+          className={clsx('absolute -translate-x-1/2 whitespace-nowrap tabular-nums leading-none',
+            tk.isDate
+              ? 'text-[11px] font-extrabold text-amber-500 dark:text-amber-400'
+              : 'text-[10px] font-medium text-slate-400 dark:text-slate-500')}>
+          {tk.label}
+        </span>
+      ))}
+      {/* Live current time at the right edge (accent), always today. */}
+      <span className="absolute right-[58px] text-[10px] font-bold tabular-nums leading-none text-emerald-600 dark:text-emerald-400">{p(now.getHours())}:{p(now.getMinutes())}</span>
+    </div>
+  )
+}
+
 export function ChartPanel({ panelId }: { panelId: string }) {
   const elRef = useRef<HTMLDivElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
@@ -269,6 +311,7 @@ export function ChartPanel({ panelId }: { panelId: string }) {
         )
       })()}
       <div ref={elRef} className="h-full w-full" />
+      {config?.symbol && <ChartXAxis engineRef={engineRef} />}
       {selDrawing && <DrawingEditToolbar engineRef={engineRef} containerRef={rootRef} selection={selDrawing} />}
       {config?.symbol && <ChartOrderLayer engineRef={engineRef} symbolKey={config.symbol.key} ltp={quote?.ltp ?? 0} />}
       {config?.symbol?.kind === 'OPTION' && quote && <ChartPlusOrder engineRef={engineRef} containerRef={rootRef} symbol={config.symbol} ltp={quote.ltp} qty={orderQty} />}

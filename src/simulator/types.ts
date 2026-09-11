@@ -42,10 +42,17 @@ export interface OptionQuote {
   ltp: number
   changePct: number   // vs the session's prior close for that contract
   oi?: number
+  oiChange?: number
+  oiChangePct?: number
   volume?: number
   iv?: number         // implied vol (fraction, e.g. 0.18)
   bid?: number
   ask?: number
+  // Per-contract greeks (from the feed when available, else computed).
+  delta?: number
+  gamma?: number
+  theta?: number
+  vega?: number
 }
 
 export interface OptionChainRow {

@@ -61,10 +61,79 @@ function weeklyUpAt(weekly, idx) {
 }
 
 /**
+ * BASE_FAST overlay: recompute the "base timeframe" features on 4H candles.
+ * Only the daily-derived structure/momentum/volume/200-line features move to 4H.
+ * Long-horizon features (prior advance, 52-week context, correction quality),
+ * the WEEKLY turn, RS-vs-NIFTY and turnover stay exactly as CURRENT. Returns null
+ * if 4H history is too short (caller then keeps the CURRENT daily features).
+ */
+function fastBlock(fourH) {
+  if (!fourH || fourH.length < 210) return null
+  const n = fourH.length
+  const i = n - 1
+  const c = closes(fourH)
+  const px = c[i]
+  const e20 = ema(c, 20)
+  const e50 = ema(c, 50)
+  const s200 = sma(c, 200)
+  const r = rsi(c, 14)
+  const ax = adx(fourH, 14)
+  const atrArr = atr(fourH, 14)
+  const bb = bollinger(c, 20, 2)
+  const obvArr = obv(fourH)
+
+  let bbPct = null
+  if (bb.width[i] != null) {
+    let cnt = 0; let tot = 0
+    for (let k = Math.max(0, i - 119); k <= i; k++) { if (bb.width[k] == null) continue; tot++; if (bb.width[k] <= bb.width[i]) cnt++ }
+    if (tot >= 60) bbPct = (cnt / tot) * 100
+  }
+  const sma20 = sma(c, 20)
+  let baseLen = 0
+  for (let k = i; k >= 20; k--) { if (sma20[k] && Math.abs(c[k] - sma20[k]) / sma20[k] < 0.08) baseLen++; else break }
+
+  const vol = fourH.map((x) => x.volume)
+  const avg = (arr, m) => { const t = arr.slice(-m); return t.length ? t.reduce((a, b) => a + b, 0) / t.length : null }
+  const v10 = avg(vol, 10); const v20 = avg(vol, 20); const v50 = avg(vol, 50)
+  const dryUpRatio = n >= 50 && v50 ? v10 / v50 : null
+  const volRatio = v20 ? vol[i] / v20 : null
+  const obvSlope = slope(obvArr.map((v) => v - obvArr[0] + 1e9), 20)
+
+  const swings = findSwings(fourH, 3, 3).filter((s) => s.i + 3 <= i)
+  const hs = swings.filter((s) => s.type === 'H')
+  const ls = swings.filter((s) => s.type === 'L')
+  let trend = 'RANGE'; let choch = false; let higherLow = null
+  if (hs.length >= 2 && ls.length >= 2) {
+    const hh = hs[hs.length - 1].price > hs[hs.length - 2].price
+    const hl = ls[ls.length - 1].price > ls[ls.length - 2].price
+    const lh = hs[hs.length - 1].price < hs[hs.length - 2].price
+    const ll = ls[ls.length - 1].price < ls[ls.length - 2].price
+    trend = hh && hl ? 'UPTREND' : lh && ll ? 'DOWNTREND' : 'RANGE'
+    higherLow = hl
+    if (trend === 'DOWNTREND' && px > hs[hs.length - 1].price) choch = true
+  }
+  const above200 = s200[i] != null ? px > s200[i] : null
+  const above200Prev = s200[i - 20] != null ? c[i - 20] > s200[i - 20] : null
+  const sma200Reclaim = above200 === true && above200Prev === false
+
+  return {
+    trend, choch, higherLow, above200, sma200Reclaim,
+    bbPct: round(bbPct, 1), baseLen,
+    dryUpRatio: round(dryUpRatio, 2), volRatio: round(volRatio, 2), obvSlope: round(obvSlope, 3),
+    rsi: round(last(r), 1), adx: round(last(ax.adx), 1),
+    atrPct: round(atrArr[i] != null ? (atrArr[i] / px) * 100 : null, 2),
+    aboveEma20: e20[i] != null ? px > e20[i] : null,
+    aboveEma50: e50[i] != null ? px > e50[i] : null,
+  }
+}
+
+/**
  * Compute the full validated feature set for the last bar.
  * daily: >= ~450 bars recommended. nifty: daily candles for RS/regime.
+ * opts.mode: 'CURRENT' (default) | 'BASE_FAST' (overlays 4H base features when
+ * opts.fourH is supplied and long enough).
  */
-export function featureSnapshot(daily, nifty) {
+export function featureSnapshot(daily, nifty, opts = {}) {
   // Graceful degradation: 30 bars is the true minimum (RSI-14, ATR, 20SMA/BB).
   // Everything longer-horizon (BB percentile, dry-up ratio, 200SMA, 52w
   // context, prior advance, weekly trend) is computed only when enough
@@ -256,7 +325,7 @@ export function featureSnapshot(daily, nifty) {
     if (lastN != null) regimeUp = nifty[nifty.length - 1].close > lastN
   }
 
-  return {
+  const snap = {
     price: round(px),
     date: new Date(daily[i].time * 1000).toISOString().slice(0, 10),
     historyBars: n,
@@ -291,5 +360,13 @@ export function featureSnapshot(daily, nifty) {
     turnoverCr: round((px * (v20 ?? 0)) / 1e7, 2), // 20-day avg daily turnover, ₹ crore
     aboveEma20: e20[i] != null ? px > e20[i] : null,
     aboveEma50: e50[i] != null ? px > e50[i] : null,
+    tfMode: 'CURRENT',
   }
+  // BASE_FAST: overlay 4H base-timeframe features (weekly turn + long-horizon
+  // features stay as CURRENT). Silently keeps CURRENT if 4H is too short.
+  if (opts.mode === 'BASE_FAST') {
+    const fb = fastBlock(opts.fourH)
+    if (fb) { Object.assign(snap, fb); snap.tfMode = 'BASE_FAST' }
+  }
+  return snap
 }

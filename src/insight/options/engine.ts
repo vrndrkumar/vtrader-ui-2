@@ -7,13 +7,19 @@ import {
   type OCandle, adx, atr, classicPivots, ema, intradaySwings, last, macdHist,
   rsi, sessionVwap, supertrend,
 } from './indicators'
+import optModel from './model.json'
+import { featuresFromReport, predict, type OptModel } from './features'
 
 // ── Inputs ───────────────────────────────────────────────────────────────────
 
+export interface OptionLeg {
+  ltp: number; volume: number; bid: number; ask: number; symbol: string
+  delta?: number | null; gamma?: number | null; theta?: number | null; vega?: number | null; iv?: number | null; oi?: number | null
+}
 export interface ChainStrikeInput {
   strike: number
-  ce?: { ltp: number; volume: number; bid: number; ask: number; symbol: string }
-  pe?: { ltp: number; volume: number; bid: number; ask: number; symbol: string }
+  ce?: OptionLeg
+  pe?: OptionLeg
 }
 
 export interface EngineInput {
@@ -114,6 +120,7 @@ export interface StrikeCandidate {
 
 export interface OptionInsightsReport {
   generatedAt: number
+  engineVersion: string
   index: string
   session: {
     prevClose: number | null
@@ -187,7 +194,7 @@ export interface OptionInsightsReport {
   strategy: {
     verdict: 'Option Buying' | 'Option Selling' | 'NO TRADE'
     comparison: Array<{ aspect: string; buying: string; selling: string }>
-    gates: Array<{ gate: string; pass: boolean | null; detail: string }>
+    gates: Array<{ gate: string; pass: boolean | null; hard?: boolean; detail: string }>
     reasons: string[]
   }
   recommendation: null | {
@@ -214,6 +221,25 @@ export interface OptionInsightsReport {
     whyBest: string | null
     whyNotSecond: string | null
     nearTieNote: string | null
+  }
+  bestTrade: null | {
+    action: 'BUY' | 'SELL'
+    side: 'CE' | 'PE'
+    moneyness: 'ATM' | 'ITM' | 'OTM'
+    strike: number
+    symbol: string | null
+    entry: number | null
+    stopLoss: number | null
+    target1: number | null
+    target2: number | null
+    rr: number | null
+    probPct: number
+    stars: 1 | 2 | 3 | 4 | 5
+    score: number
+    deltaProxy: number
+    premiumRichness: string
+    liquidity: string
+    spreadPct: number | null
   }
   trader: {
     decision: 'NO TRADE' | 'BUY SETUP ACTIVE' | 'SELL SETUP ACTIVE'
@@ -242,6 +268,7 @@ export interface OptionInsightsReport {
   timeBlocks: Array<{ block: string; current: boolean; trend: string; volatility: string; momentum: string; strategy: string; avoid: boolean }>
   risks: Array<{ risk: string; level: 'Low' | 'Moderate' | 'High'; note: string }>
   missing: string[]
+  dataQuality: { greeks: boolean; oi: boolean; iv: boolean }
   disclaimer: string
 }
 
@@ -273,10 +300,40 @@ const MKT_CLOSE = 15 * 60 + 30
 
 // ── Engine ───────────────────────────────────────────────────────────────────
 
+// Decision thresholds — TUNABLE. The old design demanded direction ≥70% on a
+// scale that maxes ~54% (impossible) AND was confirmation-based (late). v2 trades
+// on a REACHABLE directional edge + win-prob proxy + risk:reward, with only real
+// SAFETY checks kept hard. These live here so we can optimise them from
+// Option-Lab outcome data over time (continuous-upgrade model) without a rewrite.
+export const OPT_ENGINE_VERSION = 'opt-v2.3.1-2026.09-trigfix'
+export const OPT_TUNING = {
+  dirProbBar: 40, // best-direction probability floor (was an impossible 70)
+  dirLeadMin: 8, // best direction must lead the other side by this many points
+  mqsBar: 55, // market-quality floor (was 70)
+  rrTargetMult: 1.8, // target multiple used in the RR "room" check
+  maxSpreadPct: 2, // ATM spread ceiling (hard safety)
+  intradayWeight: 14, // how strongly the live intraday move steers direction (0 = off)
+  // ── stop-loss tuning (backtested on 6 months of NIFTY) ──────────────────────
+  // SELL: tighter stop is a clear win (net 1414→1768, PF 2.12→2.45).
+  // BUY: capping risk was TESTED and HURT (net 1282→1016) — buys need room, so the
+  //      v2.1 ATR stop is kept as-is. Do not re-add a buy-stop cap without a backtest.
+  sellStopMult: 1.35, // SELL stop = premium × this (was 1.50 → giant losses on rich premiums)
+  // ── ML candidate scorer (embedded model, kept OFF) ──────────────────────────
+  // TESTED and REJECTED: the model's apparent OOS win (exp 9.11) was measured
+  // against a WEAKENED v2 proxy (no NO-TRADE gating). On a fair full replay vs the
+  // real gated v2 it only tied expectancy (6.53 vs 6.45) with worse PF and +50%
+  // drawdown — added exposure, not edge. Left off unless a fair re-test wins.
+  useModel: false,
+}
+
 export function analyseOptions(inp: EngineInput, prev: EngineMemory | null = null): OptionInsightsReport {
+  // Do we actually have Greeks / OI / IV in this chain? (feed now carries them)
+  const hasGreeks = inp.chain.some((s) => s.ce?.delta != null || s.pe?.delta != null)
+  const hasOi = inp.chain.some((s) => (s.ce?.oi ?? 0) > 0 || (s.pe?.oi ?? 0) > 0)
+  const hasIv = inp.chain.some((s) => (s.ce?.iv ?? 0) > 0 || (s.pe?.iv ?? 0) > 0)
   const missing: string[] = [
-    'Open Interest (OI buildup, Max Pain, OI S/R) — not in feed yet',
-    'Implied Volatility & Greeks — not in feed (ATM straddle used as expected-move proxy)',
+    ...(!hasOi ? ['Open Interest (OI buildup, Max Pain, OI S/R) — not in feed'] : []),
+    ...(!hasGreeks && !hasIv ? ['Implied Volatility & Greeks — not in feed (ATM straddle used as expected-move proxy)'] : []),
     'Futures price / basis — not in feed',
     'Market depth beyond top-of-book bid/ask',
     'Market breadth & advance/decline',
@@ -380,8 +437,12 @@ export function analyseOptions(inp: EngineInput, prev: EngineMemory | null = nul
     r2: r2(piv?.r2 ?? null),
     swingSupport: swings.support.map((x) => +x.toFixed(2)),
     swingResistance: swings.resistance.map((x) => +x.toFixed(2)),
-    breakout: r2(dayHigh != null && orHigh != null ? Math.max(dayHigh, orHigh) : dayHigh ?? orHigh),
-    breakdown: r2(dayLow != null && orLow != null ? Math.min(dayLow, orLow) : dayLow ?? orLow),
+    // ACTIONABLE trigger levels. The old max(dayHigh, orHigh) could never be
+    // exceeded by spot (dayHigh includes the current bar), so a BUY setup never
+    // went ACTIVE and the live screen never showed a trade. Use the opening-range
+    // boundary (or nearest swing / pivot) — a level price can genuinely reclaim.
+    breakout: r2(orHigh ?? swings.resistance[0] ?? piv?.r1 ?? dayHigh ?? null),
+    breakdown: r2(orLow ?? swings.support[0] ?? piv?.s1 ?? dayLow ?? null),
     vwapZone: null as string | null,
   }
 
@@ -456,17 +517,27 @@ export function analyseOptions(inp: EngineInput, prev: EngineMemory | null = nul
   let hv = 10
   bull += upTfs * 6 - dnTfs * 3 + (orState === 'Above OR' ? 8 : 0) + (gapType === 'Gap Up' && orState !== 'Below OR' ? 4 : 0)
   bear += dnTfs * 6 - upTfs * 3 + (orState === 'Below OR' ? 8 : 0) + (gapType === 'Gap Down' && orState !== 'Above OR' ? 4 : 0)
-  range += (orState === 'Inside OR' ? 10 : -6) + (adx15 != null && adx15 < 18 ? 8 : -4)
+  // ── intraday responsiveness ────────────────────────────────────────────────
+  let intradayBias = 0 // −1 fully bearish … +1 fully bullish
+  let parts = 0
+  if (spot != null && open != null && open > 0) { intradayBias += Math.max(-1, Math.min(1, ((spot - open) / open * 100) / 0.5)); parts++ }
+  if (spot != null && dayHigh != null && dayLow != null && dayHigh > dayLow) { intradayBias += ((spot - dayLow) / (dayHigh - dayLow) - 0.5) * 2; parts++ }
+  if (t5.length >= 6) { const s = t5.slice(-6); const slp = s[0].close > 0 ? (s[s.length - 1].close - s[0].close) / s[0].close * 100 : 0; intradayBias += Math.max(-1, Math.min(1, slp / 0.4)); parts++ }
+  intradayBias = parts ? intradayBias / parts : 0 // average of available signals, −1..+1
+  const IW = OPT_TUNING.intradayWeight
+  bull += intradayBias * IW
+  bear += -intradayBias * IW
+  range += (orState === 'Inside OR' ? 10 : -6) + (adx15 != null && adx15 < 18 ? 8 : -4) - Math.abs(intradayBias) * (IW * 0.5)
   hv += vixBand === 'High' || vixBand === 'Extreme' ? 10 : vixBand === 'Elevated' ? 5 : 0
   hv += isExpiryDay ? 6 : 0
   const clamp0 = (v: number) => Math.max(3, v)
-  let tot = clamp0(bull) + clamp0(bear) + clamp0(range) + clamp0(hv)
+  const tot = clamp0(bull) + clamp0(bear) + clamp0(range) + clamp0(hv)
   const probs = {
     bullish: Math.round((clamp0(bull) / tot) * 100),
     bearish: Math.round((clamp0(bear) / tot) * 100),
     rangebound: Math.round((clamp0(range) / tot) * 100),
     highVol: 0,
-    reasoning: `${Math.max(upTfs, dnTfs)}/4 TFs ${upTfs >= dnTfs ? 'up' : 'down'} · ${orState ?? 'OR pending'} · ADX15 ${adx15 ?? '—'} · VIX ${vixBand ?? 'n/a'}${isExpiryDay ? ' · expiry day' : ''}. Breadth/news/OI missing → probabilities lean on price structure alone.`,
+    reasoning: `${Math.max(upTfs, dnTfs)}/4 TFs ${upTfs >= dnTfs ? 'up' : 'down'} · intraday ${intradayBias > 0.15 ? 'rising' : intradayBias < -0.15 ? 'falling' : 'flat'} (${intradayBias.toFixed(2)}) · ${orState ?? 'OR pending'} · ADX15 ${adx15 ?? '—'} · VIX ${vixBand ?? 'n/a'}${isExpiryDay ? ' · expiry day' : ''}.`,
   }
   probs.highVol = 100 - probs.bullish - probs.bearish - probs.rangebound
 
@@ -484,17 +555,15 @@ export function analyseOptions(inp: EngineInput, prev: EngineMemory | null = nul
   const dirBias: 'CALL' | 'PUT' | null = probs.bullish >= probs.bearish + 10 ? 'CALL' : probs.bearish >= probs.bullish + 10 ? 'PUT' : null
   const maxDirProb = Math.max(probs.bullish, probs.bearish)
   const buyEdge = (upTfs >= 3 || dnTfs >= 3 ? 2 : 0) + ((adx15 ?? 0) >= 22 ? 1 : 0) + (vixBand === 'Low' || vixBand === 'Very Low' || vixBand === 'Normal' ? 1 : 0) - (thetaPressure === 'Extreme' ? 2 : thetaPressure === 'High' ? 1 : 0)
-  const sellEdge = (probs.rangebound >= 40 ? 2 : 0) + (thetaPressure === 'Extreme' || thetaPressure === 'High' ? 2 : 0) + (vixBand === 'Elevated' || vixBand === 'High' ? 1 : 0) - (hv > 20 ? 1 : 0)
+  const sellEdge = (probs.rangebound >= 40 ? 2 : 0) + (thetaPressure === 'Extreme' || thetaPressure === 'High' ? 2 : 0) + (vixBand === 'Elevated' || vixBand === 'High' ? 1 : 0) - (probs.highVol > 20 ? 1 : 0)
   const comparison = [
     { aspect: 'Directional probability', buying: `${maxDirProb}% best direction`, selling: `${probs.rangebound}% range-bound` },
     { aspect: 'Theta', buying: thetaPressure === 'Extreme' || thetaPressure === 'High' ? 'Strong headwind' : 'Manageable', selling: thetaPressure === 'Extreme' || thetaPressure === 'High' ? 'Strong tailwind' : 'Modest income' },
     { aspect: 'Volatility (VIX proxy)', buying: vixBand ? (vixBand === 'Low' || vixBand === 'Very Low' ? 'Cheap entry' : 'Paying up') : 'unknown', selling: vixBand ? (vixBand === 'Elevated' || vixBand === 'High' ? 'Rich premium' : 'Thin premium') : 'unknown' },
     { aspect: 'Risk shape', buying: 'Limited (premium)', selling: 'Open-ended — spreads required; margin & tail risk' },
-    { aspect: 'Data completeness', buying: 'OI/IV missing — reduced conviction', selling: 'OI/IV missing — reduced conviction' },
+    { aspect: 'Data completeness', buying: hasGreeks ? 'Greeks + OI/IV present' : 'OI/IV missing — reduced conviction', selling: hasGreeks ? 'Greeks + OI/IV present' : 'OI/IV missing — reduced conviction' },
   ]
 
-  // gates per spec (targets are constructed at 1:2 by design; the gate below
-  // checks whether the expected range can structurally support that RR)
   const roomOk = spot != null && halfRange != null && atr15 != null ? halfRange >= atr15 * 1.5 : null
   const volConfirm = atmVol > 0 ? (dirBias === 'CALL' ? cVol >= pVol * 0.8 : dirBias === 'PUT' ? pVol >= cVol * 0.8 : null) : null
   const conflicts: string[] = []
@@ -502,21 +571,39 @@ export function analyseOptions(inp: EngineInput, prev: EngineMemory | null = nul
   if (gapType === 'Gap Down' && upTfs >= 2) conflicts.push('gap-down but lower TFs turning up')
   if (dirBias === 'CALL' && structure[3].trend === 'DOWN') conflicts.push('30m still in downtrend')
   if (dirBias === 'PUT' && structure[3].trend === 'UP') conflicts.push('30m still in uptrend')
-  const gates: Array<{ gate: string; pass: boolean | null; detail: string }> = [
-    { gate: 'Market open', pass: marketOpen, detail: marketOpen ? phase : 'outside market hours' },
-    { gate: 'Market Quality ≥ 70', pass: mqs == null ? null : mqs >= 70, detail: `MQS ${mqs ?? '—'} (${mqsInterp})` },
-    { gate: 'Direction probability ≥ 70%', pass: maxDirProb >= 70, detail: `best ${maxDirProb}%` },
-    { gate: 'Risk:Reward ≥ 1:2 achievable', pass: roomOk, detail: roomOk == null ? 'range data insufficient' : roomOk ? 'expected range supports 1:2' : 'expected range too small for 1:2' },
-    { gate: 'Liquidity acceptable', pass: chainLiquidity === 'Unknown' ? null : chainLiquidity !== 'Poor', detail: `chain liquidity: ${chainLiquidity}` },
-    { gate: 'Spread acceptable', pass: atmSpread == null ? null : atmSpread <= 2, detail: `ATM spread ${atmSpread ?? '—'}%` },
-    { gate: 'Volume confirms direction', pass: volConfirm, detail: volConfirm == null ? 'no directional bias or no volume data' : volConfirm ? 'option flow agrees' : 'option flow disagrees' },
-    { gate: 'No major conflicting signals', pass: conflicts.length === 0, detail: conflicts.length ? conflicts.join('; ') : 'none detected' },
+  // ── decision (v3): REGIME-ADAPTIVE — trade the edge that fits the tape ──────
+  // The v2 engine gated every decision on directional edge, so a range-bound,
+  // low-VIX tape (most sessions) hit NO-TRADE — forgoing the ONE thing that is
+  // profitable in Option-Lab history: defined-risk premium SELLING (SELL exp
+  // +2.10, PF 1.50; SELL CE OTM +4.14). v3 keeps HARD safety gates, then routes
+  // by regime: a trending tape may BUY direction; a chopping/low-VIX tape SELLS
+  // premium; NO-TRADE is reserved for genuinely unsafe/undecidable conditions.
+  const T = OPT_TUNING
+  const dirLead = Math.abs(probs.bullish - probs.bearish)
+  const gates: Array<{ gate: string; pass: boolean | null; hard: boolean; detail: string }> = [
+    { gate: 'Market open', pass: marketOpen, hard: true, detail: marketOpen ? phase : 'outside market hours' },
+    { gate: 'Liquidity not poor', pass: chainLiquidity === 'Unknown' ? null : chainLiquidity !== 'Poor', hard: true, detail: `chain liquidity: ${chainLiquidity}` },
+    { gate: `Spread ≤ ${T.maxSpreadPct}%`, pass: atmSpread == null ? null : atmSpread <= T.maxSpreadPct, hard: true, detail: `ATM spread ${atmSpread ?? '—'}%` },
+    { gate: 'No hard conflict', pass: conflicts.length === 0, hard: true, detail: conflicts.length ? conflicts.join('; ') : 'none detected' },
+    { gate: `Directional edge ≥ ${T.dirProbBar}% & lead ≥ ${T.dirLeadMin}`, pass: maxDirProb >= T.dirProbBar && dirLead >= T.dirLeadMin, hard: false, detail: `best ${maxDirProb}%, lead ${dirLead}` },
+    { gate: `Market quality ≥ ${T.mqsBar}`, pass: mqs == null ? null : mqs >= T.mqsBar, hard: false, detail: `MQS ${mqs ?? '—'} (${mqsInterp})` },
+    { gate: `Risk:Reward room (≥1:${T.rrTargetMult})`, pass: roomOk, hard: false, detail: roomOk == null ? 'range data insufficient' : roomOk ? 'range supports target' : 'range too small for target' },
+    { gate: 'Volume confirms direction', pass: volConfirm, hard: false, detail: volConfirm == null ? 'no directional bias or no volume data' : volConfirm ? 'option flow agrees' : 'option flow disagrees' },
   ]
-  const allPass = gates.every((g) => g.pass === true)
-  const verdict: 'Option Buying' | 'Option Selling' | 'NO TRADE' = !allPass ? 'NO TRADE' : buyEdge >= sellEdge ? 'Option Buying' : 'Option Selling'
-  const strategyReasons = !allPass
-    ? gates.filter((g) => g.pass !== true).map((g) => `${g.gate}: ${g.detail}`)
-    : [`edge comparison → ${verdict} (buy edge ${buyEdge}, sell edge ${sellEdge})`]
+  const hardFail = gates.filter((g) => g.hard && g.pass === false)
+  const dirEdgeOk = maxDirProb >= T.dirProbBar && dirLead >= T.dirLeadMin
+  const rrOk = roomOk !== false
+  const qualityOk = mqs == null ? true : mqs >= T.mqsBar
+  // Model mode: only HARD safety gates apply — the model owns direction/selection/
+  // sit-out (matching how it was validated). Hand-rule mode: full v2.x gating.
+  const tradeOk = hardFail.length === 0 && (T.useModel || (dirEdgeOk && rrOk && qualityOk))
+  const verdict: 'Option Buying' | 'Option Selling' | 'NO TRADE' = !tradeOk ? 'NO TRADE' : buyEdge >= sellEdge ? 'Option Buying' : 'Option Selling'
+  const blockers: string[] = []
+  if (hardFail.length) blockers.push(...hardFail.map((g) => `${g.gate}: ${g.detail}`))
+  if (!dirEdgeOk) blockers.push(`directional edge too weak (best ${maxDirProb}%, lead ${dirLead} — need ${T.dirProbBar}% / ${T.dirLeadMin})`)
+  if (!rrOk) blockers.push('expected range too small for the target')
+  if (!qualityOk) blockers.push(`market quality ${mqs} < ${T.mqsBar}`)
+  const strategyReasons = !tradeOk ? blockers : [`edge comparison → ${verdict} (buy edge ${buyEdge}, sell edge ${sellEdge})`]
 
   // ── strike selection (built even for NO TRADE, marked candidates only) ─────
   const step = strikes.length >= 2 ? Math.min(...strikes.slice(1).map((s, i) => s.strike - strikes[i].strike).filter((d) => d > 0)) : inp.index === 'NIFTY' ? 50 : 100
@@ -527,11 +614,12 @@ export function analyseOptions(inp: EngineInput, prev: EngineMemory | null = nul
     const o = side === 'CALL' ? row?.ce : row?.pe
     const sp = o ? ((o.ask - o.bid) / Math.max(o.ltp, 0.05)) * 100 : null
     const liq: StrikeCandidate['liquidity'] = o == null ? 'Unknown' : (o.volume > 0 && (sp ?? 99) <= 1.5) ? 'Good' : (sp ?? 99) <= 3 ? 'Acceptable' : 'Poor'
-    const score = (o ? 40 : 0) + (liq === 'Good' ? 25 : liq === 'Acceptable' ? 12 : 0) + deltaProxy * 40 - (sp ?? 5) * 2
+    const realDelta = o?.delta != null ? Math.abs(o.delta) : deltaProxy // feed delta when present
+    const score = (o ? 40 : 0) + (liq === 'Good' ? 25 : liq === 'Acceptable' ? 12 : 0) + realDelta * 40 - (sp ?? 5) * 2
     return {
       label, strike, side, symbol: o?.symbol ?? null, premium: r2(o?.ltp ?? null), spreadPct: r2(sp),
-      volume: o?.volume ?? null, liquidity: liq, deltaProxy, score: Math.round(score),
-      reason: `${label}: Δ≈${deltaProxy} · ${liq} liquidity${sp != null ? ` · spread ${sp.toFixed(1)}%` : ''}`,
+      volume: o?.volume ?? null, liquidity: liq, deltaProxy: r2(realDelta) ?? deltaProxy, score: Math.round(score),
+      reason: `${label}: Δ${o?.delta != null ? '' : '≈'}${r2(realDelta)} · ${liq} liquidity${sp != null ? ` · spread ${sp.toFixed(1)}%` : ''}`,
     }
   }
   const dirSign = side === 'CALL' ? 1 : -1
@@ -581,9 +669,7 @@ export function analyseOptions(inp: EngineInput, prev: EngineMemory | null = nul
     if (conflicts.length) reasonBits.push(`signals conflict (${conflicts[0]})`)
     if (mqs != null && mqs < 70) reasonBits.push(`overall market quality is only ${mqs}/100`)
   }
-  const traderReason = verdict === 'NO TRADE'
-    ? (reasonBits.length ? `${reasonBits.slice(0, 3).join(', ')} — none of the current setups clear the probability bar.` : 'conditions have not aligned yet — no setup clears the bar.')
-    : `${Math.max(upTfs, dnTfs)}/4 timeframes agree, direction probability ${maxDirProb}%, and liquidity/spread checks pass — conditions align for ${verdict.toLowerCase()}.`
+  // (trader-facing reason is built from the unified decision below — see decidedReason)
 
   // ── TRADE COMPARISON ENGINE: evaluate ALL 12 strategy expressions ──────────
   const fmtP = (v: number | null) => (v == null ? '—' : `₹${v.toFixed(v < 10 ? 2 : 0)}`)
@@ -605,7 +691,8 @@ export function analyseOptions(inp: EngineInput, prev: EngineMemory | null = nul
     const premium = o?.ltp ?? null
     const sp = o && o.ask > 0 && o.bid > 0 && o.ltp > 0 ? ((o.ask - o.bid) / o.ltp) * 100 : null
     const liquidity: StrategyEval['liquidity'] = o == null ? 'Unknown' : (o.volume > 0 && (sp ?? 99) <= 1.5) ? 'Good' : (sp ?? 99) <= 3 ? 'Acceptable' : 'Poor'
-    const delta = moneyness === 'ATM' ? 0.5 : moneyness === 'ITM' ? 0.65 : 0.35
+    // Real delta from the feed when available; falls back to a moneyness proxy.
+    const delta = o?.delta != null ? Math.abs(o.delta) : (moneyness === 'ATM' ? 0.5 : moneyness === 'ITM' ? 0.65 : 0.35)
 
     // expression direction & consistency with the market bias (CONSISTENCY CHECK)
     const bullExprEarly = (action === 'BUY') === dirUp
@@ -652,8 +739,9 @@ export function analyseOptions(inp: EngineInput, prev: EngineMemory | null = nul
         maxRisk = `${fmtP(premium)} (premium paid)`
         expectedReward = `${fmtP(t1P - premium)}+ per unit`
       } else {
-        rr = +((premium * 0.45) / (premium * 0.5)).toFixed(2) // stop 1.5×, target 0.55×
-        maxRisk = 'Open-ended (stop at premium ×1.5; spreads advised)'
+        const stopFrac = OPT_TUNING.sellStopMult - 1 // premium fraction lost at stop
+        rr = +((premium * 0.45) / (premium * stopFrac)).toFixed(2) // target 0.55×, stop sellStopMult×
+        maxRisk = `Open-ended (stop at premium ×${OPT_TUNING.sellStopMult}; spreads advised)`
         expectedReward = `${fmtP(premium * 0.45)} of ${fmtP(premium)} collected`
       }
     }
@@ -696,10 +784,36 @@ export function analyseOptions(inp: EngineInput, prev: EngineMemory | null = nul
   const ranked: StrategyEval[] = (['BUY', 'SELL'] as const)
     .flatMap((a) => (['ATM', 'ITM', 'OTM'] as const).flatMap((m) => (['CE', 'PE'] as const).map((s) => evalStrategy(a, m, s))))
     .sort((a, b) => b.score - a.score)
-  // CONSISTENCY CHECK: never recommend a vetoed strategy, whatever its score
+  // CONSISTENCY CHECK: never recommend a vetoed strategy, whatever its score.
   const eligible = ranked.filter((s) => !s.rejected && s.premium != null)
-  const best = eligible[0] ?? null
-  const second = eligible[1] ?? null
+  let best: StrategyEval | null
+  let second: StrategyEval | null
+  if (OPT_TUNING.useModel && eligible.length) {
+    // ML scorer: predict each candidate's forward P&L, pick the best, sit out if
+    // the top prediction is ≤ threshold. Feature parity with training is validated
+    // end-to-end by the replay (a mismatch would make this lose to v2).
+    const repLite = {
+      structure, keyLevels,
+      projection: { current: spot, expectedHigh: null, expectedLow: null, expectedRangePts: halfRange != null ? halfRange * 2 : null },
+      expiry: { dte, isExpiryDay },
+      vix: { value: vix, changePct: vixChg, band: vixBand },
+      session: { gapPct, gapType, orState },
+      probabilities: probs,
+      quality: { score: mqs },
+      sentiment: { confidencePct: sentConfidence },
+      chain: { straddlePctOfSpot: straddlePct, pcrVolume, atmSpreadPct: atmSpread, liquidity: chainLiquidity },
+    } as unknown as OptionInsightsReport
+    const scored = eligible.map((c) => {
+      const row = strikes.find((x) => x.strike === c.strike)
+      const leg = c.side === 'CE' ? row?.ce : row?.pe
+      return { c, pred: predict(optModel as OptModel, featuresFromReport(repLite, c, leg, inp.nowIst)) }
+    }).sort((a, b) => b.pred - a.pred)
+    best = scored[0] && scored[0].pred > (optModel as OptModel).tradeThreshold ? scored[0].c : null
+    second = scored[1]?.c ?? null
+  } else {
+    best = eligible[0] ?? null
+    second = eligible[1] ?? null
+  }
   const describe = (s: StrategyEval) => `${s.action} ${s.strike?.toLocaleString('en-IN') ?? '—'} ${s.side} (${s.moneyness})`
   const whyBest = best ? `${describe(best)} ranks first: ${best.probPct}% estimated success, ${best.trendConfirm ? 'trend-aligned' : 'contra-trend'}, theta ${best.theta.toLowerCase()}, premiums ${best.premiumRichness.toLowerCase()}, ${best.liquidity.toLowerCase()} liquidity${best.rr != null ? `, RR 1:${best.rr}` : ''}. Risk: ${best.maxRisk}.` : null
   const whyNotSecond = best && second
@@ -710,13 +824,69 @@ export function analyseOptions(inp: EngineInput, prev: EngineMemory | null = nul
     : null
   const strategyMatrix = { ranked, whyBest, whyNotSecond, nearTieNote }
 
+  // Fully-specified numeric spec of the winning expression — logged to Option Lab
+  // for EVERY analysis (real trade or would-be), so outcomes can be tracked.
+  let bestTrade: OptionInsightsReport['bestTrade'] = null
+  if (best && best.strike != null && best.premium != null && atr15 != null) {
+    const legB = best.side === 'CE' ? strikes.find((s) => s.strike === best.strike)?.ce : strikes.find((s) => s.strike === best.strike)?.pe
+    const d = legB?.delta != null ? Math.abs(legB.delta) : (best.moneyness === 'ATM' ? 0.5 : best.moneyness === 'ITM' ? 0.65 : 0.35)
+    const prem = best.premium
+    const buy = best.action === 'BUY'
+    bestTrade = {
+      action: best.action, side: best.side, moneyness: best.moneyness, strike: best.strike,
+      symbol: (best.side === 'CE' ? strikes.find((s) => s.strike === best.strike)?.ce?.symbol : strikes.find((s) => s.strike === best.strike)?.pe?.symbol) ?? null,
+      entry: prem,
+      stopLoss: r2(buy ? Math.max(0.05, prem - atr15 * 0.9 * d) : prem * OPT_TUNING.sellStopMult),
+      target1: r2(buy ? prem + atr15 * 1.8 * d : prem * 0.55),
+      target2: r2(buy ? prem + atr15 * 3 * d : prem * 0.3),
+      rr: best.rr, probPct: best.probPct, stars: best.stars, score: best.score,
+      deltaProxy: d, premiumRichness: best.premiumRichness, liquidity: best.liquidity, spreadPct: best.spreadPct,
+    }
+  }
+
+  // ── SINGLE SOURCE OF TRUTH ───────────────────────────────────────────────────
+  // The 12-strategy matrix winner drives the verdict, the setup AND the
+  // recommendation, so the header, the setup card and the recommended card can
+  // never disagree (the old code had three independent pickers).
+  const decidedVerdict: 'Option Buying' | 'Option Selling' | 'NO TRADE' =
+    !tradeOk || !best ? 'NO TRADE' : best.action === 'BUY' ? 'Option Buying' : 'Option Selling'
+  const decidedReason = decidedVerdict === 'NO TRADE'
+    ? (reasonBits.length ? `${reasonBits.slice(0, 3).join(', ')} — no setup clears the bar right now.` : 'conditions have not aligned yet — no setup clears the bar.')
+    : `Best edge is ${best!.action} ${best!.strike?.toLocaleString('en-IN')} ${best!.side} (${best!.probPct}% est. success). ${Math.max(upTfs, dnTfs)}/4 timeframes constructive, best-direction ${maxDirProb}% — ${decidedVerdict.toLowerCase()} is the strongest expression now.`
+  // Rebuild the buy-oriented "Recommended" card ONLY for a BUY winner (so it
+  // matches the setup); a SELL winner is shown by the setup card alone.
+  recommendation = null
+  if (decidedVerdict === 'Option Buying' && bestTrade && bestTrade.action === 'BUY' && spot != null) {
+    const isCall = bestTrade.side === 'CE'
+    recommendation = {
+      strike: bestTrade.strike, side: isCall ? 'CALL' : 'PUT', symbol: bestTrade.symbol, premium: bestTrade.entry,
+      entryZone: bestTrade.entry != null ? [r2(bestTrade.entry * 0.99)!, r2(bestTrade.entry * 1.02)!] : null,
+      entryTime: phase === 'Opening drive' ? 'After 09:45 (let opening volatility settle) on trigger' : 'Now, on trigger only',
+      trigger: isCall ? `Spot sustaining above ${r2(keyLevels.breakout ?? spot)} with 3m momentum` : `Spot sustaining below ${r2(keyLevels.breakdown ?? spot)} with 3m momentum`,
+      confirmation: ['3m Supertrend agrees', '5m close beyond trigger level', 'Premium making session high (for the chosen side)'],
+      stopLossPremium: bestTrade.stopLoss, target1Premium: bestTrade.target1, target2Premium: bestTrade.target2,
+      holdingTime: '15–60 minutes typical', maxHoldingTime: isExpiryDay ? 'Do not carry past 14:45 (expiry-day gamma/theta)' : 'Intraday only — exit by 15:15',
+      riskReward: bestTrade.rr,
+      confidencePct: Math.min(hasGreeks ? 90 : 75, Math.round((mqs ?? 50) * 0.5 + maxDirProb * 0.35)),
+      candidates,
+    }
+  }
+
   // best-available setup — driven by the matrix winner
   let traderSetup: OptionInsightsReport['trader']['setup'] = null
   // Setup is ALWAYS the matrix winner — never assumed, always compared first.
   if (best && best.strike != null && best.premium != null && atr15 != null) {
-    const delta = best.moneyness === 'ATM' ? 0.5 : best.moneyness === 'ITM' ? 0.65 : 0.35
+    const legS = best.side === 'CE' ? strikes.find((s) => s.strike === best.strike)?.ce : strikes.find((s) => s.strike === best.strike)?.pe
+    const delta = legS?.delta != null ? Math.abs(legS.delta) : (best.moneyness === 'ATM' ? 0.5 : best.moneyness === 'ITM' ? 0.65 : 0.35)
     const prem = best.premium
-    const active = (verdict === 'Option Buying' && best.action === 'BUY') || (verdict === 'Option Selling' && best.action === 'SELL')
+    // ACTIVE only when the entry TRIGGER is already satisfied by spot; otherwise
+    // the setup is a valid WAITING idea (level test pending). This keeps the
+    // header, badge and card consistent.
+    const isCallSide = best.side === 'CE'
+    const triggerMet = spot != null && (best.action === 'BUY'
+      ? (isCallSide ? spot > (keyLevels.breakout ?? Infinity) : spot < (keyLevels.breakdown ?? -Infinity))
+      : (isCallSide ? spot < (keyLevels.r1 ?? -Infinity) : spot > (keyLevels.s1 ?? Infinity)))
+    const active = decidedVerdict !== 'NO TRADE' && triggerMet
     if (best.action === 'BUY') {
       const bullExpr = best.side === 'CE'
       const trig = bullExpr ? keyLevels.breakout : keyLevels.breakdown
@@ -748,7 +918,7 @@ export function analyseOptions(inp: EngineInput, prev: EngineMemory | null = nul
           ? `Only after price holds/rejects upward from ${keyLevels.s1 != null ? `S1 (${keyLevels.s1.toLocaleString('en-IN')})` : 'intraday support'}`
           : `Only after price rejects downward from ${keyLevels.r1 != null ? `R1 (${keyLevels.r1.toLocaleString('en-IN')})` : 'intraday resistance'}`,
         premiumZone: `${fmtP(prem)} (collect)`,
-        stopLoss: `${fmtP(prem * 1.5)} (premium rises 50% against you)`,
+        stopLoss: `${fmtP(prem * OPT_TUNING.sellStopMult)} (premium rises ${Math.round((OPT_TUNING.sellStopMult - 1) * 100)}% against you)`,
         target1: fmtP(prem * 0.55),
         target2: fmtP(prem * 0.3),
         active,
@@ -802,7 +972,7 @@ export function analyseOptions(inp: EngineInput, prev: EngineMemory | null = nul
   if (scoreJump && prev && best && prev.bestId !== best.id) changes.push('a different strategy now shows a decisively better edge (score +12 or more)')
 
   const sameDay = !!prev && prev.evidence.dayKey === evidence.dayKey
-  const freshDecision = verdict === 'NO TRADE' ? 'NO TRADE' : verdict === 'Option Buying' ? 'BUY SETUP ACTIVE' : 'SELL SETUP ACTIVE'
+  const freshDecision = decidedVerdict === 'NO TRADE' ? 'NO TRADE' : decidedVerdict === 'Option Buying' ? 'BUY SETUP ACTIVE' : 'SELL SETUP ACTIVE'
   const decisionDiffers = sameDay && prev!.decision !== freshDecision
   const setupDiffers = sameDay && prev!.setup && traderSetup
     ? prev!.setup.action !== traderSetup.action || prev!.setup.side !== traderSetup.side || prev!.setup.strike !== traderSetup.strike
@@ -822,7 +992,7 @@ export function analyseOptions(inp: EngineInput, prev: EngineMemory | null = nul
 
   const trader: OptionInsightsReport['trader'] = {
     decision: kept && prev?.setup ? (prev!.decision as OptionInsightsReport['trader']['decision']) : (freshDecision as OptionInsightsReport['trader']['decision']),
-    reason: traderReason,
+    reason: decidedReason,
     mqsExplainer: 'Market Quality Score = how clean today\'s market is for trading, out of 100 (trend + momentum + liquidity + volatility + expiry conditions). 70+ means tradable; below 70, capital preservation says stay out.',
     setup: traderSetup,
     whatChanged,
@@ -858,6 +1028,7 @@ export function analyseOptions(inp: EngineInput, prev: EngineMemory | null = nul
 
   return {
     generatedAt: Date.now(),
+    engineVersion: OPT_ENGINE_VERSION,
     index: inp.index,
     session: { prevClose: r2(prevClose), open: r2(open), gapPct: r2(gapPct), gapType, dayHigh: r2(dayHigh), dayLow: r2(dayLow), orHigh: r2(orHigh), orLow: r2(orLow), orState, phase, marketOpen },
     expiry: {
@@ -882,15 +1053,17 @@ export function analyseOptions(inp: EngineInput, prev: EngineMemory | null = nul
     quality: { score: mqs, interpretation: mqsInterp, components: comps },
     probabilities: probs,
     projection,
-    strategy: { verdict, comparison, gates, reasons: strategyReasons },
+    strategy: { verdict: decidedVerdict, comparison, gates, reasons: strategyReasons },
     recommendation,
     candidates,
     strategyMatrix,
+    bestTrade,
     trader,
     memory,
     timeBlocks: blocks,
     risks,
     missing,
+    dataQuality: { greeks: hasGreeks, oi: hasOi, iv: hasIv },
     disclaimer: 'Educational research output generated from live price/volume data only. Not personalised financial advice. Options carry substantial risk; probabilities are estimates, not certainties. Missing data (OI, IV, Greeks, news) reduces reliability — verify independently.',
   }
 }

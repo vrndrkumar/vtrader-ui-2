@@ -196,6 +196,22 @@ export async function getRankContext(symbolCode) {
   return ctx
 }
 
+/**
+ * Market percentile for conviction — measured ONLY against stocks that actually
+ * score in this engine (score > 0). Momentum/Transition are 0 for most stocks,
+ * so ranking against the whole universe made any active stock look near-top and
+ * inflated conviction. Returns null when the stock isn't active in the engine.
+ */
+export async function enginePercentile(symbolCode, engine) {
+  const rows = await getAllLatestScores()
+  const mine = rows.find((r) => r.symbol_code === symbolCode)
+  if (!mine || !(mine[engine] > 0)) return null
+  const active = rows.filter((r) => r[engine] > 0)
+  if (active.length < 2) return null
+  const better = active.filter((r) => r[engine] > mine[engine]).length
+  return +(((1 - better / active.length) * 100).toFixed(1))
+}
+
 export async function saveAnalysis(stockRow, analysis) {
   const pool = getPool()
 
@@ -205,11 +221,13 @@ export async function saveAnalysis(stockRow, analysis) {
   try {
     const rows = await getAllLatestScores()
     const engine = analysis.family ?? 'discovery'
-    const scored = rows.filter((r) => r.symbol_code !== stockRow.symbol_code && r[engine] != null)
     const myScore = analysis.scores[engine] ?? 0
+    // Percentile only among stocks ACTIVE in this engine (score > 0), so a stock
+    // isn't credited for "beating" the majority that simply don't play here.
+    const scored = rows.filter((r) => r.symbol_code !== stockRow.symbol_code && r[engine] > 0)
     const better = scored.filter((r) => r[engine] > myScore).length
     const total = scored.length + 1
-    const pctile = total > 1 ? (1 - better / total) * 100 : 50
+    const pctile = myScore > 0 && total > 1 ? (1 - better / total) * 100 : (myScore > 0 ? 50 : 5)
     conv = convictionOf(analysis.scores, pctile, analysis.scores.risk)
     ranks = { market_rank: better + 1, market_total: total }
   } catch { /* ranks optional at save time */ }
@@ -603,41 +621,32 @@ export async function pruneOldSnapshots(keepDays = 90) {
 }
 
 /** Standout bullets for one stock: rank context + history trends. */
-export async function getStandout(symbolCode, rankCtx, history) {
+export async function getStandout(symbolCode, rankCtx, history, analysis) {
+  // The headline: the ACTUAL technical reasons this stock qualifies, in plain
+  // language, plus ONE simple overall rank. No engine names, scores or
+  // percentiles (those live in the detailed evidence sections).
   const lines = []
-  const m = rankCtx?.discovery?.market
-  if (m?.rank === 1) {
-    lines.push(m.tied > 1
-      ? `Joint-highest Discovery score in the analysed market (tied with ${m.tied - 1} others of ${m.total})`
-      : `Highest Discovery score in the entire analysed market (#1 of ${m.total})`)
-  } else if (m?.topPct != null && m.topPct <= 10) {
-    lines.push(`Top ${m.topPct}% of the analysed market on Discovery (#${m.rank} of ${m.total})`)
+  // Rank against the Discovery score — the ONLY score computed densely for every
+  // stock, so ranks are comparable and spread out (Transition/Momentum are 0 for
+  // most stocks, which made every pick look like "#1"). Ties at the very top are
+  // shown as a percentile, never a fake "#1 of 2350".
+  const rk = rankCtx?.discovery?.market
+  if (rk?.rank != null && rk?.total != null) {
+    lines.push(rk.rank === 1 && rk.tied > 1
+      ? `Among the strongest in the analysed market (top ${rk.topPct}%)`
+      : `Ranked #${rk.rank} of ${rk.total} in the analysed market`)
   }
-  const sec = rankCtx?.discovery?.sector
-  if (sec?.rank != null && sec.rank <= 3 && rankCtx.sectorName) {
-    lines.push(sec.rank === 1 && sec.tied > 1
-      ? `Joint-top Discovery score in ${rankCtx.sectorName} (tied with ${sec.tied - 1} of ${sec.total} peers)`
-      : `#${sec.rank} Discovery score in ${rankCtx.sectorName} (${sec.total} peers)`)
+  // top actual reasons across all engines, de-duplicated by theme
+  const items = []
+  for (const e of ['discovery', 'transition', 'momentum']) {
+    for (const it of (analysis?.evidence?.[e]?.items || [])) items.push(it)
   }
-  if (rankCtx?.momentum?.market?.topPct != null && rankCtx.momentum.market.topPct <= 5) {
-    lines.push(`Top ${rankCtx.momentum.market.topPct}% on Momentum — already among recognised leaders`)
-  }
-  // rising streak from history (oldest → newest)
-  if (history?.length >= 3) {
-    const asc = [...history].reverse()
-    let streak = 0
-    for (let i = 1; i < asc.length; i++) {
-      if ((asc[i].discovery_score ?? 0) > (asc[i - 1].discovery_score ?? 0)) streak++
-      else streak = 0
-    }
-    if (streak >= 2) lines.push(`Discovery score rising for ${streak + 1} consecutive analyses`)
-    const first = asc[0]
-    const lastRow = asc[asc.length - 1]
-    if ((first.discovery_score ?? 0) < 40 && (lastRow.discovery_score ?? 0) >= 55) {
-      lines.push('First strong discovery signal after a quiet period')
-    }
-  } else if (history?.length === 1) {
-    lines.push('First analysis snapshot — no trend history yet')
+  const seen = new Set()
+  for (const it of items.sort((a, b) => (b.points ?? 0) - (a.points ?? 0))) {
+    if (it.theme && seen.has(it.theme)) continue
+    if (it.theme) seen.add(it.theme)
+    lines.push(it.label)
+    if (lines.length >= 5) break // 1 rank line + up to 4 reasons
   }
   return lines
 }

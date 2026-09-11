@@ -8,9 +8,14 @@
 
 import { axiosCandle } from '@/api/axios'
 import type { IndexCode, OptionChainSnapshot, OptionChainRow, OptionQuote } from '../types'
-import { bsImpliedVol } from '../engine/blackScholes'
+import { bsImpliedVol, bsGreeks } from '../engine/blackScholes'
 
-interface RawSide { symbol: string; ltp: number; oi?: number; volume?: number; at?: string }
+interface RawSide {
+  symbol: string; ltp: number; bid?: number; ask?: number
+  oi?: number; oi_change?: number; prev_oi?: number; volume?: number
+  delta?: number; gamma?: number; theta?: number; vega?: number; iv?: number
+  at?: string
+}
 interface RawRow { strike: number; call?: RawSide; put?: RawSide }
 interface ChainResponse { symbol: string; expiry: string; at: string; spot: number; atm: number; count: number; chain: RawRow[] }
 
@@ -55,19 +60,46 @@ export async function fetchChainSnapshot(index: IndexCode, expiryDate: string, t
   const raw = Array.isArray(data?.chain) ? data.chain : []
   if (!raw.length) return null
 
-  const spot = data.spot
   const expiryEnd = istTs(expiryDate, SESSION_END_MIN)
   const T = Math.max(1e-6, (expiryEnd - ts) / (365 * 86_400_000))
   const strikes = raw.map((r) => r.strike).sort((a, b) => a - b)
   const step = strikes.length > 1 ? Math.min(...strikes.slice(1).map((s, i) => s - strikes[i])) : 50
 
+  // Some (older) snapshots return spot/atm = null. Derive them so the UI never
+  // gets a null spot/atm: ATM ≈ the strike where call LTP ≈ put LTP (put-call parity).
+  let spot = Number(data.spot)
+  if (!Number.isFinite(spot) || spot <= 0) {
+    let best = strikes[Math.floor(strikes.length / 2)] ?? 0, bestDiff = Infinity
+    for (const rw of raw) {
+      const c = rw.call?.ltp, p = rw.put?.ltp
+      if (c != null && p != null) { const d = Math.abs(c - p); if (d < bestDiff) { bestDiff = d; best = rw.strike } }
+    }
+    spot = Number(data.atm) || best
+  }
+  const atm = Number(data.atm) || (step ? Math.round(spot / step) * step : spot)
+
   const mk = (side: RawSide | undefined, strike: number, type: 'CE' | 'PE'): OptionQuote | undefined => {
     if (!side) return undefined
-    const iv = bsImpliedVol(side.ltp, spot, strike, T, type)
-    return { contractId: side.symbol, ltp: round(side.ltp), changePct: 0, oi: side.oi, volume: side.volume, iv: iv ? round(iv) : undefined }
+    // IV from the feed (normalise % → fraction); fall back to inversion from LTP.
+    const rawIv = side.iv ?? 0
+    const feedIv = rawIv > 3 ? rawIv / 100 : rawIv
+    const iv = feedIv > 0 ? feedIv : bsImpliedVol(side.ltp, spot, strike, T, type)
+    // Greeks: trust the feed when it computed them, else derive from IV.
+    const feedGreeks = (side.delta ?? 0) !== 0 || (side.gamma ?? 0) !== 0 || (side.vega ?? 0) !== 0
+    const g = feedGreeks
+      ? { delta: side.delta ?? 0, gamma: side.gamma ?? 0, theta: side.theta ?? 0, vega: side.vega ?? 0 }
+      : (iv ? bsGreeks(spot, strike, T, iv, type) : { delta: 0, gamma: 0, theta: 0, vega: 0 })
+    const prevOi = side.prev_oi ?? ((side.oi ?? 0) - (side.oi_change ?? 0))
+    const oiChangePct = prevOi > 0 && side.oi_change != null ? round((side.oi_change / prevOi) * 100) : undefined
+    return {
+      contractId: side.symbol, ltp: round(side.ltp), changePct: 0,
+      oi: side.oi, oiChange: side.oi_change, oiChangePct, volume: side.volume,
+      bid: side.bid, ask: side.ask, iv: iv ? round(iv) : undefined,
+      delta: g.delta, gamma: g.gamma, theta: g.theta, vega: g.vega,
+    }
   }
   const rows: OptionChainRow[] = raw.map((r) => ({ strike: r.strike, ce: mk(r.call, r.strike, 'CE'), pe: mk(r.put, r.strike, 'PE') }))
-  return { ts, index, expiryId: `${index}-${expiryDate}`, spot: round(spot), atm: data.atm, step, rows, synthetic: false }
+  return { ts, index, expiryId: `${index}-${expiryDate}`, spot: round(spot), atm, step, rows, synthetic: false }
 }
 
 /** LTP of a single contract (by its exact broker symbol) at `ts`, or null. */

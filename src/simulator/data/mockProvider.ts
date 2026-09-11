@@ -13,7 +13,7 @@ import type {
   Candle, Expiry, Frequency, IndexCode, OptionChainSnapshot, OptionChainRow,
   OptionContract, OptionQuote,
 } from '../types'
-import { bsPrice } from '../engine/blackScholes'
+import { bsPrice, bsGreeks } from '../engine/blackScholes'
 import { fetchExpiries } from './httpExpiries'
 import { fetchChainSnapshot, fetchQuote, tokenToDate } from './httpChain'
 import { fetchIndexCandles } from './httpCandles'
@@ -206,10 +206,13 @@ export class MockOptionMarketDataProvider implements OptionMarketDataProvider {
         const iv = ivFor(moneyness)
         const ltp = round(Math.max(0.05, bsPrice(spot, strike, Math.max(T, 1e-4), iv, optType)))
         const oi = Math.round(1e5 * (2 + 6 * Math.exp(-((k) ** 2) / 8)) * (0.6 + rnd() * 0.8))
+        const g = bsGreeks(spot, strike, Math.max(T, 1e-4), iv, optType)
+        const oiChangePct = round((rnd() - 0.4) * 40)
         return {
           contractId: contractId(index, expiryDate, optType, strike),
-          ltp, changePct: round((rnd() - 0.5) * 12), oi, volume: Math.round(oi * (0.05 + rnd() * 0.2)),
-          iv: round(iv),
+          ltp, changePct: round((rnd() - 0.5) * 12), oi, oiChange: Math.round(oi * oiChangePct / 100), oiChangePct,
+          volume: Math.round(oi * (0.05 + rnd() * 0.2)),
+          iv: round(iv), delta: g.delta, gamma: g.gamma, theta: g.theta, vega: g.vega,
         }
       }
       rows.push({ strike, ce: mk('CE'), pe: mk('PE') })

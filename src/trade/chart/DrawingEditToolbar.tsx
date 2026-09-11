@@ -6,6 +6,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { clsx } from 'clsx'
 import type { ChartEngine, DrawingSelection } from './ChartEngine'
+import { FibSettings } from './FibSettings'
+import { setToolDefault } from './drawingDefaults'
 
 const PALETTE = [
   '#2563eb', '#3b82f6', '#0ea5e9', '#06b6d4', '#14b8a6', '#10b981', '#22c55e',
@@ -42,12 +44,13 @@ export function DrawingEditToolbar({ engineRef, containerRef, selection }: {
   selection: DrawingSelection
 }) {
   const barRef = useRef<HTMLDivElement>(null)
-  const [pop, setPop] = useState<'color' | 'fill' | 'width' | 'style' | null>(null)
+  const [pop, setPop] = useState<'color' | 'fill' | 'width' | 'style' | 'settings' | null>(null)
   const [fillAlpha, setFillAlpha] = useState(0.15)
 
   const cur = useMemo(() => styleOf(selection), [selection])
   const isShape = SHAPE_TYPES.has(selection.type)
   const isText = TEXT_TYPES.has(selection.type)
+  const isFib = selection.type === 'fibRetracement'
 
   // Glue the toolbar above the drawing IMPERATIVELY (write to style, no React
   // re-render per frame). Re-rendering 60×/s made the buttons jitter and dropped
@@ -82,10 +85,16 @@ export function DrawingEditToolbar({ engineRef, containerRef, selection }: {
   }, [engineRef, containerRef, selection.id])
 
   const eng = () => engineRef.current
-  const setLineColor = (c: string) => eng()?.styleDrawing(selection.id, { line: { color: c }, text: { color: c } })
-  const setFill = (c: string, a: number) => eng()?.styleDrawing(selection.id, { polygon: { color: hexToRgba(c, a) }, circle: { color: hexToRgba(c, a) }, rect: { color: hexToRgba(c, a) } })
-  const setWidth = (w: number) => { eng()?.styleDrawing(selection.id, { line: { size: w } }); setPop(null) }
-  const setLineStyle = (k: string) => { eng()?.styleDrawing(selection.id, { line: { style: k === 'solid' ? 'solid' : 'dashed', dashedValue: k === 'dotted' ? [2, 3] : [6, 4] } }); setPop(null) }
+  // Apply a style to THIS drawing AND remember it as the tool's default, so the
+  // next drawing of the same type starts with the same look.
+  const applyStyle = (patch: Record<string, unknown>) => {
+    eng()?.styleDrawing(selection.id, patch)
+    setToolDefault(selection.type, patch)
+  }
+  const setLineColor = (c: string) => applyStyle({ line: { color: c }, text: { color: c } })
+  const setFill = (c: string, a: number) => applyStyle({ polygon: { color: hexToRgba(c, a) }, circle: { color: hexToRgba(c, a) }, rect: { color: hexToRgba(c, a) } })
+  const setWidth = (w: number) => { applyStyle({ line: { size: w } }); setPop(null) }
+  const setLineStyle = (k: string) => { applyStyle({ line: { style: k === 'solid' ? 'solid' : 'dashed', dashedValue: k === 'dotted' ? [2, 3] : [6, 4] } }); setPop(null) }
   const toggleLock = () => eng()?.lockDrawing(selection.id, !selection.locked)
   const toggleVisible = () => eng()?.showDrawing(selection.id, !selection.visible)
   const remove = () => eng()?.removeDrawing(selection.id)
@@ -108,13 +117,15 @@ export function DrawingEditToolbar({ engineRef, containerRef, selection }: {
       onMouseDown={(e) => e.stopPropagation()}
       onClick={(e) => e.stopPropagation()}
     >
-      {/* Line color */}
-      <div className="relative">
-        <button title="Line color" className={btn} onClick={() => setPop(pop === 'color' ? null : 'color')}>
-          <span className="h-4 w-4 rounded-full border border-black/10" style={{ background: curColor }} />
-        </button>
-        {pop === 'color' && <Palette onPick={(c) => { setLineColor(c); setPop(null) }} />}
-      </div>
+      {/* Line color (fib colors are per-level, in the settings gear instead) */}
+      {!isFib && (
+        <div className="relative">
+          <button title="Line color" className={btn} onClick={() => setPop(pop === 'color' ? null : 'color')}>
+            <span className="h-4 w-4 rounded-full border border-black/10" style={{ background: curColor }} />
+          </button>
+          {pop === 'color' && <Palette onPick={(c) => { setLineColor(c); setPop(null) }} />}
+        </div>
+      )}
 
       {/* Fill (shapes only) */}
       {isShape && (
@@ -127,7 +138,7 @@ export function DrawingEditToolbar({ engineRef, containerRef, selection }: {
               <Swatches onPick={(c) => setFill(c, fillAlpha)} />
               <div className="mt-2 flex items-center gap-2">
                 <span className="text-[11px] text-slate-500">Opacity</span>
-                <input type="range" min={0} max={100} value={Math.round(fillAlpha * 100)} onChange={(e) => { const a = Number(e.target.value) / 100; setFillAlpha(a); if (curFill) { const m = /rgba?\(([^)]+)\)/.exec(curFill); if (m) { const [r, g, b] = m[1].split(',').map((x) => x.trim()); eng()?.styleDrawing(selection.id, { polygon: { color: `rgba(${r}, ${g}, ${b}, ${a})` }, circle: { color: `rgba(${r}, ${g}, ${b}, ${a})` }, rect: { color: `rgba(${r}, ${g}, ${b}, ${a})` } }) } } }} className="flex-1" />
+                <input type="range" min={0} max={100} value={Math.round(fillAlpha * 100)} onChange={(e) => { const a = Number(e.target.value) / 100; setFillAlpha(a); if (curFill) { const m = /rgba?\(([^)]+)\)/.exec(curFill); if (m) { const [r, g, b] = m[1].split(',').map((x) => x.trim()); applyStyle({ polygon: { color: `rgba(${r}, ${g}, ${b}, ${a})` }, circle: { color: `rgba(${r}, ${g}, ${b}, ${a})` }, rect: { color: `rgba(${r}, ${g}, ${b}, ${a})` } }) } } }} className="flex-1" />
                 <span className="text-[11px] tabular-nums text-slate-500 w-8 text-right">{Math.round(fillAlpha * 100)}%</span>
               </div>
             </div>
@@ -135,10 +146,10 @@ export function DrawingEditToolbar({ engineRef, containerRef, selection }: {
         </div>
       )}
 
-      {!isText && sep}
+      {!isText && !isFib && sep}
 
       {/* Line width */}
-      {!isText && (
+      {!isText && !isFib && (
         <div className="relative">
           <button title="Line width" className={clsx(btn, 'w-9')} onClick={() => setPop(pop === 'width' ? null : 'width')}>
             <span className="text-[11px] font-semibold tabular-nums">{curWidth}px</span>
@@ -157,7 +168,7 @@ export function DrawingEditToolbar({ engineRef, containerRef, selection }: {
       )}
 
       {/* Line style */}
-      {!isText && (
+      {!isText && !isFib && (
         <div className="relative">
           <button title="Line style" className={clsx(btn, 'w-9')} onClick={() => setPop(pop === 'style' ? null : 'style')}>
             <svg viewBox="0 0 24 12" className="h-3 w-6"><line x1="1" y1="6" x2="23" y2="6" stroke="currentColor" strokeWidth="2" strokeDasharray={cur.line?.style === 'dashed' ? '5 3' : ''} /></svg>
@@ -170,6 +181,19 @@ export function DrawingEditToolbar({ engineRef, containerRef, selection }: {
                   <span className="text-[11px] text-slate-500">{s.label}</span>
                 </button>
               ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {isFib && (
+        <div className="relative">
+          <button title="Fib settings" className={clsx(btn, pop === 'settings' && 'bg-slate-100 dark:bg-white/10')} onClick={() => setPop(pop === 'settings' ? null : 'settings')}>
+            <Icon d="M12 15a3 3 0 100-6 3 3 0 000 6zM19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.9.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.9 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.9l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.9.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.9-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.9V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z" />
+          </button>
+          {pop === 'settings' && (
+            <div className="absolute left-0 top-full mt-1.5 z-40 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-card-dark shadow-2xl">
+              <FibSettings engineRef={engineRef} id={selection.id} styles={selection.styles} />
             </div>
           )}
         </div>

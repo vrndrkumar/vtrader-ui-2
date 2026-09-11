@@ -51,7 +51,7 @@ function loadHeight(): number {
   return DEFAULT_H
 }
 // Expanded by default; only collapsed if this session chose to.
-const loadCollapsed = (): boolean => { try { return sessionStorage.getItem(COLLAPSED_KEY) === '1' } catch { return false } }
+const loadCollapsed = (): boolean => { try { const v = sessionStorage.getItem(COLLAPSED_KEY); return v === null ? true : v === '1' } catch { return true } }
 
 export function TradebookPanel() {
   const brokers = useSelectedBrokers()

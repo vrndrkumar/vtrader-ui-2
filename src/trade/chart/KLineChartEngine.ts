@@ -22,6 +22,24 @@ function newDrawingId(): string {
 const UP = '#16a34a'
 const DOWN = '#dc2626'
 
+// Custom date formatter for the axes. klinecharts asks for a label given a
+// `format` string and a `type` (0 tooltip, 1 crosshair, 2 x-axis). We keep DATE
+// and TIME visually distinct — "08 Sep" vs "14:45" — instead of the default
+// "09-08" that reads like a time, and show a full date+time in the tooltip.
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+const pad2 = (n: number) => String(n).padStart(2, '0')
+function fmtDate(_dtf: unknown, timestamp: number, format: string, type: number): string {
+  const d = new Date(timestamp)
+  const time = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+  const date = `${pad2(d.getDate())} ${MONTHS[d.getMonth()]}`
+  // x-axis (type 2): klinecharts sends a time format ('HH:mm') within a day and a
+  // date format ('MM-DD') at a day boundary — mirror that but readable. Dates go
+  // UPPERCASE so a day boundary ("08 SEP") stands out from the times around it.
+  if (type === 2) return /[Hhms]/.test(format) ? time : date.toUpperCase()
+  // tooltip / crosshair: full context.
+  return `${date} ${d.getFullYear()} · ${time}`
+}
+
 // Indicators that overlay the price pane vs. those that get their own sub-pane.
 const MAIN_PANE = new Set(['MA', 'EMA', 'BOLL', 'SAR', 'BBI'])
 
@@ -47,7 +65,10 @@ function styles(dark: boolean) {
       tooltip: { showRule: 'none', offsetLeft: 8, offsetTop: 26, offsetRight: 8, text: { color: text, size: 11 }, rect: { color: 'transparent' } },
     },
     indicator: { tooltip: { offsetLeft: 8, offsetTop: 26, text: { color: text, size: 11 } } },
-    xAxis: { axisLine: { color: axis }, tickText: { color: text }, tickLine: { color: axis } },
+    // Default x-axis labels are made INVISIBLE (transparent) but still reserve
+    // their height — we render our own labels (ChartXAxis) so dates can be
+    // highlighted separately from times and today's time always shows.
+    xAxis: { axisLine: { color: axis }, tickText: { color: 'transparent', size: 11 }, tickLine: { color: axis } },
     yAxis: { axisLine: { color: axis }, tickText: { color: text }, tickLine: { color: axis } },
     crosshair: {
       horizontal: { line: { color: cross }, text: { backgroundColor: cross } },
@@ -78,7 +99,17 @@ export class KLineChartEngine implements ChartEngine {
     this.el = el
     this.chart = init(el)
     // No default indicators — the trader adds what they want, and can remove it.
-    if (this.chart) this.chart.setStyles(styles(dark) as never)
+    if (this.chart) {
+      this.chart.setStyles(styles(dark) as never)
+      const c = this.chart as unknown as { setPaneOptions?: (o: unknown) => void; setCustomApi?: (a: unknown) => void }
+      // Tighter price-scale padding. klinecharts defaults to 20% top / 10% bottom,
+      // which wastes vertical space and makes spiky option premiums look off; the
+      // range still auto-fits the visible candles, just with less dead space.
+      try { c.setPaneOptions?.({ id: 'candle_pane', gap: { top: 0.08, bottom: 0.08 } }) } catch { /* older API */ }
+      // Readable x-axis labels: DATE and TIME are visually distinct (the default
+      // renders dates like "09-08" that read as times); tooltip shows full date+time.
+      try { c.setCustomApi?.({ formatDate: fmtDate }) } catch { /* older API */ }
+    }
   }
 
   setData(candles: Candle[]): void {
@@ -138,19 +169,52 @@ export class KLineChartEngine implements ChartEngine {
     this.onDrawings = cb
   }
 
+  private dataList(): { timestamp?: number }[] {
+    return (this.chart as unknown as { getDataList?: () => { timestamp?: number }[] } | null)?.getDataList?.() ?? []
+  }
+
+  // Absolute timestamp → CONTINUOUS (fractional) bar index. Interpolates between
+  // the two bracketing bars and extrapolates by the bar interval beyond the ends
+  // (so a point in the empty/future area maps to a fractional index > lastIndex).
+  // klinecharts' xAxis.convertToPixel is continuous, so feeding this fractional
+  // index (with NO timestamp) positions the point EXACTLY — no integer snapping,
+  // which is what kept the edge/future anchors drifting. TradingView does the same.
+  private timestampToFloatIndex(ts: number, data: { timestamp?: number }[]): number {
+    const n = data.length
+    if (!n || !Number.isFinite(ts)) return 0
+    const first = Number(data[0]?.timestamp)
+    const last = Number(data[n - 1]?.timestamp)
+    const interval = (n >= 2 ? (last - Number(data[n - 2]?.timestamp)) : 0) || (n >= 2 ? (last - first) / (n - 1) : 60_000)
+    if (ts <= first) return interval ? (ts - first) / interval : 0
+    if (ts >= last) return (n - 1) + (interval ? (ts - last) / interval : 0)
+    let lo = 0, hi = n - 1
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1
+      if (Number(data[mid]?.timestamp) <= ts) lo = mid; else hi = mid
+    }
+    const t0 = Number(data[lo]?.timestamp), t1 = Number(data[hi]?.timestamp)
+    return t1 === t0 ? lo : lo + (ts - t0) / (t1 - t0)
+  }
+
   private serialize(overlay: { id?: string; name?: string; points?: { timestamp?: number; dataIndex?: number; value?: number }[]; styles?: unknown; lock?: boolean; visible?: boolean }): DrawingDef {
     // Anchor by TIME. KLineCharts points at draw-end may only carry dataIndex, so
     // resolve the real bar timestamp. For a point drawn beyond the last bar (the
     // empty "future" area), the dataIndex is out of range — extrapolate the
     // timestamp from the bar interval so it still anchors by time on reload.
-    const data = (this.chart as unknown as { getDataList?: () => { timestamp?: number }[] } | null)?.getDataList?.() ?? []
+    const data = this.dataList()
     const lastIdx = data.length - 1
     const interval = data.length >= 2 ? Number(data[lastIdx]?.timestamp) - Number(data[lastIdx - 1]?.timestamp) : 60_000
+    // Absolute timestamp for a (possibly FRACTIONAL / out-of-range) dataIndex —
+    // interpolate between the bracketing bars, extrapolate by the bar interval
+    // beyond the ends. This is the inverse of timestampToFloatIndex, so a point
+    // round-trips exactly even in the future/empty area.
     const tsFor = (di?: number): number | undefined => {
       if (di == null || !data.length) return undefined
-      if (di >= 0 && di <= lastIdx) return data[di]?.timestamp
-      const base = Number(data[di < 0 ? 0 : lastIdx]?.timestamp)
-      return Number.isFinite(base) ? base + (di - (di < 0 ? 0 : lastIdx)) * interval : undefined
+      if (di <= 0) return Number(data[0]?.timestamp) + di * interval
+      if (di >= lastIdx) return Number(data[lastIdx]?.timestamp) + (di - lastIdx) * interval
+      const lo = Math.floor(di), hi = Math.ceil(di)
+      const t0 = Number(data[lo]?.timestamp), t1 = Number(data[hi]?.timestamp)
+      return lo === hi ? t0 : t0 + (di - lo) * (t1 - t0)
     }
     const def: DrawingDef = {
       id: overlay?.id,   // klinecharts' overlay id — stable, re-passed on restore
@@ -202,14 +266,14 @@ export class KLineChartEngine implements ChartEngine {
     }
   }
 
-  startDrawing(name: string): void {
+  startDrawing(name: string, styles?: unknown): void {
     // Assign our OWN stable UUID as the overlay id. klinecharts' auto ids
     // ('overlay_1', …) are per-session and can collide across symbols/reloads, so
     // they're unsafe as a persistence key. A UUID we control is globally unique
     // and is re-passed verbatim on restore, so a drawing keeps one identity for
     // life (create → move → reload → delete) — which is what makes per-drawing
     // update/delete reliable.
-    this.chart?.createOverlay({ id: newDrawingId(), name, ...this.drawingCallbacks() } as never)
+    this.chart?.createOverlay({ id: newDrawingId(), name, styles: styles ?? undefined, ...this.drawingCallbacks() } as never)
   }
 
   clearDrawings(): void {
@@ -239,10 +303,19 @@ export class KLineChartEngine implements ChartEngine {
       this.drawingIds.clear()
       this.drawingById.clear()
       try { console.info('[VT-DRAW] restore', list.length, JSON.stringify(list.map((d) => ({ id: d.id, t: d.type, p: d.points })))) } catch { /* noop */ }
+      const data = this.dataList()
       for (const d of list) {
         if (!d?.type) continue
+        // Position by CONTINUOUS fractional bar index (from the stored absolute
+        // time), with NO timestamp — so klinecharts renders it exactly instead of
+        // snapping to the nearest integer bar. In-range points that land on a whole
+        // index will get a timestamp re-attached by klinecharts (still exact);
+        // fractional/future ones stay continuous.
+        const pts = (d.points ?? []).map((p) => (p.timestamp != null
+          ? { dataIndex: this.timestampToFloatIndex(Number(p.timestamp), data), value: p.value }
+          : { value: p.value }))
         const created = this.chart.createOverlay({
-          id: d.id, name: d.type, points: d.points, styles: d.styles,
+          id: d.id, name: d.type, points: pts, styles: d.styles,
           lock: d.locked === true, visible: d.visible !== false,
           ...this.drawingCallbacks(),
         } as never)
@@ -362,6 +435,71 @@ export class KLineChartEngine implements ChartEngine {
       const v = Array.isArray(r) ? (r[0] as { value?: number })?.value : (r as { value?: number })?.value
       return typeof v === 'number' && Number.isFinite(v) ? v : null
     } catch { return null }
+  }
+
+  xForTime(ts: number): number | null {
+    const data = this.dataList()
+    if (!data.length) return null
+    const di = this.timestampToFloatIndex(ts, data)
+    try {
+      const r = (this.chart as unknown as { convertToPixel: (v: unknown, o: unknown) => unknown })
+        .convertToPixel({ dataIndex: di }, { paneId: 'candle_pane' })
+      const c = Array.isArray(r) ? r[0] : r
+      const x = (c as { x?: number })?.x
+      return typeof x === 'number' && Number.isFinite(x) ? x : null
+    } catch { return null }
+  }
+
+  private xForIndex(i: number): number | null {
+    try {
+      const r = (this.chart as unknown as { convertToPixel: (v: unknown, o: unknown) => unknown })
+        .convertToPixel({ dataIndex: i }, { paneId: 'candle_pane' })
+      const c = Array.isArray(r) ? r[0] : r
+      const x = (c as { x?: number })?.x
+      return typeof x === 'number' && Number.isFinite(x) ? x : null
+    } catch { return null }
+  }
+
+  // Custom x-axis ticks across the WHOLE visible range: a label at each day
+  // boundary (isDate=true, highlighted) plus time labels every ~MIN_GAP px, so
+  // today's times always appear on every chart regardless of zoom. x is computed
+  // linearly from bar spacing (2 pixel conversions total, not one per bar), so it
+  // never janks zoom/pan. Date labels take PRIORITY at a boundary: any label too
+  // close is dropped so "15:00" and "06 SEP" can't collide into "150006 SEP".
+  xAxisTicks(width: number): { x: number; label: string; isDate: boolean }[] {
+    const data = this.dataList()
+    const n = data.length
+    if (!n) return []
+    const x0 = this.xForIndex(0)
+    const xN = this.xForIndex(n - 1)
+    if (x0 == null || xN == null) return []
+    const barSpace = n > 1 ? (xN - x0) / (n - 1) : 8
+    if (!(barSpace > 0)) return []
+    const xAt = (i: number) => x0 + i * barSpace
+    const startI = Math.max(0, Math.floor((10 - x0) / barSpace))
+    const endI = Math.min(n - 1, Math.ceil((width - 2 - x0) / barSpace))
+    const out: { x: number; label: string; isDate: boolean }[] = []
+    const MIN_GAP = 60
+    let lastX = -1e9, lastDay = ''
+    for (let i = startI; i <= endI; i++) {
+      const ts = Number(data[i]?.timestamp)
+      if (!Number.isFinite(ts)) continue
+      const x = xAt(i)
+      if (x < 10 || x > width - 2) continue
+      const d = new Date(ts)
+      const day = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
+      if (day !== lastDay) {
+        lastDay = day
+        // Date boundary wins: drop any recent label within MIN_GAP so they never overlap.
+        while (out.length && x - out[out.length - 1].x < MIN_GAP) out.pop()
+        out.push({ x, label: `${pad2(d.getDate())} ${MONTHS[d.getMonth()].toUpperCase()}`, isDate: true })
+        lastX = x
+      } else if (x - lastX >= MIN_GAP) {
+        out.push({ x, label: `${pad2(d.getHours())}:${pad2(d.getMinutes())}`, isDate: false })
+        lastX = x
+      }
+    }
+    return out
   }
 
   subscribeCrosshair(cb: (c: Candle | null) => void): () => void {

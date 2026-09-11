@@ -3,7 +3,7 @@ import { clsx } from 'clsx'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-interface SymbolResult {
+export interface SymbolResult {
   symbol: string
   name: string
   type: string
@@ -153,11 +153,12 @@ function ResultRow({ result, query, active, onMouseEnter, onMouseDown }: {
 interface SymbolSearchProps {
   value: string
   onChange: (symbol: string) => void
+  onSelect?: (result: SymbolResult) => void   // full picked result (symbol + type + name)
   placeholder?: string
   className?: string
 }
 
-export function SymbolSearch({ value, onChange, placeholder = 'Search symbol…', className }: SymbolSearchProps) {
+export function SymbolSearch({ value, onChange, onSelect, placeholder = 'Search symbol…', className }: SymbolSearchProps) {
   // `displayText` = what's shown in the input box
   // `value` (external) = the actual symbol sent to the API
   const [displayText, setDisplayText] = useState(value)
@@ -222,6 +223,7 @@ export function SymbolSearch({ value, onChange, placeholder = 'Search symbol…'
   const select = (r: SymbolResult) => {
     setDisplayText(r.name)     // show human-readable name
     onChange(r.symbol)         // store the symbol identifier
+    onSelect?.(r)              // hand the full result to the parent (type/name/etc.)
     setOpen(false)
     setResults([])
   }

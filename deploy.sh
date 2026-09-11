@@ -90,6 +90,16 @@ else
 fi
 
 ############################################################
+# Bundle option engine for the backend (shares the UI engine — one source of truth)
+############################################################
+
+echo ""
+echo "🔧 Bundling option engine for backend..."
+( cd "$SERVER_LOCAL_DIR" && npm run build:engine )
+[ -f "$SERVER_LOCAL_DIR/src/optionEngine.bundle.js" ] || { echo "❌ option engine bundle not produced."; exit 1; }
+echo "   Bundle ready: $SERVER_LOCAL_DIR/src/optionEngine.bundle.js"
+
+############################################################
 # Deploy Backend
 ############################################################
 

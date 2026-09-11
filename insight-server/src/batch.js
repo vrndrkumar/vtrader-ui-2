@@ -1,9 +1,10 @@
 // ── Batch analysis runner (in-process job, non-blocking, progress-reporting) ─
 import { getPool } from './db.js'
-import { fetchDaily } from './candles.js'
+import { fetchDaily, fetch4h } from './candles.js'
 import { featureSnapshot } from './featureSnapshot.js'
 import { analyse } from './engines.js'
 import { saveAnalysis, saveFailure } from './analysisStore.js'
+import { getTimeframeMode } from './settings.js'
 import { config } from './config.js'
 
 const CONCURRENCY = 3
@@ -37,17 +38,26 @@ async function getNifty() {
   return niftyInFlight
 }
 
-/** Analyse one stock end-to-end and persist. Returns the analysis. */
-export async function analyseSymbol(stockRow) {
+/**
+ * Analyse one stock end-to-end. Returns the analysis.
+ * opts.mode: 'CURRENT' | 'BASE_FAST' (defaults to the stored global flag).
+ * opts.save: persist the result (default true; set false for admin live preview).
+ */
+export async function analyseSymbol(stockRow, opts = {}) {
+  const mode = opts.mode ?? await getTimeframeMode()
   const nifty = await getNifty().catch(() => null)
   const daily = await fetchDaily(stockRow.symbol_code, DATA_FROM)
-  const f = featureSnapshot(daily, nifty)
+  let fourH = null
+  if (mode === 'BASE_FAST') fourH = await fetch4h(stockRow.symbol_code).catch(() => null)
+  const f = featureSnapshot(daily, nifty, { mode, fourH })
   if (!f) throw Object.assign(new Error(`insufficient candle history for ${stockRow.symbol_code} (${daily.length} bars, need 30)`), { status: 422 })
   const analysis = analyse(f)
-  await saveAnalysis(stockRow, analysis).catch((e) => {
-    // storage failure should not hide the analysis from the caller
-    console.error('saveAnalysis failed:', e.message)
-  })
+  if (opts.save !== false) {
+    await saveAnalysis(stockRow, analysis).catch((e) => {
+      // storage failure should not hide the analysis from the caller
+      console.error('saveAnalysis failed:', e.message)
+    })
+  }
   return analysis
 }
 
@@ -71,6 +81,7 @@ async function getStockRows(symbols = null) {
 export async function startBatch(symbols = null, label = 'batch') {
   if (job.running) return false
   const rows = await getStockRows(symbols)
+  job.tfMode = await getTimeframeMode() // one mode for the whole run (consistent)
   job.running = true
   job.label = label
   job.runId = `${label} @ ${new Date().toISOString().slice(0, 16)}`
@@ -94,13 +105,13 @@ export async function startBatch(symbols = null, label = 'batch') {
     if (/fetch failed|network|timeout|ECONN|ETIMEDOUT|EAI_AGAIN/i.test(e.message)) return 'Network error/timeout (retried once)'
     return `Other: ${e.message}`
   }
-  console.log(`batch "${job.runId}" started: ${rows.length} stocks`)
+  console.log(`batch "${job.runId}" started: ${rows.length} stocks · timeframe mode ${job.tfMode}`)
   const worker = async () => {
     while (queue.length && job.running) {
       const row = queue.shift()
       job.current = row.symbol_code
       try {
-        await analyseSymbol(row)
+        await analyseSymbol(row, { mode: job.tfMode })
         job.completed++
         if (job.completed <= 3 || job.completed % 50 === 0) {
           console.log(`batch progress: ${job.completed} ok, ${job.failed} failed, ${queue.length} queued (last: ${row.symbol_code})`)
@@ -111,7 +122,7 @@ export async function startBatch(symbols = null, label = 'batch') {
         if (!isPermanent(e1)) {
           await new Promise((r) => setTimeout(r, 1200))
           try {
-            await analyseSymbol(row)
+            await analyseSymbol(row, { mode: job.tfMode })
             job.completed++
             await new Promise((r) => setTimeout(r, GAP_MS))
             continue

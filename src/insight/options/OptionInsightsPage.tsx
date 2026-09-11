@@ -250,7 +250,7 @@ export default function OptionInsightsPage() {
 
             {/* ── Recommendation (only when trade) ── */}
             {r.recommendation && (
-              <SectionCard title={`Recommended: ${r.recommendation.strike} ${r.recommendation.side}`} right={<Chip tone="mid">confidence {r.recommendation.confidencePct}% (capped — OI/IV missing)</Chip>}>
+              <SectionCard title={`Recommended: ${r.recommendation.strike} ${r.recommendation.side}`} right={<Chip tone="mid">confidence {r.recommendation.confidencePct}%{r.dataQuality?.greeks ? '' : ' (capped — OI/IV missing)'}</Chip>}>
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-xs">
                   {([
                     ['Premium', fmtN(r.recommendation.premium)],
@@ -269,7 +269,7 @@ export default function OptionInsightsPage() {
                   ))}
                 </div>
                 <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-3"><b>Trigger:</b> {r.recommendation.trigger} · <b>Confirm:</b> {r.recommendation.confirmation.join('; ')}</p>
-                <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-1.5">Premium targets are delta-proxy estimates (Greeks unavailable). Position sizing and execution are the trader's responsibility.</p>
+                <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-1.5">{r.dataQuality?.greeks ? 'Premium targets use live delta from the chain. Position sizing and execution are the trader’s responsibility.' : 'Premium targets are delta-proxy estimates (Greeks unavailable). Position sizing and execution are the trader’s responsibility.'}</p>
               </SectionCard>
             )}
 

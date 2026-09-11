@@ -4,7 +4,7 @@ import axios from 'axios'
 
 /// <reference types="vite/client" />
 const BASE = (import.meta.env.VITE_INSIGHT_API as string | undefined) ??
-  (import.meta.env.DEV ? 'http://localhost:3600' : 'http://164.52.201.122:3600')
+  (import.meta.env.DEV ? 'http://localhost:3600' : 'https://insights.vtrader.in')
 const client = axios.create({ baseURL: BASE })
 
 interface Row {
