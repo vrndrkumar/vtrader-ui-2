@@ -17,7 +17,8 @@ import { SymbolSearch, type SymbolResult } from '@/journal/SymbolSearch'
 import { useBasketStore } from '../store/basketStore'
 import { BasketModeToggle } from '../basket/Basket'
 import { applySymbol } from '../store/chartLayoutStore'
-import { placeOrder, submitStrategy } from '@/services/orders/placeOrder'
+import { placeOrder, submitBrokerLegs, type BrokerLegOrder } from '@/services/orders/placeOrder'
+import { netQty } from '../features/tradebook/types'
 import type { PanelKey } from './LeftRail'
 
 // ── Watchlist ────────────────────────────────────────────────────────────────
@@ -200,15 +201,23 @@ function OptionChainPanel() {
           chain={chain} expiries={expiries} compact expiry={expiry} onExpiry={setExpiry}
           onAction={onAction} onWatch={onWatch} positions={posMap}
           onAdjustConfirm={(moves) => {
-            const legs = moves.flatMap((m) => {
-              const q = Math.abs(m.qty), long = m.qty > 0
-              const sym = (s: number) => `${symbolCode}_${expiry.replace(/\s/g, '')}_${m.optType}_${s}`
-              return [
-                { side: (long ? 'SELL' : 'BUY') as Side, indexName: symbolCode, symbolName: sym(m.fromStrike), priceType: 'MKT' as const, price: 0, qty: q },
-                { side: (long ? 'BUY' : 'SELL') as Side, indexName: symbolCode, symbolName: sym(m.toStrike), priceType: 'MKT' as const, price: 0, qty: q },
-              ]
-            })
-            void submitStrategy(legs).then(() => useTradebookStore.getState().reload())
+            // Roll each move on the ACTUAL broker(s) that hold the from-strike
+            // position — never fan out to all selected brokers. Uses the real
+            // per-broker net qty so mixed-broker holdings each roll on their own broker.
+            const sym = (o: OptType, s: number) => `${symbolCode}_${expiry.replace(/\s/g, '')}_${o}_${s}`
+            const legs: BrokerLegOrder[] = []
+            for (const m of moves) {
+              const fromSym = sym(m.optType, m.fromStrike)
+              const toSym = sym(m.optType, m.toStrike)
+              const holders = tbPositions.filter((p) => p.symbol === fromSym && netQty(p) !== 0)
+              for (const p of holders) {
+                const q = Math.abs(netQty(p)), long = netQty(p) > 0
+                legs.push({ broker: p.brokerName, side: long ? 'SELL' : 'BUY', indexName: symbolCode, symbolName: fromSym, priceType: 'MKT', price: 0, qty: q })
+                legs.push({ broker: p.brokerName, side: long ? 'BUY' : 'SELL', indexName: symbolCode, symbolName: toSym, priceType: 'MKT', price: 0, qty: q })
+              }
+            }
+            if (!legs.length) { toast.error('No matching position to adjust'); return }
+            void submitBrokerLegs(legs, 'Adjustment').then(() => useTradebookStore.getState().reload())
           }}
           onChart={(strike, optType) => applySymbol({
             key: `${symbolCode}_${expiry}_${optType}_${strike}`,

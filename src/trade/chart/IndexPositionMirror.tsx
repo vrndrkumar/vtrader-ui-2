@@ -47,10 +47,11 @@ const errMsg = (e: unknown): string =>
 
 type Leg = 'sl' | 'tgt'
 
-export function IndexPositionMirror({ engineRef, index, ltp }: {
+export function IndexPositionMirror({ engineRef, index, ltp, topPx = 62 }: {
   engineRef: React.MutableRefObject<ChartEngine | null>
   index: string
   ltp: number
+  topPx?: number
 }) {
   const tbPositions = useTradebookStore((s) => s.positions) ?? EMPTY_POS
   const ocoAll = useIndexBracketStore((s) => s.all)
@@ -194,7 +195,7 @@ export function IndexPositionMirror({ engineRef, index, ltp }: {
   return (
     <div ref={wrapRef} className="absolute inset-0 z-10 overflow-hidden pointer-events-none">
       {/* Docked, collapsible Positions panel */}
-      <div className="absolute left-1.5 top-[62px] pointer-events-auto w-[352px] max-w-[calc(100%-16px)] rounded-xl bg-white/92 dark:bg-surface-dark/92 backdrop-blur-sm border border-slate-200 dark:border-slate-700 shadow-lg overflow-hidden">
+      <div style={{ top: topPx }} className="absolute left-1.5 pointer-events-auto w-[352px] max-w-[calc(100%-16px)] rounded-xl bg-white/92 dark:bg-surface-dark/92 backdrop-blur-sm border border-slate-200 dark:border-slate-700 shadow-lg overflow-hidden">
         <button onClick={() => setCollapsed((c) => !c)} className="flex items-center gap-2 w-full px-2.5 py-1.5 bg-slate-50/80 dark:bg-white/5 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors">
           <span className="text-[11px] font-bold text-slate-600 dark:text-slate-200">Positions</span>
           <span className="text-[10px] font-bold px-1.5 rounded-full bg-slate-200 dark:bg-white/10 text-slate-500 dark:text-slate-300">{positions.length}</span>

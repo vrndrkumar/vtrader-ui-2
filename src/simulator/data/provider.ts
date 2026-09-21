@@ -4,11 +4,12 @@
 // backed by MockOptionMarketDataProvider; when the real VTrader historical-option
 // API lands, a VTraderOptionMarketDataProvider is dropped in with no UI changes.
 //
-// LOOK-AHEAD RULE: chainAt()/underlyingUpTo() must never return data for a
-// timestamp later than the one requested.
+// LOOK-AHEAD RULE: chainAt() must never return data for a timestamp later than
+// the one requested. Price truth is the option chain at time T — there is no
+// separate candle feed.
 
 import type {
-  Candle, Expiry, Frequency, IndexCode, OptionChainSnapshot, OptionContract,
+  Expiry, IndexCode, OptionChainSnapshot, OptionContract,
 } from '../types'
 
 export interface AvailableSession {
@@ -27,14 +28,8 @@ export interface OptionMarketDataProvider {
   /** Expiries tradable on the given session date. */
   expiries(index: IndexCode, date: string): Promise<Expiry[]>
 
-  /** Underlying candles for the session, sampled at `freq`, but ONLY up to `upToTs`. */
-  underlyingUpTo(index: IndexCode, date: string, freq: Frequency, upToTs: number): Promise<Candle[]>
-
-  /** Full underlying series for the session (used to precompute the replay range only). */
-  underlyingSession(index: IndexCode, date: string, freq: Frequency): Promise<Candle[]>
-
-  /** Option-chain snapshot at exactly `ts` (never beyond). */
-  chainAt(index: IndexCode, expiryId: string, freq: Frequency, ts: number): Promise<OptionChainSnapshot>
+  /** Option-chain snapshot at exactly `ts` (never beyond). Sole price source. */
+  chainAt(index: IndexCode, expiryId: string, ts: number): Promise<OptionChainSnapshot>
 
   /** LTP of a single contract at `ts` (for fills / position marking). */
   quoteAt(contractId: string, ts: number): Promise<number>

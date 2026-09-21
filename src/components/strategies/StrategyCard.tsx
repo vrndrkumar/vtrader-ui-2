@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { clsx } from 'clsx'
 import type { StrategyConfig, UserStrategy, EditStrategyPayload } from '@/types/strategy'
 import { getStrategyIndices, isUserStrategyDeployed, templateStatus } from '@/types/strategy'
@@ -89,16 +89,23 @@ export function StrategyCard({ strategy, userStrategy, tabContext, onSubscribe, 
 
   const [acting,       setActing]       = useState(false)
   const [confirmUnsub, setConfirmUnsub] = useState(false)
+  const [menuOpen,     setMenuOpen]     = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const h = (e: MouseEvent) => { if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false) }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [])
 
-  // ── Undeploy: set isEnabled=false, stays in My Strategies ───────────────
-  const handleUndeploy = async () => {
+  // ── Deploy / Undeploy: flip isEnabled, keeping the subscription + rules ──
+  const setDeployed = async (isEnabled: boolean) => {
     if (!userStrategy || acting) return
     setActing(true)
     try {
       const payload: EditStrategyPayload = {
         strategyName:  (userStrategy.strategyName ?? '') as string,
         brokerName:    (userStrategy.brokerName   ?? '') as string,
-        isEnabled:     false,
+        isEnabled,
         executionRule: userStrategy.executionRule ?? [],
       }
       await editStrategy(userStrategy.id, payload)
@@ -134,11 +141,9 @@ export function StrategyCard({ strategy, userStrategy, tabContext, onSubscribe, 
     return r
   })()
 
-  const templateIndices = (() => {
-    const fromExpiry = Object.keys(expiryDays)
-    if (fromExpiry.length) return fromExpiry
-    return getStrategyIndices(strategy)   // handles equity + crypto + dynamic detection
-  })()
+  // Indices come from the config's index objects (flat / nested / day-maps), not
+  // from expiry_days. expiryDays is used only for the per-index day chips below.
+  const templateIndices = getStrategyIndices(strategy)
 
   const rules            = userStrategy?.executionRule ?? []
   const hasPartialBooking = rules.some((r) => r.partialBookingRule?.partialBookingPercentage != null)
@@ -290,46 +295,71 @@ export function StrategyCard({ strategy, userStrategy, tabContext, onSubscribe, 
             )
 
           ) : (
-            /* MY STRATEGIES + DEPLOYED: full action set */
-            <>
-              {!confirmUnsub ? (
-                /* Edit + Undeploy/Unsubscribe side by side */
-                <div className="flex gap-2">
+            /* MY STRATEGIES + DEPLOYED: Live/Paused toggle · Edit · overflow */
+            confirmUnsub ? (
+              /* Inline confirm — unsubscribe fully removes the strategy */
+              <div className="flex items-center gap-2 rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/10 px-3 py-2.5">
+                <span className="text-xs font-medium text-red-600 dark:text-red-400 flex-1">Unsubscribe and remove this strategy?</span>
+                <button onClick={() => setConfirmUnsub(false)} className="text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-slate-700 px-2 py-1 rounded-lg hover:bg-white dark:hover:bg-white/5 transition-colors">Cancel</button>
+                <button onClick={handleUnsubscribe} disabled={acting} className="text-xs font-semibold text-white bg-red-500 hover:bg-red-600 px-3 py-1 rounded-lg transition-colors disabled:opacity-60">{acting ? '…' : 'Remove'}</button>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+                {/* Deploy state as a switch — the natural on/off mental model */}
+                <button
+                  onClick={() => setDeployed(!isDeployed)}
+                  disabled={acting}
+                  title={isDeployed ? 'Deployed — click to pause' : 'Paused — click to deploy'}
+                  className="group flex items-center gap-2 disabled:opacity-60"
+                >
+                  <span className={clsx('relative h-5 w-9 rounded-full transition-colors duration-200', isDeployed ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600')}>
+                    <span className={clsx('absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform duration-200', isDeployed ? 'translate-x-4' : 'translate-x-0')} />
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span className={clsx('h-1.5 w-1.5 rounded-full', acting ? 'bg-amber-400 animate-pulse' : isDeployed ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600')} />
+                    <span className={clsx('text-xs font-bold', isDeployed ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-500 dark:text-slate-400')}>
+                      {acting ? 'Working…' : isDeployed ? 'Live' : 'Paused'}
+                    </span>
+                  </span>
+                </button>
+
+                {/* Edit + overflow (destructive tucked away) */}
+                <div className="flex items-center gap-1">
                   <button
                     onClick={() => onEdit(userStrategy!)}
-                    className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/5 transition-colors"
+                    className="h-8 px-3.5 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-white/5 transition-colors"
                   >
                     Edit
                   </button>
-                  <button
-                    onClick={() => setConfirmUnsub(true)}
-                    className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-medium text-red-400 dark:text-red-500 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/10 hover:border-red-200 dark:hover:border-red-800 transition-all"
-                  >
-                    {tabContext === 'deployed' ? 'Undeploy' : 'Unsubscribe'}
-                  </button>
+                  <div className="relative" ref={menuRef}>
+                    <button
+                      onClick={() => setMenuOpen((o) => !o)}
+                      className="h-8 w-8 grid place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/5 transition-colors"
+                      title="More"
+                    >
+                      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor"><circle cx="12" cy="5" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="12" cy="19" r="1.6" /></svg>
+                    </button>
+                    {menuOpen && (
+                      <div className="absolute right-0 bottom-full mb-1.5 w-44 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-card-dark shadow-lg py-1 z-20">
+                        <button
+                          onClick={() => { setMenuOpen(false); setDeployed(!isDeployed) }}
+                          className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/5 text-left"
+                        >
+                          {isDeployed ? 'Pause (undeploy)' : 'Deploy now'}
+                        </button>
+                        <div className="my-1 h-px bg-slate-100 dark:bg-slate-800" />
+                        <button
+                          onClick={() => { setMenuOpen(false); setConfirmUnsub(true) }}
+                          className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/10 text-left"
+                        >
+                          Unsubscribe
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              ) : (
-                /* Confirm dialog */
-                <div className="flex gap-2 rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/10 px-3 py-2.5 items-center">
-                  <span className="text-xs text-red-600 dark:text-red-400 flex-1">
-                    {tabContext === 'deployed' ? 'Stop this strategy?' : 'Remove this strategy?'}
-                  </span>
-                  <button
-                    onClick={() => setConfirmUnsub(false)}
-                    className="text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-slate-700 px-2 py-1 rounded-lg hover:bg-white dark:hover:bg-white/5 transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={tabContext === 'deployed' ? handleUndeploy : handleUnsubscribe}
-                    disabled={acting}
-                    className="text-xs font-semibold text-white bg-red-500 hover:bg-red-600 px-3 py-1 rounded-lg transition-colors disabled:opacity-60"
-                  >
-                    {acting ? '…' : 'Confirm'}
-                  </button>
-                </div>
-              )}
-            </>
+              </div>
+            )
           )}
         </div>
       </div>

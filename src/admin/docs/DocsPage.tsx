@@ -153,12 +153,18 @@ const ENGINE_TOC = [
   ['svc-api', 'Candle API'],
   ['svc-confirm', 'Confirm Service'],
   ['svc-chain', 'Chain Service'],
+  ['fyers', 'Fyers & rate limits'],
   ['jobs', 'Scheduled jobs'],
   ['job-eod-chain', 'EOD Full Chain'],
   ['breeze', 'Breeze gap-fill'],
   ['api-ref', 'API reference'],
   ['troubleshoot', 'Troubleshooting'],
   ['cheatsheet', 'Ops cheat-sheet'],
+  ['od-overview', 'Historical option data'],
+  ['od-rule', 'Expected-expiry rule'],
+  ['od-gapfiller', 'Gap-filler'],
+  ['od-audit', 'Data audit queries'],
+  ['od-run', 'Running the gap-fill'],
 ] as const
 
 function CandleEngineDoc() {
@@ -319,6 +325,53 @@ curl "localhost:8080/data/option-chain?underlying=NIFTY&expiry=2026-09-08&at=202
         </Card>
       </div>
 
+      {/* ── Fyers integration & rate limits ── */}
+      <H2 id="fyers">Fyers integration &amp; rate limits</H2>
+      <Lead>Every component that talks to Fyers, which account it uses, and when. Fyers enforces a
+        per-account request-rate limit (~10 req/s) — exceeding it returns HTTP <Mono>429</Mono>. All
+        callers share <b>user 32</b> except the chain service (<b>user 33</b>), so 32 is the account to
+        watch.</Lead>
+      <Table
+        head={['Service / job', 'Hits Fyers?', 'Fyers user', 'Window (IST, weekdays)', 'Rate']}
+        rows={[
+          ['market-data-engine', '✗ no (Redis feed only)', '—', 'continuous', '—'],
+          [<b>market-data-chain</b>, '✓ options-chain-v3', <b>33</b>, <><b>09:15–15:40</b>, per-minute</>, '200 ms gap'],
+          [<b>market-data-confirm</b>, '✓ history per traded symbol', <b>32</b>, <><b>09:15–15:41</b>, per-minute</>, '8 req/s'],
+          [<b>market-data-api</b> , '✓ quotes', <b>32</b>, <b>on-demand — any time</b>, 'per request'],
+          ['market-data-eod (15:45)', '✗ no (DB finalize)', '—', '15:45', '—'],
+          [<b>market-data-eod-backfill</b>, '✓ index+option history', <b>32</b>, <>starts <b>16:00</b></>, '(little pacing)'],
+          [<b>market-data-stocks-eod</b>, '✓ stock 15m (all equities)', <b>32</b>, <>starts <b>16:30</b></>, 'can run long'],
+          [<b>market-data-eod-chain</b>, '✓ full-chain history', <b>32</b>, <>starts <b>17:00</b>, ~10–15 min</>, '200 ms gap'],
+          ['fill_worker (fill API)', '✓ history', <b>32</b>, 'on-demand', '—'],
+        ]}
+      />
+      <Callout tone="warn" title="Where windows collide (same account = 429 risk)">
+        <b>Market hours (09:15–15:40):</b> confirm_service (8 req/s) + <Mono>/data/quotes</Mono> (on-demand)
+        run on <b>user 32</b> at the same time — combined they can cross Fyers' ~10 req/s ceiling.{' '}
+        <b>Evening:</b> eod-backfill (16:00) → stocks-eod (16:30) → eod-chain (17:00) are all <b>user 32</b>
+        with only a 30-min stagger; if one overruns it collides with the next.
+      </Callout>
+      <Callout tone="err" title="Verify the chain account is really on 33">
+        Chain user resolves as <Mono>CHAIN_FYERS_USER_ID || FYERS_USER_ID || 32</Mono>. If
+        <Mono>CHAIN_FYERS_USER_ID</Mono> is unset/misspelled in <Mono>.env</Mono>, the chain service
+        silently falls back to <b>user 32</b> — so it never actually separated. Confirm with
+        <Mono>grep CHAIN_FYERS_USER_ID .env</Mono>.
+      </Callout>
+
+      <H3>How 429 errors are handled</H3>
+      <P>All Fyers HTTP calls go through a shared helper (<Mono>src/fyers_http.js</Mono>,
+        <Mono>fyersFetch()</Mono>) that treats <Mono>429</Mono> and <Mono>5xx</Mono> as retryable with
+        <b> exponential backoff</b> (≈0.8s, 1.6s, 3.2s… capped at 30s, plus jitter), <b>honors the
+        <Mono>Retry-After</Mono> header</b> when Fyers sends one, and <b>logs every 429</b> with a running
+        count. Retries are <b>bounded</b> — after the cap it gives up (never loops forever), skips that
+        item, and logs the give-up so the miss is visible. Backfill jobs additionally resume from a DB
+        high-water-mark, so a skipped item is re-attempted on the next run rather than lost.</P>
+      <Callout tone="tip" title="Watching for rate-limit pressure">
+        Every 429 is logged as <Mono>fyers 429/5xx — backing off</Mono> and every give-up as
+        <Mono>giving up after retries</Mono>. To see how often it's happening:
+        <Mono>journalctl -u market-data-confirm -u market-data-chain --since today | grep -c 429</Mono>.
+      </Callout>
+
       {/* ── Scheduled jobs ── */}
       <H2 id="jobs">Scheduled jobs (systemd timers)</H2>
       <Lead>Oneshot jobs that fire after close, staggered so the two Fyers-based jobs never share the rate
@@ -478,6 +531,103 @@ systemctl start market-data-eod-chain.service    # run a job now
 # --- data checks ---
 curl localhost:8080/health
 psql -h 127.0.0.1 -U vtrader -d vtrader          # then query candles_1m / option_chain_1m`} />
+
+      {/* ── Historical option data & gap-fill ── */}
+      <H2 id="od-overview">Historical option data &amp; gap-fill</H2>
+      <Lead>Historical option data (2025 → today) powers the Option Simulator. It lands in the same
+        <Mono>candles_1m</Mono> + <Mono>option_chain_1m</Mono> tables as live, so any date is queried
+        identically. Two loaders build it:</Lead>
+      <Table
+        head={['Loader', 'Shape', 'Use']}
+        rows={[
+          [<Mono>breeze_backfill.js</Mono>, 'Expiry-centric — each expiry filled for a window before it', 'Original bulk load + range gap-fill'],
+          [<Mono>breeze_gapfill.js</Mono>, 'Date-centric — walk each day, fill its expected ladder', 'Complete the ladder on every date (fixes early-date holes)'],
+        ]}
+      />
+      <Callout tone="info" title="Why the date-centric gap-filler exists">
+        The original backfill filled each expiry only for its last ~45 days, so far expiries were
+        missing on earlier dates (e.g. the 08-Sep chain empty on 01-Sep). The gap-filler walks the
+        calendar day by day and fills the full expected ladder per date, so the simulator has a complete
+        chain on <b>every</b> date.
+      </Callout>
+
+      <H2 id="od-rule">Expected-expiry rule</H2>
+      <Lead>For each trading day <b>D</b>, the ladder should contain:</Lead>
+      <Table
+        head={['Bucket', 'What']}
+        rows={[
+          ['Next 6', 'the 6 nearest expiries on/after D (weekly + monthly mixed)'],
+          ['Next monthlies', "this month's + next month's monthly"],
+          ['Quarterly', 'Mar / Jun / Sep / Dec monthlies'],
+          ['Yearly', 'the December monthly'],
+        ]}
+      />
+      <P>All within ~1 year of D. Implemented in <Mono>breeze_gapfill.js → expectedExpiries()</Mono>. The
+        gap-filler fills only the missing <Mono>(date, expiry, strike, CE/PE)</Mono> — never duplicating.</P>
+
+      <H2 id="od-gapfiller">Gap-filler — how it works</H2>
+      <P>For each trading day D: compute the expected expiries → strike band = ATM(day range) ± 20 → for
+        each <Mono>(expiry, strike, CE/PE)</Mono> already present on D, <b>skip</b>; otherwise fetch that
+        contract's day from Breeze and upsert with computed greeks. If an expiry is entirely absent it
+        probes one ATM contract first — if Breeze has nothing, the whole <Mono>(expiry, day)</Mono> is
+        skipped as <Mono>no_source</Mono>.</P>
+      <P><b>Resume-safe:</b> each finished day is recorded in <Mono>gapfill_progress</Mono>, so a restart
+        skips done days. <b>Idempotent:</b> presence is checked per contract and all writes are
+        <Mono>ON CONFLICT</Mono> upserts. On completion it refreshes the higher-timeframe rollups so the
+        API returns correct data on 5m/15m/30m/… too.</P>
+
+      <H2 id="od-audit">Audit queries</H2>
+      <H3>Fill progress</H3>
+      <CodeBlock code={`SELECT underlying, count(*) AS days_done FROM gapfill_progress GROUP BY 1;`} />
+      <H3>Missing-expiry list — DEFINITIVE (interior gaps only)</H3>
+      <P>A real gap = a day strictly inside an expiry's data span (data before AND after) but missing on
+        that day. <b>Zero rows = genuinely complete.</b> Swap <Mono>NIFTY</Mono>/<Mono>INDEX_NIFTY</Mono> for
+        other indices.</P>
+      <CodeBlock code={`WITH de AS (
+  SELECT (c.bucket_start AT TIME ZONE 'Asia/Kolkata')::date AS d, i.expiry AS e
+  FROM candles_1m c JOIN instruments i USING(instrument_id)
+  WHERE i.underlying='NIFTY' AND i.instrument_type='OPTION' GROUP BY 1,2),
+span AS (SELECT e, min(d) first_d, max(d) last_d FROM de GROUP BY e),
+tdays AS (SELECT DISTINCT (bucket_start AT TIME ZONE 'Asia/Kolkata')::date d
+          FROM candles_1m c JOIN instruments i USING(instrument_id) WHERE i.symbol='INDEX_NIFTY')
+SELECT t.d AS trading_day, array_agg(s.e ORDER BY s.e) AS missing_expiries, count(*) AS n
+FROM tdays t
+JOIN span s ON t.d > s.first_d AND t.d < s.last_d
+LEFT JOIN de ON de.d=t.d AND de.e=s.e
+WHERE de.e IS NULL
+GROUP BY t.d ORDER BY t.d;`} />
+      <H3>Coverage per expiry (strikes + days)</H3>
+      <CodeBlock code={`SELECT i.expiry, count(DISTINCT i.strike) AS strikes,
+       count(DISTINCT (c.bucket_start AT TIME ZONE 'Asia/Kolkata')::date) AS days_with_data,
+       min((c.bucket_start AT TIME ZONE 'Asia/Kolkata')::date) AS first_day,
+       max((c.bucket_start AT TIME ZONE 'Asia/Kolkata')::date) AS last_day
+FROM candles_1m c JOIN instruments i USING(instrument_id)
+WHERE i.underlying='NIFTY' AND i.instrument_type='OPTION'
+GROUP BY 1 ORDER BY 1;`} />
+
+      <H2 id="od-run">Running it</H2>
+      <P>One underlying at a time (never two — they share the Breeze token). Refresh
+        <Mono>BREEZE_SESSION_TOKEN</Mono> in <Mono>.env</Mono> if it logs <Mono>SESSION EXPIRED</Mono>, then
+        re-run the same command (resumes, skips done days).</P>
+      <CodeBlock code={`# BankNifty then Sensex, sequentially (defaults: --next 6, --band 20):
+nohup bash -c '
+  node scripts/breeze_gapfill.js --from 2025-01-01 --underlyings BANKNIFTY &&
+  node scripts/breeze_gapfill.js --from 2025-01-01 --underlyings SENSEX
+' > /tmp/gf_bank_sensex.log 2>&1 &
+tail -f /tmp/gf_bank_sensex.log
+
+# targeted top-up of one day/expiry:
+node scripts/breeze_gapfill.js --from 2026-04-01 --to 2026-04-01 --only-expiry 2026-09-29 --force`} />
+      <Callout tone="warn" title="Always one process at a time">
+        Before relaunching: <Mono>pkill -9 -f breeze_gapfill</Mono> and confirm it's empty. Two concurrent
+        runs share the same Breeze token and collide.
+      </Callout>
+
+      <H2 id="od-limits">Known limits</H2>
+      <P>Far quarterly/yearly expiries are often <b>illiquid</b> 4–6 months out, so Breeze genuinely has no
+        data for them mid-life. Those show as "missing" in the interior-gap query but are <b>not fixable</b>
+        — they're source gaps, not pipeline gaps. Near expiries (what the simulator mostly uses) are
+        complete. <b>bid/ask</b> is live-only and can never be backfilled from history.</P>
     </div>
   )
 }

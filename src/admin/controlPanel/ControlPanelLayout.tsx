@@ -1,6 +1,7 @@
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { clsx } from 'clsx'
 import { MASTER_MODULES } from './registry'
+import { useServiceHealth } from './serviceStatus/serviceHealthStore'
 
 // ── Control Panel shell ──────────────────────────────────────────────────────
 // Scalable master-data workspace: a persistent module rail (left on desktop,
@@ -11,6 +12,8 @@ const BASE = '/admin/control-panel'
 
 export default function ControlPanelLayout() {
   const { pathname } = useLocation()
+  const overall = useServiceHealth((s) => s.overall)
+  const unacked = useServiceHealth((s) => s.unacked)
   return (
     <div className="flex flex-col h-full min-h-0 bg-slate-50 dark:bg-[#0a0f1a]">
       {/* Header */}
@@ -54,6 +57,10 @@ export default function ControlPanelLayout() {
                     <div className="flex items-center gap-1.5">
                       <span className={clsx('text-[13px] font-semibold truncate', active ? 'text-brand-700 dark:text-brand-300' : 'text-slate-700 dark:text-slate-200')}>{m.label}</span>
                       {!m.ready && <span className="text-[8.5px] font-bold tracking-wider text-amber-500/80 border border-amber-400/30 rounded-full px-1.5 py-px leading-none">SOON</span>}
+                      {m.id === 'service-status' && overall !== 'ok' && (
+                        <span className={clsx('h-2 w-2 rounded-full shrink-0 animate-pulse', overall === 'down' ? 'bg-red-500' : 'bg-amber-500')}
+                          title={unacked ? `${unacked} unacknowledged alert(s)` : 'service degraded'} />
+                      )}
                     </div>
                     <p className="text-[10.5px] text-slate-400 dark:text-slate-500 truncate">{m.description}</p>
                   </div>

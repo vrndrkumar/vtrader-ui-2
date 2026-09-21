@@ -7,12 +7,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { clsx } from 'clsx'
 import { useSim } from './store'
 import { NAV_STEPS, type NavStep } from './store'
-import type { Frequency, IndexCode, OptionQuote, OptType, PositionLeg, Side } from './types'
+import type { IndexCode, OptionQuote, OptType, PositionLeg, Side } from './types'
 import { bsGreeks } from './engine/blackScholes'
 import { computePayoffCurve, computeStats, inr, type OptionLeg } from '@/components/PayoffEChart'
 import { SimPayoffChart } from './SimPayoffChart'
-
-const FREQS: Frequency[] = ['1m', '3m', '5m', '15m', '30m', '1h']
 const fmtCompact = (n?: number) => {
   if (n == null) return ''
   const a = Math.abs(n)
@@ -85,7 +83,7 @@ function MetricsStrip() {
 
 // ── Replay bar (scrubber + quick jumps) ───────────────────────────────────────
 function ReplayBar() {
-  const { config, steps, cursor, status, speed, spot, realized, unrealized, reset, play, pause, seek, cycleSpeed, changeIndex, changeFrequency, navStep, setNavStep, stepNav, events } = useSim()
+  const { config, steps, cursor, status, speed, spot, realized, unrealized, reset, play, pause, seek, cycleSpeed, changeIndex, navStep, setNavStep, stepNav, events } = useSim()
   const total = realized + unrealized
   const pct = steps.length > 1 ? (cursor / (steps.length - 1)) * 100 : 0
   const navLabel = navStep === 'D' ? '1 day' : navStep === 60 ? '1 hour' : `${navStep} min`
@@ -108,10 +106,9 @@ function ReplayBar() {
       </div>
       {/* toolbar */}
       <div className="flex items-center gap-2 px-4 h-12 border-t border-slate-100 dark:border-white/[0.05]">
-        {/* index + timeframe */}
+        {/* index */}
         <div className="flex items-center gap-1.5 pr-2 border-r border-slate-200 dark:border-white/[0.06]">
           <PillSelect value={config?.index ?? 'NIFTY'} onChange={v => void changeIndex(v as IndexCode)} options={(['NIFTY', 'SENSEX'] as IndexCode[]).map(v => ({ value: v, label: v }))} strong />
-          <PillSelect value={config?.frequency ?? '5m'} onChange={v => void changeFrequency(v as Frequency)} options={FREQS.map(f => ({ value: f, label: f }))} />
         </div>
         {/* date + time picker */}
         <DateTimePicker />
@@ -279,7 +276,7 @@ function NavBtn({ title, onClick, children }: { title: string; onClick: () => vo
 function ExpiryTabs() {
   const { expiries, config, changeExpiry } = useSim()
   if (!expiries.length || !config) return null
-  const dteOf = (d: string) => Math.max(0, Math.round((Date.parse(`${d}T15:30:00+05:30`) - Date.parse(`${config.date}T09:15:00+05:30`)) / 86_400_000))
+  const dteOf = (d: string) => Math.max(0, Math.round((Date.parse(`${d}T15:40:00+05:30`) - Date.parse(`${config.date}T09:15:00+05:30`)) / 86_400_000))
   return (
     <div className="flex items-center gap-1 shrink-0 px-2 h-9 border-b border-slate-100 dark:border-white/[0.05] overflow-x-auto no-scrollbar">
       {expiries.map(e => {
@@ -301,12 +298,11 @@ function ExpiryTabs() {
 
 // ── Rich option chain ────────────────────────────────────────────────────────────
 function RichChain() {
-  const { chain, positions, config, steps, cursor, addLeg } = useSim()
-  const [lots, setLots] = useState(1)
+  const { chain, positions, config, steps, cursor, addLeg, entryLots } = useSim()
   const scrollRef = useRef<HTMLDivElement>(null)
   const atmRef = useRef<HTMLDivElement>(null)
   useEffect(() => { const c = scrollRef.current, a = atmRef.current; if (c && a) { const cr = c.getBoundingClientRect(), ar = a.getBoundingClientRect(); c.scrollTop += (ar.top - cr.top) - (c.clientHeight / 2 - ar.height / 2) } }, [chain?.atm])
-  const dte = useMemo(() => { if (!config) return 1; const ed = config.expiryId.split('-').slice(1).join('-'); return Math.max(0.5, (Date.parse(`${ed}T00:00:00+05:30`) + 930 * 60000 - steps[cursor]) / 86_400_000) }, [config, steps, cursor])
+  const dte = useMemo(() => { if (!config) return 1; const ed = config.expiryId.split('-').slice(1).join('-'); return Math.max(0.5, (Date.parse(`${ed}T00:00:00+05:30`) + 940 * 60000 -steps[cursor]) / 86_400_000) }, [config, steps, cursor])
   if (!chain) return <div className="h-full flex items-center justify-center text-[12px] text-slate-400 dark:text-white/25">Loading chain…</div>
 
   const posBy = new Map<string, number>()
@@ -360,8 +356,8 @@ function RichChain() {
       <span className="font-mono text-[13px] font-bold text-slate-800 dark:text-white/85 transition-opacity group-hover:opacity-0">{q ? q.ltp.toFixed(2) : '—'}</span>
       {q?.contractId && (
         <div className={clsx('absolute top-0 bottom-0 z-30 flex items-center gap-1 px-1.5 opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto bg-slate-100/95 dark:bg-[#141b2e]/95 shadow-sm', side === 'call' ? 'right-0 justify-end' : 'left-0 justify-start')} style={{ width: 132 }}>
-          <button onClick={() => void addLeg(q.contractId, K, ot, 'BUY', lots)} className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] px-2.5 py-1 rounded shadow-sm">BUY</button>
-          <button onClick={() => void addLeg(q.contractId, K, ot, 'SELL', lots)} className="bg-rose-600 hover:bg-rose-700 text-white font-bold text-[10px] px-2.5 py-1 rounded shadow-sm">SELL</button>
+          <button onClick={() => void addLeg(q.contractId, K, ot, 'BUY', entryLots)} className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] px-2.5 py-1 rounded shadow-sm">BUY</button>
+          <button onClick={() => void addLeg(q.contractId, K, ot, 'SELL', entryLots)} className="bg-rose-600 hover:bg-rose-700 text-white font-bold text-[10px] px-2.5 py-1 rounded shadow-sm">SELL</button>
         </div>
       )}
     </div>
@@ -381,12 +377,6 @@ function RichChain() {
         </span>
         <span className="text-[10px] text-slate-400 dark:text-white/30">Lot {lotSz ?? '—'}</span>
         <span title="Simulated data" className="h-1.5 w-1.5 rounded-full bg-amber-400" />
-        <div className="ml-auto flex items-center gap-1">
-          <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-white/30 mr-0.5">Lots</span>
-          <button onClick={() => setLots(l => Math.max(1, l - 1))} className="h-6 w-6 grid place-items-center rounded text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.06]">−</button>
-          <span className="w-6 text-center text-[12px] font-black tabular-nums text-slate-800 dark:text-white/80">{lots}</span>
-          <button onClick={() => setLots(l => l + 1)} className="h-6 w-6 grid place-items-center rounded text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.06]">+</button>
-        </div>
       </div>
       {/* expiry tabs */}
       <ExpiryTabs />
@@ -452,14 +442,17 @@ function RichChain() {
 
 // ── Positions panel ──────────────────────────────────────────────────────────────
 function PositionsPanel() {
-  const { positions, closeAll, chain, addLeg } = useSim()
+  const { positions, closeAll, chain, addLeg, selectedIds, toggleSelected, setSelectedIds } = useSim()
   const [adding, setAdding] = useState(false)
   const open = positions.filter(l => l.status === 'OPEN')
+  const selOpen = open.filter(l => selectedIds.includes(l.id)).length
+  const allSel = open.length > 0 && selOpen === open.length
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-2 px-4 h-9 border-b border-slate-100 dark:border-white/[0.05] shrink-0">
+        {open.length > 0 && <input type="checkbox" checked={allSel} onChange={() => setSelectedIds(allSel ? [] : open.map(l => l.id))} title="Select all legs (which legs feed the analysis)" className="h-3.5 w-3.5 accent-brand-600 cursor-pointer" />}
         <span className="text-[11px] font-black uppercase tracking-widest text-slate-500 dark:text-white/40">Legs</span>
-        <span className="text-[10px] text-slate-400 dark:text-white/30">{open.length} open</span>
+        <span className="text-[10px] text-slate-400 dark:text-white/30">{open.length} open{selOpen !== open.length ? ` · ${selOpen} in analysis` : ''}</span>
         {open.length > 0 && <button onClick={() => void closeAll()} className="h-6 px-2 rounded-md border border-red-200 dark:border-red-900/40 text-[10px] font-bold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">Exit all</button>}
         <button onClick={() => setAdding(a => !a)} className="ml-auto flex items-center gap-1 h-6 px-2 rounded-md text-[10px] font-bold text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20"><svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14" /></svg>Add leg</button>
       </div>
@@ -467,22 +460,23 @@ function PositionsPanel() {
       <div className="flex-1 overflow-y-auto p-2 space-y-2">
         {positions.length === 0
           ? <div className="h-full flex flex-col items-center justify-center gap-1 text-center"><p className="text-[12px] text-slate-400 dark:text-white/30">No legs yet</p><p className="text-[11px] text-slate-300 dark:text-white/20">In the option chain, hover a strike and tap <b className="text-emerald-500">B</b>/<b className="text-red-500">S</b></p></div>
-          : positions.map(l => <LegCard key={l.id} leg={l} />)}
+          : positions.map(l => <LegCard key={l.id} leg={l} selected={selectedIds.includes(l.id)} onToggle={() => toggleSelected(l.id)} />)}
       </div>
     </div>
   )
 }
 
 function AddLegRow({ chain, onAdd }: { chain: NonNullable<ReturnType<typeof useSim.getState>['chain']>; onAdd: (cid: string, strike: number, ot: OptType, side: Side, lots: number) => void }) {
-  const [side, setSide] = useState<Side>('SELL'); const [ot, setOt] = useState<OptType>('CE'); const [strike, setStrike] = useState(chain.atm); const [lots, setLots] = useState(1)
+  const { entryLots, setEntryLots } = useSim()
+  const [side, setSide] = useState<Side>('SELL'); const [ot, setOt] = useState<OptType>('CE'); const [strike, setStrike] = useState(chain.atm)
   const cid = ot === 'CE' ? chain.rows.find(r => r.strike === strike)?.ce?.contractId : chain.rows.find(r => r.strike === strike)?.pe?.contractId
   return (
     <div className="flex items-center gap-1.5 px-2 py-2 border-b border-slate-100 dark:border-white/[0.05] bg-slate-50 dark:bg-white/[0.02]">
       <div className="flex rounded-md overflow-hidden ring-1 ring-slate-200 dark:ring-white/10">{(['BUY', 'SELL'] as Side[]).map(s => <button key={s} onClick={() => setSide(s)} className={clsx('px-2 h-6 text-[10px] font-black', side === s ? (s === 'BUY' ? 'bg-emerald-500 text-white' : 'bg-red-500 text-white') : 'text-slate-400')}>{s[0]}</button>)}</div>
       <div className="flex rounded-md overflow-hidden ring-1 ring-slate-200 dark:ring-white/10">{(['CE', 'PE'] as OptType[]).map(o => <button key={o} onClick={() => setOt(o)} className={clsx('px-2 h-6 text-[10px] font-black', ot === o ? 'bg-slate-700 text-white' : 'text-slate-400')}>{o}</button>)}</div>
       <select value={strike} onChange={e => setStrike(Number(e.target.value))} className="h-6 px-1.5 rounded-md border border-slate-200 dark:border-white/[0.1] bg-white dark:bg-white/[0.05] text-[11px] font-bold tabular-nums">{chain.rows.map(r => <option key={r.strike} value={r.strike}>{r.strike}</option>)}</select>
-      <div className="flex items-center gap-0.5"><button onClick={() => setLots(l => Math.max(1, l - 1))} className="h-6 w-6 rounded border border-slate-200 dark:border-white/[0.1] text-slate-500">−</button><span className="w-6 text-center text-[11px] font-bold">{lots}</span><button onClick={() => setLots(l => l + 1)} className="h-6 w-6 rounded border border-slate-200 dark:border-white/[0.1] text-slate-500">+</button></div>
-      <button onClick={() => cid && onAdd(cid, strike, ot, side, lots)} className="ml-auto h-6 px-3 rounded-md bg-brand-600 text-white text-[10px] font-bold hover:bg-brand-700">Add</button>
+      <div className="flex items-center gap-0.5" title="Lots (also the default size for chain BUY/SELL)"><button onClick={() => setEntryLots(entryLots - 1)} className="h-6 w-6 rounded border border-slate-200 dark:border-white/[0.1] text-slate-500">−</button><span className="w-6 text-center text-[11px] font-bold tabular-nums">{entryLots}</span><button onClick={() => setEntryLots(entryLots + 1)} className="h-6 w-6 rounded border border-slate-200 dark:border-white/[0.1] text-slate-500">+</button></div>
+      <button onClick={() => cid && onAdd(cid, strike, ot, side, entryLots)} className="ml-auto h-6 px-3 rounded-md bg-brand-600 text-white text-[10px] font-bold hover:bg-brand-700">Add</button>
     </div>
   )
 }
@@ -497,19 +491,22 @@ function IconBtn({ title, onClick, children, tone = 'default' }: { title: string
   )
 }
 
-function LegCard({ leg }: { leg: PositionLeg }) {
+function LegCard({ leg, selected, onToggle }: { leg: PositionLeg; selected: boolean; onToggle: () => void }) {
   const { closeLeg, reverseLeg, changeQty, rollStrike, removeLeg } = useSim()
   const [modify, setModify] = useState(false)
-  const mtm = leg.status === 'CLOSED' ? leg.realized : leg.unrealized
+  const mtm = leg.status === 'OPEN' ? leg.unrealized : leg.realized   // closed/expired show locked P&L
   const lots = Math.round(leg.qty / leg.lotSize)
   const buy = leg.side === 'BUY'
   const open = leg.status === 'OPEN'
+  const expired = leg.status === 'EXPIRED'
   return (
-    <div className={clsx('relative rounded-r-xl border border-l-2 pl-2.5 pr-3 py-2', leg.status === 'CLOSED' ? 'opacity-45 border-slate-200 border-l-slate-300 dark:border-white/[0.06]' : buy ? 'border-emerald-200 border-l-emerald-500 dark:border-emerald-900/40' : 'border-red-200 border-l-red-500 dark:border-red-900/40', 'dark:bg-white/[0.02]')}>
+    <div className={clsx('relative rounded-r-xl border border-l-2 pl-2.5 pr-3 py-2', !open ? 'opacity-60 border-slate-200 border-l-slate-300 dark:border-white/[0.06]' : selected ? 'border-brand-300 border-l-brand-500 dark:border-brand-800 ring-1 ring-brand-300 dark:ring-brand-800' : buy ? 'border-emerald-200 border-l-emerald-500 dark:border-emerald-900/40' : 'border-red-200 border-l-red-500 dark:border-red-900/40', 'dark:bg-white/[0.02]')}>
       <div className="flex items-center gap-2">
+        {open && <input type="checkbox" checked={selected} onChange={onToggle} title="Select leg" className="h-3.5 w-3.5 accent-brand-600 cursor-pointer" />}
         <span className={clsx('px-1.5 py-0.5 rounded text-[9px] font-black', buy ? 'bg-emerald-500 text-white' : 'bg-red-500 text-white')}>{leg.side}</span>
         <span className="text-[13px] font-bold text-slate-800 dark:text-white/85 tabular-nums">{leg.strike} <span className={clsx('text-[10px]', leg.optType === 'CE' ? 'text-emerald-600' : 'text-red-500')}>{leg.optType}</span></span>
         <span className="text-[10px] text-slate-400 dark:text-white/30">×{leg.qty} · {lots}L</span>
+        {expired && <span className="text-[9px] font-black uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400">Expired</span>}
         <span className={clsx('ml-auto text-[13px] font-black tabular-nums', mtm >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500 dark:text-red-400')}>{mtm >= 0 ? '+' : '−'}₹{inr(Math.abs(mtm))}</span>
       </div>
       <div className="flex items-center gap-3 mt-1.5 text-[11px] text-slate-500 dark:text-white/40">
@@ -520,9 +517,9 @@ function LegCard({ leg }: { leg: PositionLeg }) {
       </div>
       {open && (
         <div className="flex items-center gap-2 mt-2 flex-wrap">
-          {/* qty stepper */}
+          {/* lots stepper — changes this leg's quantity in place */}
           <div className="flex items-center rounded-md border border-slate-200 dark:border-white/[0.1] overflow-hidden">
-            <button title="Decrease lots" onClick={() => void changeQty(leg.id, lots - 1)} className="h-7 w-7 grid place-items-center text-slate-500 dark:text-white/45 hover:bg-slate-50 dark:hover:bg-white/[0.05]"><svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M5 12h14" /></svg></button>
+            <button title="Decrease lots" onClick={() => void changeQty(leg.id, lots - 1)} className="h-7 w-7 grid place-items-center text-slate-500 dark:text-white/45 hover:bg-slate-50 dark:hover:bg-white/[0.05] disabled:opacity-30" disabled={lots <= 1}><svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M5 12h14" /></svg></button>
             <span className="w-9 text-center text-[11px] font-black tabular-nums text-slate-700 dark:text-white/70 border-x border-slate-200 dark:border-white/[0.1]">{lots}L</span>
             <button title="Increase lots" onClick={() => void changeQty(leg.id, lots + 1)} className="h-7 w-7 grid place-items-center text-slate-500 dark:text-white/45 hover:bg-slate-50 dark:hover:bg-white/[0.05]"><svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14" /></svg></button>
           </div>
@@ -556,16 +553,36 @@ function LegCard({ leg }: { leg: PositionLeg }) {
 
 function ModifyPopover({ leg, lots, onClose }: { leg: PositionLeg; lots: number; onClose: () => void }) {
   const { changeQty, setLegRisk, partialExit } = useSim()
-  const [q, setQ] = useState(lots); const [sl, setSl] = useState(leg.sl != null ? String(leg.sl) : ''); const [tgt, setTgt] = useState(leg.target != null ? String(leg.target) : '')
-  function apply() { if (q !== lots) void changeQty(leg.id, q); setLegRisk(leg.id, { sl: sl ? Number(sl) : undefined, target: tgt ? Number(tgt) : undefined }); onClose() }
-  const R = ({ label, children }: { label: string; children: React.ReactNode }) => <div className="flex items-center justify-between"><span className="text-[11px] text-slate-500 dark:text-white/40">{label}</span>{children}</div>
+  const [q, setQ] = useState(lots)
+  const [mode, setMode] = useState<'abs' | 'pct'>('abs')
+  const [sl, setSl] = useState(leg.sl != null ? String(leg.sl) : '')
+  const [tgt, setTgt] = useState(leg.target != null ? String(leg.target) : '')
+  const entry = leg.avgEntry
+  // Convert an input to an absolute premium LEVEL. In % mode the % is of entry and
+  // direction depends on side: a SELL's stop is ABOVE entry (premium rises), a BUY's
+  // stop is BELOW; targets are the opposite.
+  const toAbs = (raw: string, kind: 'sl' | 'tgt'): number | undefined => {
+    if (!raw.trim()) return undefined
+    const n = Number(raw); if (!Number.isFinite(n)) return undefined
+    if (mode === 'abs') return n
+    const up = leg.side === 'SELL' ? kind === 'sl' : kind === 'tgt' // does the premium move up to trigger?
+    return +(entry * (1 + (up ? 1 : -1) * n / 100)).toFixed(2)
+  }
+  const slAbs = toAbs(sl, 'sl'), tgtAbs = toAbs(tgt, 'tgt')
+  const switchMode = (m: 'abs' | 'pct') => { if (m !== mode) { setMode(m); setSl(''); setTgt('') } }
+  function apply() { if (q !== lots) void changeQty(leg.id, q); setLegRisk(leg.id, { sl: slAbs, target: tgtAbs }); onClose() }
+  const R = ({ label, children }: { label: string; children: React.ReactNode }) => <div className="flex items-center justify-between gap-2"><span className="text-[11px] text-slate-500 dark:text-white/40">{label}</span>{children}</div>
+  const unitBtn = (m: 'abs' | 'pct', txt: string) => <button onClick={() => switchMode(m)} className={clsx('px-2 h-5 text-[10px] font-black rounded', mode === m ? 'bg-slate-700 dark:bg-slate-600 text-white' : 'text-slate-400')}>{txt}</button>
   return (
-    <div className="absolute right-2 top-8 z-40 w-56 rounded-xl border border-slate-200 dark:border-white/[0.12] bg-white dark:bg-slate-900 shadow-2xl p-3">
-      <div className="text-[11px] font-bold text-slate-700 dark:text-white/70 mb-2.5">Modify · {leg.strike} {leg.optType}</div>
+    <div className="absolute right-2 top-8 z-40 w-60 rounded-xl border border-slate-200 dark:border-white/[0.12] bg-white dark:bg-slate-900 shadow-2xl p-3">
+      <div className="flex items-center justify-between mb-2.5">
+        <span className="text-[11px] font-bold text-slate-700 dark:text-white/70">Modify · {leg.strike} {leg.optType}</span>
+        <div className="flex rounded-md overflow-hidden ring-1 ring-slate-200 dark:ring-white/10">{unitBtn('abs', '₹')}{unitBtn('pct', '%')}</div>
+      </div>
       <div className="space-y-2.5">
         <R label="Quantity"><div className="flex items-center gap-1.5"><button onClick={() => setQ(v => Math.max(1, v - 1))} className="h-6 w-6 rounded border border-slate-200 dark:border-white/[0.1] text-slate-500">−</button><span className="w-8 text-center text-[12px] font-bold tabular-nums">{q}L</span><button onClick={() => setQ(v => v + 1)} className="h-6 w-6 rounded border border-slate-200 dark:border-white/[0.1] text-slate-500">+</button></div></R>
-        <R label="Stop loss ₹"><input value={sl} onChange={e => setSl(e.target.value)} placeholder="—" className="h-7 w-20 px-2 text-right rounded-md border border-slate-200 dark:border-white/[0.1] bg-white dark:bg-white/[0.05] text-[12px] font-bold tabular-nums outline-none focus:border-red-400" /></R>
-        <R label="Target ₹"><input value={tgt} onChange={e => setTgt(e.target.value)} placeholder="—" className="h-7 w-20 px-2 text-right rounded-md border border-slate-200 dark:border-white/[0.1] bg-white dark:bg-white/[0.05] text-[12px] font-bold tabular-nums outline-none focus:border-emerald-400" /></R>
+        <R label={`Stop loss ${mode === 'pct' ? '%' : '₹'}`}><div className="flex items-center gap-1.5">{mode === 'pct' && slAbs != null && <span className="text-[10px] text-slate-400 tabular-nums">→ ₹{slAbs}</span>}<input value={sl} onChange={e => setSl(e.target.value)} placeholder="—" className="h-7 w-20 px-2 text-right rounded-md border border-slate-200 dark:border-white/[0.1] bg-white dark:bg-white/[0.05] text-[12px] font-bold tabular-nums outline-none focus:border-red-400" /></div></R>
+        <R label={`Target ${mode === 'pct' ? '%' : '₹'}`}><div className="flex items-center gap-1.5">{mode === 'pct' && tgtAbs != null && <span className="text-[10px] text-slate-400 tabular-nums">→ ₹{tgtAbs}</span>}<input value={tgt} onChange={e => setTgt(e.target.value)} placeholder="—" className="h-7 w-20 px-2 text-right rounded-md border border-slate-200 dark:border-white/[0.1] bg-white dark:bg-white/[0.05] text-[12px] font-bold tabular-nums outline-none focus:border-emerald-400" /></div></R>
         <R label="Partial exit"><div className="flex gap-1">{[['50%', Math.max(1, Math.floor(lots / 2))], ['25%', Math.max(1, Math.floor(lots / 4))]].map(([l, n]) => <button key={l as string} onClick={() => { void partialExit(leg.id, n as number); onClose() }} className="h-6 px-2 rounded-md border border-slate-200 dark:border-white/[0.1] text-[10px] font-bold text-slate-500">{l as string}</button>)}</div></R>
       </div>
       <div className="flex gap-1.5 mt-3"><button onClick={apply} className="flex-1 h-8 rounded-lg bg-brand-600 text-white text-[12px] font-bold hover:bg-brand-700">Apply</button><button onClick={onClose} className="h-8 px-3 rounded-lg border border-slate-200 dark:border-white/[0.1] text-[12px] font-bold text-slate-500">Cancel</button></div>
@@ -578,7 +595,9 @@ type ATab = 'payoff' | 'pnl' | 'risk'
 function Analysis() {
   const [tab, setTab] = useState<ATab>('payoff')
   const [expanded, setExpanded] = useState(false)
-  const hasLegs = useSim(s => s.positions.some(l => l.status === 'OPEN'))
+  // Show the analysis whenever a selected leg exists — open OR settled (closed/
+  // expired). A fully-settled position still has a result to show, not an empty state.
+  const hasLegs = useSim(s => s.positions.some(l => s.selectedIds.includes(l.id)))
   return (
     <>
       <div className="flex items-center gap-1 px-3 h-9 border-b border-slate-200 dark:border-white/[0.06] shrink-0">
@@ -611,18 +630,19 @@ function AnalysisEmpty() {
 }
 
 function usePayoff() {
-  const { positions, chain, config, steps, cursor } = useSim()
+  const { positions, chain, config, steps, cursor, selectedIds } = useSim()
   const ts = steps[cursor]
   const legs: OptionLeg[] = useMemo(() => {
     if (!config) return []
     const ed = config.expiryId.split('-').slice(1).join('-')
-    const dte = Math.max(0.5, (Date.parse(`${ed}T00:00:00+05:30`) + 930 * 60000 - ts) / 86_400_000)
+    const dte = Math.max(0.5, (Date.parse(`${ed}T00:00:00+05:30`) + 940 * 60000 -ts) / 86_400_000)
     const ivOf = (cid: string) => {
       for (const r of chain?.rows ?? []) { if (r.ce?.contractId === cid) return r.ce.iv; if (r.pe?.contractId === cid) return r.pe.iv }
       return undefined
     }
-    return positions.filter(l => l.status === 'OPEN').map(l => ({ optType: l.optType, strike: l.strike, qty: l.side === 'BUY' ? l.qty : -l.qty, entry: l.avgEntry, dte, iv: ivOf(l.contractId) || 0.15 }))
-  }, [positions, config, ts, chain])
+    // Only SELECTED open legs feed the analysis.
+    return positions.filter(l => l.status === 'OPEN' && selectedIds.includes(l.id)).map(l => ({ optType: l.optType, strike: l.strike, qty: l.side === 'BUY' ? l.qty : -l.qty, entry: l.avgEntry, dte, iv: ivOf(l.contractId) || 0.15 }))
+  }, [positions, config, ts, chain, selectedIds])
   const data = useMemo(() => computePayoffCurve(legs), [legs])
   const spot = chain?.spot ?? 0
   const step = chain?.step ?? 50
@@ -632,15 +652,44 @@ function usePayoff() {
 
 function PayoffView() {
   const { legs, spot, step } = usePayoff()
+  const { positions, selectedIds } = useSim()
+  // Live payoff while legs are open; once every selected leg has settled, the
+  // outcome is fixed — show it as a flat P&L line at the locked (realized) result.
+  if (legs.length) {
+    return (
+      <div className="flex-1 min-h-0 px-2 pt-2 pb-2">
+        <div className="w-full h-full"><SimPayoffChart legs={legs} spot={spot} step={step} /></div>
+      </div>
+    )
+  }
+  const sel = positions.filter(l => selectedIds.includes(l.id))
+  const realized = sel.reduce((s, l) => s + l.realized, 0)
+  const anyExpired = sel.some(l => l.status === 'EXPIRED')
+  const pos = realized >= 0
   return (
-    <div className="flex-1 min-h-0 px-2 pt-2 pb-2">
-      <div className="w-full h-full"><SimPayoffChart legs={legs} spot={spot} step={step} /></div>
+    <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-4 px-6">
+      <div className="text-center">
+        <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-white/30">{anyExpired ? 'Settled at expiry · realized P&L' : 'Position closed · realized P&L'}</div>
+        <div className={clsx('text-[30px] font-black tabular-nums leading-tight mt-1', pos ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500 dark:text-red-400')}>{pos ? '+' : '−'}₹{inr(Math.abs(realized))}</div>
+      </div>
+      {/* fixed-outcome flat line — the P&L no longer depends on spot */}
+      <svg viewBox="0 0 320 90" className="w-full max-w-md h-24">
+        <line x1="10" y1="70" x2="310" y2="70" stroke="currentColor" className="text-slate-200 dark:text-white/10" strokeWidth="1" />
+        <line x1="42" y1="70" x2="42" y2="14" stroke="currentColor" className="text-slate-200 dark:text-white/10" strokeWidth="1" />
+        <line x1="42" y1={pos ? 30 : 58} x2="310" y2={pos ? 30 : 58} strokeWidth="2.5" strokeLinecap="round" className={pos ? 'text-emerald-500' : 'text-red-500'} stroke="currentColor" />
+        <text x="176" y={pos ? 24 : 76} textAnchor="middle" className="fill-slate-400 dark:fill-white/40" style={{ fontSize: 10, fontWeight: 700 }}>{pos ? 'Fixed profit' : 'Fixed loss'}</text>
+      </svg>
+      <p className="text-[11px] text-slate-400 dark:text-white/30 text-center max-w-xs">Outcome is locked — see the P&amp;L and Risk tabs for the breakdown.</p>
     </div>
   )
 }
 
 function PnlView() {
-  const { pnl, realized, unrealized } = useSim()
+  const { pnl, positions, selectedIds } = useSim()
+  // P&L reflects the SELECTED legs (realized from any selected leg, unrealized from open ones).
+  const selLegs = positions.filter(l => selectedIds.includes(l.id))
+  const realized = selLegs.reduce((s, l) => s + l.realized, 0)
+  const unrealized = selLegs.reduce((s, l) => s + (l.status === 'OPEN' ? l.unrealized : 0), 0)
   const total = realized + unrealized
   const max = Math.max(1, ...pnl.map(p => Math.abs(p.total)))
   return (
@@ -656,14 +705,14 @@ function PnlView() {
 
 // Net portfolio greeks = Σ (contract greek × signed qty), using the live chain snapshot.
 function usePortfolioGreeks() {
-  const { positions, chain } = useSim()
+  const { positions, chain, selectedIds } = useSim()
   return useMemo(() => {
     const g = { delta: 0, gamma: 0, theta: 0, vega: 0, hasData: false }
     if (!chain) return g
     const byId = new Map<string, OptionQuote>()
     for (const r of chain.rows) { if (r.ce) byId.set(r.ce.contractId, r.ce); if (r.pe) byId.set(r.pe.contractId, r.pe) }
     for (const l of positions) {
-      if (l.status !== 'OPEN') continue
+      if (l.status !== 'OPEN' || !selectedIds.includes(l.id)) continue
       const q = byId.get(l.contractId); if (!q) continue
       const sq = l.side === 'BUY' ? l.qty : -l.qty
       g.delta += (q.delta ?? 0) * sq
@@ -673,7 +722,7 @@ function usePortfolioGreeks() {
       g.hasData = true
     }
     return g
-  }, [positions, chain])
+  }, [positions, chain, selectedIds])
 }
 
 function GreeksBar() {
@@ -701,9 +750,10 @@ function GreeksBar() {
 }
 
 function RiskView() {
-  const { positions, realized, unrealized, pnl } = useSim()
-  const open = positions.filter(l => l.status === 'OPEN')
-  const total = realized + unrealized
+  const { positions, selectedIds, pnl } = useSim()
+  const sel = positions.filter(l => selectedIds.includes(l.id))
+  const open = sel.filter(l => l.status === 'OPEN')
+  const total = sel.reduce((s, l) => s + l.realized + (l.status === 'OPEN' ? l.unrealized : 0), 0)
   let dd = 0, pk = 0; for (const p of pnl) { pk = Math.max(pk, p.total); dd = Math.min(dd, p.total - pk) }
   return (
     <div className="flex-1 overflow-y-auto p-3 space-y-3">

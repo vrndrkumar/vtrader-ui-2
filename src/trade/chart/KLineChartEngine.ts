@@ -7,6 +7,10 @@ import { INDICATORS } from './indicatorMeta'
 import './customOverlays' // register Shapes + Text overlays before any chart init
 import './orderOverlays'  // register the draggable order-line overlay
 import type { OrderLine } from './orderOverlays'
+import { registerSmcIndicator, setSmcInputs, setSmcTheme, setSmcTimeframe } from './smc/indicator'
+import type { SmcInputs } from './smc/types'
+import { registerRsIndicator, setRsInputs, setRsComparative as setRsCompMap, setRsTheme } from './rs/indicator'
+import type { RsInputs } from './rs/types'
 
 type Chart = NonNullable<ReturnType<typeof init>>
 
@@ -97,6 +101,10 @@ export class KLineChartEngine implements ChartEngine {
 
   constructor(el: HTMLElement, dark: boolean) {
     this.el = el
+    registerSmcIndicator() // register the Smart Money Concepts custom indicator once
+    registerRsIndicator()  // register the Relative Strength sub-pane indicator once
+    setSmcTheme(dark)
+    setRsTheme(dark)
     this.chart = init(el)
     // No default indicators — the trader adds what they want, and can remove it.
     if (this.chart) {
@@ -114,6 +122,11 @@ export class KLineChartEngine implements ChartEngine {
 
   setData(candles: Candle[]): void {
     if (!this.chart) return
+    // Infer the chart timeframe (minutes) from the smallest positive bar gap, so
+    // SMC's MTF pieces (levels / FVG timeframe) resample correctly.
+    let minDt = Infinity
+    for (let i = 1; i < candles.length; i++) { const d = candles[i].timestamp - candles[i - 1].timestamp; if (d > 0 && d < minDt) minDt = d }
+    if (Number.isFinite(minDt)) setSmcTimeframe(Math.max(1, Math.round(minDt / 60000)))
     this.chart.applyNewData(candles as KLineData[])
     // Snap the viewport back to the latest candles. Without this, a scroll/zoom
     // left over from the previous timeframe (or symbol) keeps the old visible
@@ -128,7 +141,50 @@ export class KLineChartEngine implements ChartEngine {
   }
 
   setTheme(dark: boolean): void {
+    setSmcTheme(dark)
+    setRsTheme(dark)
     this.chart?.setStyles(styles(dark) as never)
+  }
+
+  // ── Relative Strength sub-pane indicator ───────────────────────────────────
+  enableRs(inputs: RsInputs): void {
+    setRsInputs(inputs)
+    if (!this.chart) return
+    if (!this.indicators.has('RS')) {
+      this.chart.createIndicator('RS', false, { id: 'rs_pane' })
+      this.indicators.set('RS', 'rs_pane')
+    } else { this.refreshRs() }
+  }
+  updateRs(inputs: RsInputs): void { setRsInputs(inputs); this.refreshRs() }
+  setRsComparative(map: Map<number, number>): void { setRsCompMap(map); this.refreshRs() }
+  disableRs(): void {
+    const pane = this.indicators.get('RS')
+    if (this.chart && pane) { this.chart.removeIndicator(pane, 'RS'); this.indicators.delete('RS') }
+  }
+  hasRs(): boolean { return this.indicators.has('RS') }
+  private refreshRs(): void {
+    try { this.chart?.overrideIndicator({ name: 'RS' } as never, 'rs_pane') } catch { /* keep chart alive */ }
+  }
+
+  // ── Smart Money Concepts [LuxAlgo] indicator ───────────────────────────────
+  enableSmc(inputs: SmcInputs): void {
+    setSmcInputs(inputs)
+    if (!this.chart) return
+    if (!this.indicators.has('SMC')) {
+      this.chart.createIndicator('SMC', true, { id: 'candle_pane' })
+      this.indicators.set('SMC', 'candle_pane')
+    } else {
+      this.refreshSmc()
+    }
+  }
+  updateSmc(inputs: SmcInputs): void { setSmcInputs(inputs); this.refreshSmc() }
+  disableSmc(): void {
+    const pane = this.indicators.get('SMC')
+    if (this.chart && pane) { this.chart.removeIndicator(pane, 'SMC'); this.indicators.delete('SMC') }
+  }
+  hasSmc(): boolean { return this.indicators.has('SMC') }
+  private refreshSmc(): void {
+    try { this.chart?.overrideIndicator({ name: 'SMC' } as never, 'candle_pane') } catch { /* keep chart alive */ }
   }
 
   toggleIndicator(name: string, calcParams?: number[]): void {

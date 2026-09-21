@@ -10,20 +10,19 @@ import type {
   AvailableSession, OptionMarketDataProvider,
 } from './provider'
 import type {
-  Candle, Expiry, Frequency, IndexCode, OptionChainSnapshot, OptionChainRow,
+  Candle, Expiry, IndexCode, OptionChainSnapshot, OptionChainRow,
   OptionContract, OptionQuote,
 } from '../types'
 import { bsPrice, bsGreeks } from '../engine/blackScholes'
 import { fetchExpiries } from './httpExpiries'
 import { fetchChainSnapshot, fetchQuote, tokenToDate } from './httpChain'
-import { fetchIndexCandles } from './httpCandles'
+import { lotSizeFor } from '@/services/orders/lotSize'
 
-const FREQ_MIN: Record<Frequency, number> = { '1m': 1, '3m': 3, '5m': 5, '15m': 15, '30m': 30, '1h': 60 }
 const SESSION_START_MIN = 555   // 09:15
-const SESSION_END_MIN = 930     // 15:30
+const SESSION_END_MIN = 940     // 15:40
+// Synthetic-fallback constants (only used when the real feed is unreachable).
 const STEP: Record<IndexCode, number> = { NIFTY: 50, SENSEX: 100 }
 const BASE_SPOT: Record<IndexCode, number> = { NIFTY: 24800, SENSEX: 81200 }
-const LOT: Record<IndexCode, number> = { NIFTY: 75, SENSEX: 20 }
 
 // ── deterministic RNG ─────────────────────────────────────────────────────────
 function hash(s: string): number { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) } return h >>> 0 }
@@ -59,21 +58,6 @@ function baseSeries(index: IndexCode, date: string): Candle[] {
 }
 const round = (n: number) => Math.round(n * 100) / 100
 
-function resample(base: Candle[], freq: Frequency): Candle[] {
-  const step = FREQ_MIN[freq]
-  if (step === 1) return base
-  const out: Candle[] = []
-  for (let i = 0; i < base.length; i += step) {
-    const slice = base.slice(i, i + step)
-    if (!slice.length) break
-    out.push({
-      ts: slice[0].ts, open: slice[0].open,
-      high: Math.max(...slice.map(c => c.high)), low: Math.min(...slice.map(c => c.low)),
-      close: slice[slice.length - 1].close, volume: slice.reduce((s, c) => s + (c.volume ?? 0), 0),
-    })
-  }
-  return out
-}
 function spotAt(index: IndexCode, date: string, ts: number): number {
   const base = baseSeries(index, date)
   let px = base[0]?.close ?? BASE_SPOT[index]
@@ -160,26 +144,9 @@ export class MockOptionMarketDataProvider implements OptionMarketDataProvider {
     return buildExpiries(index, date)
   }
 
-  // Real index candles; synthetic fallback if the feed is unreachable/empty.
-  async underlyingSession(index: IndexCode, date: string, freq: Frequency): Promise<Candle[]> {
-    try {
-      const real = await fetchIndexCandles(index, date, freq)
-      if (real.length) return real
-    } catch { /* fall through */ }
-    return resample(baseSeries(index, date), freq)
-  }
-
-  async underlyingUpTo(index: IndexCode, date: string, freq: Frequency, upToTs: number): Promise<Candle[]> {
-    try {
-      const real = await fetchIndexCandles(index, date, freq)
-      if (real.length) return real.filter(c => c.ts <= upToTs)
-    } catch { /* fall through */ }
-    return resample(baseSeries(index, date), freq).filter(c => c.ts <= upToTs)
-  }
-
   // Real chain from data.vtrader.in; synthetic fallback keeps the workstation alive
   // if the feed is unreachable.
-  async chainAt(index: IndexCode, expiryId: string, _freq: Frequency, ts: number): Promise<OptionChainSnapshot> {
+  async chainAt(index: IndexCode, expiryId: string, ts: number): Promise<OptionChainSnapshot> {
     const expiryDate = expiryId.split('-').slice(1).join('-')
     try {
       const real = await fetchChainSnapshot(index, expiryDate, ts)
@@ -241,9 +208,7 @@ export class MockOptionMarketDataProvider implements OptionMarketDataProvider {
     if (!p) return null
     return {
       id: cid, index: p.index, expiryId: `${p.index}-${p.expiryDate}`,
-      strike: p.strike, optType: p.optType, lotSize: LOT[p.index], tickSize: 0.05,
+      strike: p.strike, optType: p.optType, lotSize: lotSizeFor(p.index), tickSize: 0.05,
     }
   }
 }
-
-export const lotSizeForIndex = (index: IndexCode) => LOT[index]

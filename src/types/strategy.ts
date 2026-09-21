@@ -43,41 +43,47 @@ export const INDEX_LOT_SIZES: Record<string, number> = {
 }
 
 /**
- * Extract which indices a strategy config covers.
+ * Extract which indices a strategy config covers, by finding the index *objects*
+ * wherever they live — not by relying on `expiry_days` or a hard-coded fallback.
  *
- * @param config     The strategy config
- * @param allSymbols Optional: all symbols from IndexMaster (most accurate — pass when available)
- *
- * Priority:
- *  1. configData keys ∩ allSymbols (IndexMaster) — fully dynamic, covers equity + any crypto
- *  2. configData keys ∩ STANDARD_INDICES            — equity fallback
- *  3. Any ALL-CAPS configData key with an object value — catches BTC/ETH without hardcoding
- *  4. Hard fallback: ['NIFTY', 'BANKNIFTY']
+ * An index is included when a config object is keyed by an index symbol and it is
+ * not explicitly disabled (`enabled: false`). Sources, unioned:
+ *   1. FLAT     — top-level `configData.<INDEX>` objects (NIFTY_LIQUIDITY_TRADE, INTRADAY_SCALPING)
+ *   2. NESTED   — `configData.indices.<INDEX>` objects (ZERO_HERO)
+ *   3. DAY-MAP  — values of `indexDays` / `expiry_days` (day → index name)
+ * A symbol counts as an index if it's in IndexMaster (when provided) or STANDARD_INDICES,
+ * or — to catch future/crypto symbols without hardcoding — an ALL-CAPS key with an object value.
+ * If nothing is found, returns [] (the strategy shows no indices — do not guess).
  */
 export function getStrategyIndices(config: StrategyConfig, allSymbols?: string[]): string[] {
-  if (!config.configData) return ['NIFTY', 'BANKNIFTY']
-  const keys = Object.keys(config.configData)
+  const cd = config.configData
+  if (!cd) return []
+  const known = new Set<string>([...(allSymbols?.length ? allSymbols : []), ...STANDARD_INDICES].map((s) => s.toUpperCase()))
+  const isObj = (v: unknown): v is Record<string, unknown> => v != null && typeof v === 'object' && !Array.isArray(v)
+  const out = new Set<string>()
 
-  // 1. Use IndexMaster symbols when provided — most accurate
-  if (allSymbols?.length) {
-    const found = allSymbols.filter((s) => keys.includes(s))
-    if (found.length > 0) return found
+  // Collect index-keyed objects from a container (top level or the nested `indices`).
+  const collect = (container: Record<string, unknown>) => {
+    for (const [k, v] of Object.entries(container)) {
+      if (NON_INDEX_KEYS.has(k) || !isObj(v)) continue
+      const KEY = k.toUpperCase()
+      const looksLikeIndex = known.has(KEY) || k === KEY // known symbol, or an ALL-CAPS object (crypto/future)
+      if (!looksLikeIndex) continue
+      if ((v as { enabled?: unknown }).enabled === false) continue // honor explicit disable
+      out.add(k)
+    }
   }
 
-  // 2. Known equity indices
-  const known = STANDARD_INDICES.filter((idx) => keys.includes(idx))
-  if (known.length > 0) return known as string[]
+  collect(cd)                                  // 1. flat
+  if (isObj(cd.indices)) collect(cd.indices)   // 2. nested under `indices`
 
-  // 3. Any ALL-CAPS key with an object value (catches BTC, ETH, any future symbol)
-  const dynamic = keys.filter((k) => {
-    if (NON_INDEX_KEYS.has(k)) return false
-    if (k !== k.toUpperCase()) return false
-    const v = config.configData![k]
-    return v !== null && typeof v === 'object' && !Array.isArray(v)
-  })
-  if (dynamic.length > 0) return dynamic
+  // 3. day → index maps (values are index names)
+  for (const mapKey of ['indexDays', 'indexdays', 'expiry_days', 'expiryDays']) {
+    const m = cd[mapKey]
+    if (isObj(m)) for (const idx of Object.values(m)) if (typeof idx === 'string' && idx.trim()) out.add(idx.trim())
+  }
 
-  return ['NIFTY', 'BANKNIFTY']
+  return [...out]
 }
 
 /** Per-index lot counts for subscription */

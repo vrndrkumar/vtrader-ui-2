@@ -9,9 +9,10 @@
 
 import { create } from 'zustand'
 import { getOptionDataProvider } from './data'
+import { ensureLotSizes } from '@/services/orders/lotSize'
 import type { AvailableSession } from './data/provider'
 import type {
-  Candle, ClockStatus, Expiry, Frequency, IndexCode, OptionChainSnapshot, PnLPoint, PositionLeg,
+  ClockStatus, Expiry, IndexCode, OptionChainSnapshot, PnLPoint, PositionLeg,
   RiskConfig, SessionConfig, Side, TradeEvent,
 } from './types'
 
@@ -36,12 +37,11 @@ interface SimState {
   sessions: AvailableSession[]   // selectable trading dates for the current index
   expiries: Expiry[]             // selectable expiries for the current index+date
 
-  steps: number[]          // candle timestamps for the session at `freq`
+  steps: number[]          // 1-minute clock grid for the session (chain is the price source)
   cursor: number           // index into steps
   status: ClockStatus
   speed: number
 
-  underlying: Candle[]      // candles up to current time (look-ahead safe)
   chain: OptionChainSnapshot | null
   positions: PositionLeg[]
   events: TradeEvent[]
@@ -58,7 +58,6 @@ interface SimState {
   setup: (config: SessionConfig) => Promise<void>
   changeIndex: (index: IndexCode) => Promise<void>
   changeDate: (date: string) => Promise<void>
-  changeFrequency: (frequency: Frequency) => Promise<void>
   changeExpiry: (expiryId: string) => Promise<void>
   seekToTime: (hhmm: string) => void
   navStep: NavStep                                    // duration used by Forward/Backward
@@ -86,10 +85,34 @@ interface SimState {
   closeAll: () => Promise<void>
   setLegRisk: (legId: string, patch: { sl?: number | undefined; target?: number | undefined }) => void
   setRisk: (patch: Partial<RiskConfig>) => void
+
+  entryLots: number                       // shared default order size (chain BUY/SELL + Add leg)
+  setEntryLots: (n: number) => void
+
+  // Which legs feed the analysis (payoff / P&L / greeks). New legs are selected
+  // by default; unselecting a leg removes it from every analysis surface.
+  selectedIds: string[]
+  toggleSelected: (id: string) => void
+  setSelectedIds: (ids: string[]) => void
 }
 
 let timer: ReturnType<typeof setTimeout> | undefined
 function clearTimer() { if (timer) { clearTimeout(timer); timer = undefined } }
+
+/** 1-minute clock grid over [startTime, endTime]. The chain is the price source;
+ *  navStep decides how far Forward/Backward and Autoplay move over this grid. */
+function buildSteps(date: string, startHHMM: string, endHHMM: string): number[] {
+  const s = toTs(date, startHHMM), e = toTs(date, endHHMM)
+  const out: number[] = []
+  for (let t = s; t <= e; t += 60_000) out.push(t)
+  return out
+}
+
+// ── expiry helpers ──────────────────────────────────────────────────────────
+const SESSION_END_HHMM = '15:40'                 // contracts settle at session close
+const expiryDateOf = (expiryId: string) => expiryId.split('-').slice(1).join('-')
+/** Epoch ms at which a leg's own contract expires (its expiry date, 15:40 IST). */
+const legExpiryEndTs = (leg: PositionLeg) => toTs(expiryDateOf(leg.expiryId), SESSION_END_HHMM)
 
 export const useSim = create<SimState>((set, get) => ({
   synthetic: provider.synthetic,
@@ -101,7 +124,6 @@ export const useSim = create<SimState>((set, get) => ({
   cursor: 0,
   status: 'idle',
   speed: 1,
-  underlying: [],
   chain: null,
   positions: [],
   events: [],
@@ -111,31 +133,31 @@ export const useSim = create<SimState>((set, get) => ({
   realized: 0,
   unrealized: 0,
   navStep: 5,
+  entryLots: 1,
+  selectedIds: [],
 
   // Auto-start the workstation with sensible defaults (no setup screen).
   async autostart() {
     if (get().ready) return
+    void ensureLotSizes() // load real lot sizes from the /trade/indices master
     const index: IndexCode = 'NIFTY'
     const sessions = await provider.availableSessions(index)
     const date = sessions[0]?.date
     if (!date) return
     const expiries = await provider.expiries(index, date)
-    await get().setup({ index, date, startTime: '09:15', endTime: '15:30', frequency: '5m', expiryId: expiries[0]?.id ?? '' })
+    await get().setup({ index, date, startTime: '09:15', endTime: '15:40', expiryId: expiries[0]?.id ?? '' })
   },
 
   async setup(config) {
     clearTimer()
-    const [full, sessions, expiries] = await Promise.all([
-      provider.underlyingSession(config.index, config.date, config.frequency),
+    const [sessions, expiries] = await Promise.all([
       provider.availableSessions(config.index),
       provider.expiries(config.index, config.date),
     ])
-    const startTs = toTs(config.date, config.startTime)
-    const endTs = toTs(config.date, config.endTime)
-    const steps = full.filter(c => c.ts >= startTs && c.ts <= endTs).map(c => c.ts)
+    const steps = buildSteps(config.date, config.startTime, config.endTime)
     set({
       config, ready: true, sessions, expiries, steps, cursor: 0, status: 'idle', speed: 1,
-      positions: [], events: [], pnl: [], realized: 0, unrealized: 0,
+      positions: [], events: [], pnl: [], realized: 0, unrealized: 0, selectedIds: [],
     })
     await refreshAt(0, set, get)
   },
@@ -146,7 +168,7 @@ export const useSim = create<SimState>((set, get) => ({
     const date = sessions[0]?.date; if (!date) return
     const expiries = await provider.expiries(index, date)
     const cfg = get().config
-    await get().setup({ index, date, startTime: cfg?.startTime ?? '09:15', endTime: cfg?.endTime ?? '15:30', frequency: cfg?.frequency ?? '5m', expiryId: expiries[0]?.id ?? '' })
+    await get().setup({ index, date, startTime: cfg?.startTime ?? '09:15', endTime: cfg?.endTime ?? '15:40', expiryId: expiries[0]?.id ?? '' })
   },
 
   // Switch trading date → rebuild session (positions reset).
@@ -154,12 +176,6 @@ export const useSim = create<SimState>((set, get) => ({
     const cfg = get().config; if (!cfg) return
     const expiries = await provider.expiries(cfg.index, date)
     await get().setup({ ...cfg, date, expiryId: expiries.some(e => e.id === cfg.expiryId) ? cfg.expiryId : (expiries[0]?.id ?? cfg.expiryId) })
-  },
-
-  // Switch timeframe → rebuild step grid (positions reset).
-  async changeFrequency(frequency) {
-    const cfg = get().config; if (!cfg) return
-    await get().setup({ ...cfg, frequency })
   },
 
   // Switch expiry → only refresh the chain at the current time (steps/positions kept).
@@ -205,14 +221,14 @@ export const useSim = create<SimState>((set, get) => ({
     const cfg = get().config
     if (!cfg) return false
     clearTimer()
-    const [full, expiries] = await Promise.all([
-      provider.underlyingSession(cfg.index, date, cfg.frequency),
-      provider.expiries(cfg.index, date),
-    ])
-    const startTs = toTs(date, cfg.startTime), endTs = toTs(date, cfg.endTime)
-    const steps = full.filter(c => c.ts >= startTs && c.ts <= endTs).map(c => c.ts)
+    const expiries = await provider.expiries(cfg.index, date)
+    const steps = buildSteps(date, cfg.startTime, cfg.endTime)
     if (!steps.length) return false
-    const expiryId = expiries.some(e => e.id === cfg.expiryId) ? cfg.expiryId : (expiries[0]?.id ?? cfg.expiryId)
+    // The chain follows the earliest STILL-OPEN leg's expiry (so a calendar's
+    // remaining leg stays priced after the front leg expired), else keep/pick.
+    const openExpiries = get().positions.filter(l => l.status === 'OPEN').map(l => l.expiryId).sort()
+    const follow = openExpiries.find(id => expiries.some(e => e.id === id))
+    const expiryId = follow ?? (expiries.some(e => e.id === cfg.expiryId) ? cfg.expiryId : (expiries[0]?.id ?? cfg.expiryId))
     let cursor = land === 'end' ? steps.length - 1 : 0
     if (typeof land === 'object') {
       const target = toTs(date, land.hhmm)
@@ -225,8 +241,14 @@ export const useSim = create<SimState>((set, get) => ({
 
   // Step to the adjacent trading day (sessions is newest-first: forward = earlier index).
   async crossDay(dir, land) {
-    const { sessions, config } = get()
+    const { sessions, config, positions } = get()
     if (!config) return false
+    // Once positions exist and none are still open (all legs expired/closed), the
+    // simulation is over — do NOT roll forward into a new day / different expiry.
+    if (dir > 0 && positions.length && !positions.some(l => l.status === 'OPEN')) {
+      set({ status: 'ended' })
+      return false
+    }
     const idx = sessions.findIndex(s => s.date === config.date)
     if (idx < 0) return false
     const next = sessions[dir > 0 ? idx - 1 : idx + 1]
@@ -268,12 +290,12 @@ export const useSim = create<SimState>((set, get) => ({
   },
   reset() {
     clearTimer()
-    set({ cursor: 0, status: 'idle', positions: [], events: [], pnl: [], realized: 0, unrealized: 0 })
+    set({ cursor: 0, status: 'idle', positions: [], events: [], pnl: [], realized: 0, unrealized: 0, selectedIds: [] })
     void refreshAt(0, set, get)
   },
   exit() {
     clearTimer()
-    set({ ready: false, config: null, steps: [], cursor: 0, status: 'idle', underlying: [], chain: null, positions: [], events: [], pnl: [] })
+    set({ ready: false, config: null, steps: [], cursor: 0, status: 'idle', chain: null, positions: [], events: [], pnl: [], selectedIds: [] })
   },
 
   async addLeg(contractId, strike, optType, side, lots) {
@@ -291,7 +313,7 @@ export const useSim = create<SimState>((set, get) => ({
       strike, optType, side, qty, lotSize, avgEntry: fill, entryTs: ts, ltp: raw, realized: 0, unrealized: 0, status: 'OPEN',
     }
     const ev: TradeEvent = { id: uid('ev'), ts, kind: 'ENTRY', contractId, label: `${side} ${leg.index} ${strike} ${optType}`, qty, price: fill }
-    set(s => ({ positions: [...s.positions, leg], events: [...s.events, ev] }))
+    set(s => ({ positions: [...s.positions, leg], events: [...s.events, ev], selectedIds: [...s.selectedIds, leg.id] }))
     mark(set, get)
   },
 
@@ -383,7 +405,7 @@ export const useSim = create<SimState>((set, get) => ({
 
   // Delete a leg outright (removes from the book; no fill/realized recorded).
   removeLeg(legId) {
-    set(s => ({ positions: s.positions.filter(l => l.id !== legId) }))
+    set(s => ({ positions: s.positions.filter(l => l.id !== legId), selectedIds: s.selectedIds.filter(id => id !== legId) }))
     mark(set, get)
   },
 
@@ -399,74 +421,111 @@ export const useSim = create<SimState>((set, get) => ({
     }))
   },
   setRisk(patch) { set(s => ({ risk: { ...s.risk, ...patch } })) },
+  setEntryLots(n) { set({ entryLots: Math.max(1, Math.round(n)) }) },
+  toggleSelected(id) { set(s => ({ selectedIds: s.selectedIds.includes(id) ? s.selectedIds.filter(x => x !== id) : [...s.selectedIds, id] })) },
+  setSelectedIds(ids) { set({ selectedIds: ids }) },
 }))
 
 // ── replay loop ────────────────────────────────────────────────────────────────
+// Autoplay advances by the SINGLE selected timeframe (navStep), the same amount
+// the Forward button moves — so 5m plays in 5-minute hops, 1h in hourly hops.
 function loop(set: (p: Partial<SimState>) => void, get: () => SimState) {
   clearTimer()
-  const { cursor, steps, speed, status } = get()
-  if (status !== 'playing') return
-  if (cursor >= steps.length - 1) { set({ status: 'ended' }); return }
+  if (get().status !== 'playing') return
   timer = setTimeout(async () => {
-    await refreshAt(get().cursor + 1, set, get)
-    if (get().status === 'playing') loop(set, get)
-  }, BASE_STEP_MS / speed)
+    const { cursor, steps, navStep } = get()
+    const last = steps.length - 1
+    if (cursor >= last) { set({ status: 'ended' }); return }
+    const navMin = navStep === 'D' ? (last - cursor) : navStep   // 'D' → straight to EOD
+    const target = steps[cursor] + navMin * 60_000
+    let b = cursor, best = Infinity
+    steps.forEach((t, i) => { const d = Math.abs(t - target); if (d < best) { best = d; b = i } })
+    if (b <= cursor) b = cursor + 1                                // always make progress
+    b = Math.min(b, last)
+    await refreshAt(b, set, get)
+    if (get().status === 'playing' && b < last) loop(set, get)
+    else if (b >= last) set({ status: 'ended' })
+  }, BASE_STEP_MS / get().speed)
 }
 
-// ── advance to a step: refresh chain + underlying, mark positions, eval SL/target
+// LTP for legs whose contract is NOT in the currently-shown chain (e.g. the far
+// leg of a calendar). Populated in refreshAt from quoteAt, read by mark/evalRisk.
+const offChainLtp = new Map<string, number>()
+function chainLtp(chain: OptionChainSnapshot, cid: string): number | undefined {
+  for (const r of chain.rows) { if (r.ce?.contractId === cid) return r.ce.ltp; if (r.pe?.contractId === cid) return r.pe.ltp }
+  return undefined
+}
+const resolveLtp = (chain: OptionChainSnapshot | null, cid: string): number | undefined =>
+  (chain ? chainLtp(chain, cid) : undefined) ?? offChainLtp.get(cid)
+
+// ── advance to a step: refresh chain, mark positions, eval SL/target, settle expiries
 async function refreshAt(idx: number, set: (p: Partial<SimState>) => void, get: () => SimState) {
   const { config, steps } = get()
   if (!config) return
   const c = Math.max(0, Math.min(steps.length - 1, idx))
   const ts = steps[c]
-  const [underlying, chain] = await Promise.all([
-    provider.underlyingUpTo(config.index, config.date, config.frequency, ts),
-    provider.chainAt(config.index, config.expiryId, config.frequency, ts),
-  ])
-  set({ cursor: c, underlying, chain, spot: chain.spot })
-  await evalRisk(ts, set, get)
-  mark(set, get)
-  if (c >= steps.length - 1) set({ status: get().status === 'playing' ? 'ended' : get().status })
+  const chain = await provider.chainAt(config.index, config.expiryId, ts)
+  set({ cursor: c, chain, spot: chain.spot })
+  // Price any OPEN leg on a DIFFERENT expiry (not in this chain) via quoteAt, so a
+  // calendar's far leg keeps marking correctly.
+  for (const l of get().positions) {
+    if (l.status !== 'OPEN' || chainLtp(chain, l.contractId) != null) continue
+    try { offChainLtp.set(l.contractId, await provider.quoteAt(l.contractId, ts)) } catch { /* keep last */ }
+  }
+  await evalRisk(ts, set, get)   // SL/target — exits at the ACTUAL crossed premium
+  mark(set, get)                 // update ltp + unrealized + push pnl point
+  await settleExpiries(ts, set, get)  // lock any leg whose contract has expired
+  const pos = get().positions
+  if (pos.length && !pos.some(l => l.status === 'OPEN')) set({ status: 'ended' }) // all legs settled → stop
+  else if (c >= steps.length - 1) set({ status: get().status === 'playing' ? 'ended' : get().status })
 }
 
-// mark open legs to current chain LTP + recompute unrealized + push pnl point
+// mark OPEN legs to their live LTP (chain or off-chain) + recompute unrealized + pnl point
 function mark(set: (p: Partial<SimState>) => void, get: () => SimState) {
   const { positions, chain } = get()
-  if (!chain) return
-  const ltpOf = (cid: string) => {
-    for (const r of chain.rows) {
-      if (r.ce?.contractId === cid) return r.ce.ltp
-      if (r.pe?.contractId === cid) return r.pe.ltp
-    }
-    return undefined
-  }
   let unreal = 0
   const next = positions.map(l => {
-    if (l.status === 'CLOSED') return l
-    const ltp = ltpOf(l.contractId) ?? l.ltp
+    if (l.status !== 'OPEN') return l
+    const ltp = resolveLtp(chain, l.contractId) ?? l.ltp
     const u = legPnl(l, ltp)
     unreal += u
     return { ...l, ltp, unrealized: u }
   })
   const realized = next.reduce((s, l) => s + l.realized, 0)
   const total = realized + unreal
+  const ts = chain?.ts ?? get().steps[get().cursor]
   set({
     positions: next, unrealized: unreal, realized,
-    pnl: [...get().pnl, { ts: chain.ts, realized: Math.round(realized), unrealized: Math.round(unreal), total: Math.round(total) }].slice(-600),
+    pnl: [...get().pnl, { ts, realized: Math.round(realized), unrealized: Math.round(unreal), total: Math.round(total) }].slice(-600),
   })
 }
 
-// evaluate per-leg SL/Target + strategy SL/Target (LTP-based for MVP)
+// Settle legs whose own contract has expired: lock P&L at the last premium, mark
+// EXPIRED, stop marking. A calendar's remaining legs keep running.
+async function settleExpiries(ts: number, set: (p: Partial<SimState>) => void, get: () => SimState) {
+  const { positions } = get()
+  if (!positions.some(l => l.status === 'OPEN' && ts >= legExpiryEndTs(l))) return
+  const events = [...get().events]
+  const next = positions.map(l => {
+    if (l.status !== 'OPEN' || ts < legExpiryEndTs(l)) return l
+    const pnl = legPnl(l, l.ltp)   // settle at the last marked premium (≈ intrinsic at expiry)
+    events.push({ id: uid('ev'), ts, kind: 'EXPIRED', contractId: l.contractId, label: `Expired · ${l.strike} ${l.optType}`, price: l.ltp, realized: Math.round(pnl) } as TradeEvent)
+    return { ...l, status: 'EXPIRED' as const, realized: l.realized + pnl, unrealized: 0 }
+  })
+  const realized = next.reduce((s, l) => s + l.realized, 0)
+  const unreal = next.reduce((s, l) => s + (l.status === 'OPEN' ? l.unrealized : 0), 0)
+  set({ positions: next, events, realized, unrealized: unreal,
+    pnl: [...get().pnl, { ts, realized: Math.round(realized), unrealized: Math.round(unreal), total: Math.round(realized + unreal) }].slice(-600) })
+}
+
+// evaluate per-leg SL/Target + strategy SL/Target. Uses the live premium; the
+// leg exits at whatever price actually crossed the level (a 5m jump past a 150 SL
+// exits at 170, not 150), because closeLeg fills at the current quote.
 async function evalRisk(ts: number, set: (p: Partial<SimState>) => void, get: () => SimState) {
   const { positions, chain, risk } = get()
-  if (!chain) return
-  const ltpOf = (cid: string) => {
-    for (const r of chain.rows) { if (r.ce?.contractId === cid) return r.ce.ltp; if (r.pe?.contractId === cid) return r.pe.ltp }
-    return undefined
-  }
   for (const l of positions) {
     if (l.status !== 'OPEN') continue
-    const ltp = ltpOf(l.contractId); if (ltp == null) continue
+    const ltp = resolveLtp(chain, l.contractId); if (ltp == null) continue
     const hitSL = l.sl != null && (l.side === 'BUY' ? ltp <= l.sl : ltp >= l.sl)
     const hitTgt = l.target != null && (l.side === 'BUY' ? ltp >= l.target : ltp <= l.target)
     if (hitSL || hitTgt) {

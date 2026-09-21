@@ -19,7 +19,7 @@ interface RawSide {
 interface RawRow { strike: number; call?: RawSide; put?: RawSide }
 interface ChainResponse { symbol: string; expiry: string; at: string; spot: number; atm: number; count: number; chain: RawRow[] }
 
-const SESSION_END_MIN = 930 // 15:30 IST expiry cutoff for time-to-expiry
+const SESSION_END_MIN = 940 // 15:40 IST expiry cutoff for time-to-expiry
 const istTs = (date: string, min: number) => Date.parse(`${date}T00:00:00+05:30`) + min * 60_000
 const round = (n: number) => Math.round(n * 100) / 100
 

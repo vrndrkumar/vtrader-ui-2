@@ -117,6 +117,51 @@ export async function submitStrategy(legs: StrategyLegOrder[]): Promise<PlaceOrd
   return { ok: ok === results.length, results }
 }
 
+/** A leg that names its OWN broker (not the global selection). Used for
+ *  position-specific actions like adjust/roll, where each order must land on the
+ *  exact broker that holds the position — never fanned out to all selected. */
+export interface BrokerLegOrder {
+  broker: string           // broker key (BrokerAccount.brokerName / user_broker)
+  side: TxnType
+  symbolName: string
+  indexName: string
+  priceType: PriceType
+  price: number
+  qty: number
+}
+
+/** Place per-broker legs (each on its named broker), BUY phase first then SELL. */
+export async function submitBrokerLegs(legs: BrokerLegOrder[], label = 'Adjustment'): Promise<PlaceOrderOutcome> {
+  if (!legs.length) { toast.error('Nothing to place'); return { ok: false, results: [] } }
+  await ensureLotSizes()
+
+  const place = async (l: BrokerLegOrder): Promise<BrokerOrderResult> => {
+    const base = { brokerId: 0, brokerName: l.broker, displayName: l.broker, qty: l.qty }
+    try {
+      const raw = await placeOrderApi({
+        txnType: l.side, quantity: l.qty, priceType: l.priceType,
+        price: l.priceType === 'MKT' ? 0 : l.price, triggerPrice: 0,
+        symbolName: l.symbolName, lot: Math.max(1, Math.round(l.qty / lotSizeFor(l.indexName))),
+        brokerName: l.broker, indexName: l.indexName,
+      })
+      const v = interpretOrderResponse(raw)
+      return { ...base, ok: v.ok, message: v.message, data: raw }
+    } catch (e) { return { ...base, ok: false, message: errMessage(e) } }
+  }
+
+  const buys = legs.filter((l) => l.side === 'BUY')
+  const sells = legs.filter((l) => l.side === 'SELL')
+  const buyRes = buys.length ? await Promise.all(buys.map(place)) : []
+  const sellRes = sells.length ? await Promise.all(sells.map(place)) : []
+  const results = [...buyRes, ...sellRes]
+
+  const ok = results.filter((r) => r.ok).length
+  if (ok === results.length) toast.success(`${label} placed · ${legs.length} leg${legs.length > 1 ? 's' : ''}`)
+  else if (ok === 0) toast.error(`${label} failed · ${results.find((r) => !r.ok)?.message ?? ''}`)
+  else toast(`${label}: placed ${ok}/${results.length} legs`, { icon: '⚠️' })
+  return { ok: ok === results.length, results }
+}
+
 /**
  * Public entry point. Funnels through trading config and either submits
  * immediately (Quick Trade) or opens the Order Window for review.

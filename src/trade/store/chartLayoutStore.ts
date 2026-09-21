@@ -12,6 +12,7 @@ export interface PanelConfig {
   symbol: ChartSymbol | null
   timeframe: Timeframe
   indicators: string[]
+  hiddenIndicators?: string[]         // applied-but-hidden (eye toggled off in the legend)
 }
 
 export interface SyncState {
@@ -35,6 +36,7 @@ interface LayoutStore {
   assignSymbol: (panelId: string, symbol: ChartSymbol) => void
   setPanelTimeframe: (panelId: string, tf: Timeframe) => void
   setPanelIndicators: (panelId: string, indicators: string[]) => void
+  setPanelHidden: (panelId: string, hidden: string[]) => void
   setSync: (patch: Partial<SyncState>) => void
   setShowIndexOrders: (v: boolean) => void
   setBarCountdown: (v: boolean) => void
@@ -91,6 +93,7 @@ export const useChartLayoutStore = create<LayoutStore>((set, get) => {
     assignSymbol: (panelId, symbol) => commit({ panels: { ...get().panels, [panelId]: { ...get().panels[panelId], symbol } } }),
     setPanelTimeframe: (panelId, timeframe) => commit({ panels: { ...get().panels, [panelId]: { ...get().panels[panelId], timeframe } } }),
     setPanelIndicators: (panelId, indicators) => commit({ panels: { ...get().panels, [panelId]: { ...get().panels[panelId], indicators } } }),
+    setPanelHidden: (panelId, hiddenIndicators) => commit({ panels: { ...get().panels, [panelId]: { ...get().panels[panelId], hiddenIndicators } } }),
     setSync: (patch) => commit({ sync: { ...get().sync, ...patch } }),
     setShowIndexOrders: (showIndexOrders) => commit({ showIndexOrders }),
     setBarCountdown: (barCountdown) => commit({ barCountdown }),

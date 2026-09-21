@@ -10,9 +10,7 @@ import { SYMBOLS, TIMEFRAMES, type ChartSymbol } from '../types/market'
 import { OPTION_CHAIN_INDICES } from '../config/indices'
 import { BrokerSelector } from '@/components/broker/BrokerSelector'
 import { INDICATORS, INDICATOR_GROUPS } from './indicatorMeta'
-import { IndicatorSettings } from './IndicatorSettings'
 
-const GEAR = 'M12 15a3 3 0 100-6 3 3 0 000 6zM19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z'
 const SYNC_ROWS: { key: keyof SyncState; label: string; wired: boolean }[] = [
   { key: 'symbol', label: 'Symbol', wired: true },
   { key: 'interval', label: 'Interval', wired: true },
@@ -140,11 +138,12 @@ export function ChartToolbar({ onFullscreen }: { onFullscreen: () => void }) {
   const setPanelIndicators = useChartLayoutStore((s) => s.setPanelIndicators)
   const active = panels[activeId]
   const [menu, setMenu] = useState<null | 'ind'>(null)
-  const [settings, setSettings] = useState<string | null>(null)
-
-  const toggleIndicator = (name: string) => {
+  // Add-only: applied indicators are managed (settings / hide / remove) from the
+  // on-chart legend, so the dropdown just adds a new one.
+  const addIndicator = (name: string) => {
     const cur = active?.indicators ?? []
-    setPanelIndicators(activeId, cur.includes(name) ? cur.filter((x) => x !== name) : [...cur, name])
+    if (!cur.includes(name)) setPanelIndicators(activeId, [...cur, name])
+    setMenu(null)
   }
 
   return (
@@ -169,17 +168,11 @@ export function ChartToolbar({ onFullscreen }: { onFullscreen: () => void }) {
                 {g.items.map((name) => {
                   const on = active?.indicators.includes(name)
                   return (
-                    <div key={name} className="flex items-center rounded-lg hover:bg-slate-100 dark:hover:bg-white/5">
-                      <button onClick={() => toggleIndicator(name)} className="flex-1 flex items-center justify-between px-2 py-1.5 text-sm">
-                        <span className={clsx(on ? 'text-brand-600 font-medium' : 'text-slate-700 dark:text-slate-300')}>{INDICATORS[name]?.label ?? name}</span>
-                        {on && <Icon d="M5 12l4 4 10-10" className="h-4 w-4 text-brand-600" />}
-                      </button>
-                      {on && (
-                        <button title="Settings" onClick={() => setSettings(name)} className="mr-1 h-6 w-6 grid place-items-center rounded-md text-slate-400 hover:text-brand-600 hover:bg-slate-200/60 dark:hover:bg-white/10">
-                          <Icon d={GEAR} className="h-3.5 w-3.5" />
-                        </button>
-                      )}
-                    </div>
+                    <button key={name} onClick={() => addIndicator(name)} disabled={on}
+                      className={clsx('w-full flex items-center justify-between px-2 py-1.5 text-sm rounded-lg', on ? 'opacity-45 cursor-default' : 'hover:bg-slate-100 dark:hover:bg-white/5')}>
+                      <span className="text-slate-700 dark:text-slate-300">{INDICATORS[name]?.label ?? name}</span>
+                      {on ? <span className="text-[10px] text-slate-400">added</span> : <Icon d="M12 5v14M5 12h14" className="h-4 w-4 text-slate-400" />}
+                    </button>
                   )
                 })}
               </div>
@@ -196,7 +189,6 @@ export function ChartToolbar({ onFullscreen }: { onFullscreen: () => void }) {
       </div>
 
       {menu && <div className="fixed inset-0 z-20" onClick={() => setMenu(null)} />}
-      {settings && <IndicatorSettings name={settings} onClose={() => setSettings(null)} />}
     </div>
   )
 }

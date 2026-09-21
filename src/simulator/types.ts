@@ -80,7 +80,6 @@ export interface SessionConfig {
   date: string        // yyyy-mm-dd (a completed trading session)
   startTime: string   // "HH:mm"
   endTime: string     // "HH:mm"
-  frequency: Frequency
   expiryId: string
 }
 
@@ -105,15 +104,15 @@ export interface PositionLeg {
   ltp: number
   realized: number
   unrealized: number
-  sl?: number         // absolute premium
-  target?: number
-  status: 'OPEN' | 'CLOSED'
+  sl?: number         // absolute premium level (direction handled by side)
+  target?: number     // absolute premium level
+  status: 'OPEN' | 'CLOSED' | 'EXPIRED'   // EXPIRED = settled at its own contract expiry
 }
 
 export type EventKind =
   | 'ENTRY' | 'EXIT' | 'ADD' | 'REDUCE' | 'ROLL'
   | 'SL_HIT' | 'TARGET_HIT' | 'SL_SET' | 'TARGET_SET'
-  | 'STRATEGY_SL' | 'STRATEGY_TARGET' | 'SESSION_END'
+  | 'STRATEGY_SL' | 'STRATEGY_TARGET' | 'SESSION_END' | 'EXPIRED'
 
 export interface TradeEvent {
   id: string

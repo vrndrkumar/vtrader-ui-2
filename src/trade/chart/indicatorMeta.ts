@@ -30,11 +30,19 @@ export const INDICATORS: Record<string, IndicatorDef> = {
   MACD: { name: 'MACD', label: 'MACD',                pane: 'sub',  params: [{ label: 'Fast' }, { label: 'Slow' }, { label: 'Signal' }], defaults: [12, 26, 9] },
   RSI:  { name: 'RSI',  label: 'RSI',                 pane: 'sub',  params: [{ label: 'Length' }], defaults: [14] },
   KDJ:  { name: 'KDJ',  label: 'Stochastic (KDJ)',    pane: 'sub',  params: [{ label: 'K' }, { label: 'D' }, { label: 'J' }], defaults: [9, 3, 3] },
+  // Smart Money Concepts [LuxAlgo] — custom overlay indicator; configured via its
+  // own settings panel (no numeric calc params).
+  SMC:  { name: 'SMC',  label: 'Smart Money Concepts', pane: 'main', params: [], defaults: [] },
+  // Relative Strength (vs a comparative symbol) — sub-pane oscillator, configured
+  // via its own settings panel.
+  RS:   { name: 'RS',   label: 'Relative Strength',    pane: 'sub',  params: [], defaults: [] },
 }
 
 export const INDICATOR_GROUPS: { group: string; items: string[] }[] = [
   { group: 'Overlays', items: ['MA', 'EMA', 'BOLL', 'SAR'] },
   { group: 'Oscillators', items: ['VOL', 'MACD', 'RSI', 'KDJ'] },
+  { group: 'Smart Money', items: ['SMC'] },
+  { group: 'Relative Strength', items: ['RS'] },
 ]
 
 export function defaultsFor(name: string): number[] {

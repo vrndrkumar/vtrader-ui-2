@@ -4,6 +4,8 @@
 
 import type { Candle } from '../types/market'
 import type { OrderLine } from './orderOverlays'
+import type { SmcInputs } from './smc/types'
+import type { RsInputs } from './rs/types'
 
 /**
  * A drawing serialized to MARKET coordinates (time + price), not pixels. This is
@@ -45,6 +47,23 @@ export interface ChartEngine {
   configureIndicator(name: string, calcParams: number[]): void
   hasIndicator(name: string): boolean
   activeIndicators(): string[]
+
+  // ── Smart Money Concepts [LuxAlgo] indicator ───────────────────────────────
+  /** Enable (create) SMC with the given inputs, or push new inputs if already on. */
+  enableSmc(inputs: SmcInputs): void
+  /** Live-update SMC inputs (re-renders). */
+  updateSmc(inputs: SmcInputs): void
+  /** Remove the SMC indicator. */
+  disableSmc(): void
+  hasSmc(): boolean
+
+  // ── Relative Strength [bharatTrader] sub-pane indicator ────────────────────
+  enableRs(inputs: RsInputs): void
+  updateRs(inputs: RsInputs): void
+  /** Push the comparative symbol's close series (keyed by bar timestamp). */
+  setRsComparative(map: Map<number, number>): void
+  disableRs(): void
+  hasRs(): boolean
 
   /** Enter draw mode for a drawing tool (e.g. 'segment', 'fibonacciLine').
    *  `styles` seeds the new drawing with the tool's saved default look. */

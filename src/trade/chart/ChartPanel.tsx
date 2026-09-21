@@ -4,6 +4,7 @@ import { KLineChartEngine } from './KLineChartEngine'
 import type { ChartEngine, DrawingSelection } from './ChartEngine'
 import { ChartOrderLayer } from './ChartOrderLayer'
 import { DrawingEditToolbar } from './DrawingEditToolbar'
+import { IndicatorLegend } from './IndicatorLegend'
 import { engineRegistry } from './engineRegistry'
 import { dataSource } from '../data/dataSource'
 import { marksFromCandles, setDailyMarks } from '../data/realtime/dailyMarks'
@@ -19,6 +20,9 @@ import { useChartLayoutStore } from '../store/chartLayoutStore'
 import { useBrokerStore, resolveQty } from '@/store/brokerStore'
 import { lotSizeFor } from '@/services/orders/lotSize'
 import { useIndicatorParams } from '../store/indicatorParamsStore'
+import { useSmcStore } from '../store/smcStore'
+import { useRsStore } from '../store/rsStore'
+import { getCandlesBySymbol } from '../data/candleApi'
 import { useDrawingStore } from '../store/drawingStore'
 import { TF_MINUTES, type Candle, type ChartSymbol } from '../types/market'
 
@@ -122,6 +126,7 @@ export function ChartPanel({ panelId }: { panelId: string }) {
   const [lastC, setLastC] = useState<Candle | null>(null)
   const [hoverC, setHoverC] = useState<Candle | null>(null)
   const [selDrawing, setSelDrawing] = useState<DrawingSelection | null>(null)
+  const [legendH, setLegendH] = useState(0) // measured indicator-legend height → docks the positions mirror below it
 
   const config = useChartLayoutStore((s) => s.panels[panelId])
   const showIndexOrders = useChartLayoutStore((s) => s.showIndexOrders)
@@ -210,15 +215,56 @@ export function ChartPanel({ panelId }: { panelId: string }) {
   }, [config?.symbol?.key])
 
   // Keep engine indicators in sync with persisted config (toolbar acts on active).
+  // SMC is a custom overlay driven by its own inputs, so it's handled separately.
   useEffect(() => {
     const engine = engineRef.current
     if (!engine || !config) return
-    const want = new Set(config.indicators)
+    const hidden = new Set(config.hiddenIndicators ?? [])
+    const want = new Set(config.indicators.filter((n) => !hidden.has(n))) // applied AND visible
     const have = new Set(engine.activeIndicators())
     const gp = useIndicatorParams.getState().get
-    want.forEach((n) => { if (!have.has(n)) engine.toggleIndicator(n, gp(n)) })
-    have.forEach((n) => { if (!want.has(n)) engine.toggleIndicator(n) })
-  }, [config?.indicators])
+    want.forEach((n) => {
+      if (n === 'SMC') { if (!engine.hasSmc()) engine.enableSmc(useSmcStore.getState().inputs) }
+      else if (n === 'RS') { if (!engine.hasRs()) engine.enableRs(useRsStore.getState().inputs) }
+      else if (!have.has(n)) engine.toggleIndicator(n, gp(n))
+    })
+    have.forEach((n) => {
+      if (n === 'SMC') { if (!want.has('SMC')) engine.disableSmc() }
+      else if (n === 'RS') { if (!want.has('RS')) engine.disableRs() }
+      else if (!want.has(n)) engine.toggleIndicator(n)
+    })
+  }, [config?.indicators, config?.hiddenIndicators])
+
+  // Push SMC input edits to the engine live (re-renders the overlay).
+  const smcInputs = useSmcStore((s) => s.inputs)
+  useEffect(() => {
+    const engine = engineRef.current
+    if (engine?.hasSmc()) engine.updateSmc(smcInputs)
+  }, [smcInputs])
+
+  // RS: push input edits live + fetch the comparative symbol's candles (aligned by
+  // timestamp) whenever the comparative symbol / timeframe / applied-state changes.
+  const rsInputs = useRsStore((s) => s.inputs)
+  const rsApplied = (config?.indicators.includes('RS') ?? false) && !(config?.hiddenIndicators ?? []).includes('RS')
+  useEffect(() => {
+    const engine = engineRef.current
+    if (engine?.hasRs()) engine.updateRs(rsInputs)
+  }, [rsInputs])
+  useEffect(() => {
+    if (!rsApplied || !config) return
+    const raw = rsInputs.comparativeSymbol.trim()
+    const cand = raw.includes(':') ? raw.split(':').pop()!.trim() : raw
+    if (!cand) return
+    let cancelled = false
+    getCandlesBySymbol(cand, config.timeframe, 'INDEX').then((cs) => {
+      if (cancelled) return
+      const map = new Map<number, number>()
+      for (const c of cs) map.set(c.timestamp, c.close)
+      engineRef.current?.setRsComparative(map)
+    }).catch(() => { /* comparative unavailable → RS stays blank */ })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rsApplied, rsInputs.comparativeSymbol, config?.timeframe, config?.symbol?.key])
 
   // ── From-chart trading ──
   const accounts = useBrokerStore((s) => s.accounts)
@@ -310,6 +356,7 @@ export function ChartPanel({ panelId }: { panelId: string }) {
           </div>
         )
       })()}
+      {config?.symbol && <IndicatorLegend panelId={panelId} onHeight={setLegendH} />}
       <div ref={elRef} className="h-full w-full" />
       {config?.symbol && <ChartXAxis engineRef={engineRef} />}
       {selDrawing && <DrawingEditToolbar engineRef={engineRef} containerRef={rootRef} selection={selDrawing} />}
@@ -320,7 +367,7 @@ export function ChartPanel({ panelId }: { panelId: string }) {
       {config?.symbol?.kind === 'OPTION' && showIndexOrders && <IndexBracketLayer engineRef={engineRef} symbol={config.symbol.key} ltp={quote?.ltp ?? 0} />}
       {/* "Show orders on chart" → also mirror strike positions onto the index chart
           with SL/Target draggable at spot levels (exit fires on the strike). */}
-      {config?.symbol?.kind === 'INDEX' && showIndexOrders && <IndexPositionMirror engineRef={engineRef} index={config.symbol.key} ltp={quote?.ltp ?? 0} />}
+      {config?.symbol?.kind === 'INDEX' && showIndexOrders && <IndexPositionMirror engineRef={engineRef} index={config.symbol.key} ltp={quote?.ltp ?? 0} topPx={(config?.indicators?.length ?? 0) > 0 ? 52 + legendH + 6 : 62} />}
       {config?.symbol && barCountdown && quote && <BarCountdown engineRef={engineRef} ltp={quote.ltp} timeframe={config.timeframe} />}
       {loading && config?.symbol && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">

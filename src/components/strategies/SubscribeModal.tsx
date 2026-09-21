@@ -75,6 +75,23 @@ export function SubscribeModal({ strategy, existing, onClose, onSuccess }: Props
     })
     return init
   })
+
+  // whether each index is included in the deployment (select / unselect)
+  const [included, setIncluded] = useState<Record<string, boolean>>(() => {
+    const init: Record<string, boolean> = {}
+    indices.forEach((idx) => { init[idx] = true })
+    return init
+  })
+
+  // trader type per index — BUYER or SELLER (from existing rule, else SELLER)
+  const [traderType, setTraderType] = useState<Record<string, 'BUYER' | 'SELLER'>>(() => {
+    const init: Record<string, 'BUYER' | 'SELLER'> = {}
+    indices.forEach((idx) => {
+      const rule = existing?.executionRule?.find((r) => r.symbol === idx)
+      init[idx] = (rule?.traderType as 'BUYER' | 'SELLER') ?? 'SELLER'
+    })
+    return init
+  })
   const [termsAccepted, setTermsAccepted] = useState(false)
   const [loading, setLoading]             = useState(false)
   const [error, setError]                 = useState<string | null>(null)
@@ -111,6 +128,16 @@ export function SubscribeModal({ strategy, existing, onClose, onSuccess }: Props
     setPartialBooking((prev) => {
       const next = { ...prev }
       detected.forEach((idx) => { if (!(idx in next)) next[idx] = 100 })
+      return next
+    })
+    setIncluded((prev) => {
+      const next = { ...prev }
+      detected.forEach((idx) => { if (!(idx in next)) next[idx] = true })
+      return next
+    })
+    setTraderType((prev) => {
+      const next = { ...prev }
+      detected.forEach((idx) => { if (!(idx in next)) next[idx] = 'SELLER' })
       return next
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -155,7 +182,8 @@ export function SubscribeModal({ strategy, existing, onClose, onSuccess }: Props
       })()
     : `${selectedBrokers.length} brokers selected`
 
-  const canSubmit = selectedBrokers.length > 0 && termsAccepted && !loading
+  const selectedIndices = indices.filter((idx) => included[idx])
+  const canSubmit = selectedBrokers.length > 0 && termsAccepted && selectedIndices.length > 0 && !loading
 
   const handleSubmit = async () => {
     if (!canSubmit) return
@@ -165,8 +193,8 @@ export function SubscribeModal({ strategy, existing, onClose, onSuccess }: Props
       await Promise.all(
         selectedBrokers.map((brokerName) => {
           if (isEdit && existing) {
-            // Build updated executionRule: merge new lot counts + marginBenefitRequired into existing rules
-            const updatedRules: ExecutionRule[] = indices.map((idx) => {
+            // Build updated executionRule for the SELECTED indices only; per-index trader type.
+            const updatedRules: ExecutionRule[] = selectedIndices.map((idx) => {
               const existingRule = existing.executionRule?.find((r) => r.symbol === idx)
               return {
                 symbol:               idx,
@@ -174,7 +202,7 @@ export function SubscribeModal({ strategy, existing, onClose, onSuccess }: Props
                 marginBenefitRequired: marginRequired,
                 active:               existingRule?.active               ?? true,
                 isRealTrading:        isRealTrading[idx] ?? false,
-                traderType:           existingRule?.traderType            ?? 'SELLER',
+                traderType:           traderType[idx] ?? existingRule?.traderType ?? 'SELLER',
                 lotChangeOnSL:        existingRule?.lotChangeOnSL         ?? { active: false, lotChangeQty: 1 },
                 partialBookingRule:   { partialBookingPercentage: partialBooking[idx] ?? 100 },
               }
@@ -186,14 +214,14 @@ export function SubscribeModal({ strategy, existing, onClose, onSuccess }: Props
               executionRule: updatedRules,
             })
           } else {
-            // Build fresh executionRule for new subscription
-            const executionRule: ExecutionRule[] = indices.map((idx) => ({
+            // Build fresh executionRule for the SELECTED indices only; per-index trader type.
+            const executionRule: ExecutionRule[] = selectedIndices.map((idx) => ({
               symbol:               idx,
               number_lots:          lots[idx] ?? 1,
               marginBenefitRequired: marginRequired,
               active:               true,
               isRealTrading:        isRealTrading[idx] ?? false,
-              traderType:           'SELLER',
+              traderType:           traderType[idx] ?? 'SELLER',
               lotChangeOnSL:        { active: false, lotChangeQty: 1 },
               partialBookingRule:   { partialBookingPercentage: partialBooking[idx] ?? 100 },
             }))
@@ -258,48 +286,50 @@ export function SubscribeModal({ strategy, existing, onClose, onSuccess }: Props
                 {indices.map((idx) => {
                   const pct     = partialBooking[idx] ?? 100
                   const isLive  = isRealTrading[idx] ?? false
+                  const inc     = included[idx] ?? true
+                  const tt      = traderType[idx] ?? 'SELLER'
                   const trackPct = ((pct - 25) / 75) * 100
                   return (
-                    <div key={idx} className="rounded-xl border border-slate-100 dark:border-slate-800 overflow-hidden">
+                    <div key={idx} className={clsx('rounded-xl border overflow-hidden transition-opacity', inc ? 'border-slate-100 dark:border-slate-800' : 'border-slate-100 dark:border-slate-800 opacity-55')}>
 
-                      {/* ── Row 1: badge + Paper/Live toggle ── */}
-                      <div className="flex items-center justify-between px-3 py-2 bg-slate-50 dark:bg-white/[0.03] border-b border-slate-100 dark:border-slate-800">
-                        <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-md text-white"
-                          style={{ background: 'linear-gradient(90deg,#3b82f6,#6366f1)' }}>
-                          {idx}
-                        </span>
+                      {/* ── Row 1: include checkbox + badge · trader type + Paper/Live ── */}
+                      <div className="flex items-center justify-between gap-2 px-3 py-2 bg-slate-50 dark:bg-white/[0.03] border-b border-slate-100 dark:border-slate-800">
+                        <label className="flex items-center gap-2 cursor-pointer select-none">
+                          <span className={clsx('h-4 w-4 shrink-0 rounded border-2 flex items-center justify-center transition-colors', inc ? 'bg-brand-600 border-brand-600' : 'border-slate-300 dark:border-slate-600')}>
+                            <input type="checkbox" checked={inc} onChange={(e) => setIncluded((prev) => ({ ...prev, [idx]: e.target.checked }))} className="sr-only" />
+                            {inc && <svg className="h-2.5 w-2.5 text-white" viewBox="0 0 10 10" fill="none"><path d="M1.5 5.5l2.5 2.5 4.5-4.5" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+                          </span>
+                          <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-md text-white" style={{ background: 'linear-gradient(90deg,#3b82f6,#6366f1)' }}>{idx}</span>
+                        </label>
 
-                        {/* Segmented Paper / Live */}
-                        <div className="flex rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 text-[11px] font-semibold">
-                          <button
-                            type="button"
-                            onClick={() => setIsRealTrading((prev) => ({ ...prev, [idx]: false }))}
-                            className={clsx(
-                              'px-3 py-1 transition-colors',
-                              !isLive
-                                ? 'bg-slate-700 dark:bg-slate-600 text-white'
-                                : 'bg-white dark:bg-white/5 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-white/10',
-                            )}
-                          >
-                            Paper
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setIsRealTrading((prev) => ({ ...prev, [idx]: true }))}
-                            className={clsx(
-                              'px-3 py-1 border-l border-slate-200 dark:border-slate-700 transition-colors',
-                              isLive
-                                ? 'bg-emerald-500 text-white'
-                                : 'bg-white dark:bg-white/5 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-white/10',
-                            )}
-                          >
-                            Live
-                          </button>
+                        <div className={clsx('flex items-center gap-1.5', !inc && 'pointer-events-none opacity-50')}>
+                          {/* Segmented BUYER / SELLER */}
+                          <div className="flex rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 text-[11px] font-semibold">
+                            <button type="button" onClick={() => setTraderType((prev) => ({ ...prev, [idx]: 'BUYER' }))}
+                              className={clsx('px-2.5 py-1 transition-colors', tt === 'BUYER' ? 'bg-emerald-500 text-white' : 'bg-white dark:bg-white/5 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-white/10')}>
+                              Buyer
+                            </button>
+                            <button type="button" onClick={() => setTraderType((prev) => ({ ...prev, [idx]: 'SELLER' }))}
+                              className={clsx('px-2.5 py-1 border-l border-slate-200 dark:border-slate-700 transition-colors', tt === 'SELLER' ? 'bg-rose-500 text-white' : 'bg-white dark:bg-white/5 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-white/10')}>
+                              Seller
+                            </button>
+                          </div>
+                          {/* Segmented Paper / Live */}
+                          <div className="flex rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 text-[11px] font-semibold">
+                            <button type="button" onClick={() => setIsRealTrading((prev) => ({ ...prev, [idx]: false }))}
+                              className={clsx('px-2.5 py-1 transition-colors', !isLive ? 'bg-slate-700 dark:bg-slate-600 text-white' : 'bg-white dark:bg-white/5 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-white/10')}>
+                              Paper
+                            </button>
+                            <button type="button" onClick={() => setIsRealTrading((prev) => ({ ...prev, [idx]: true }))}
+                              className={clsx('px-2.5 py-1 border-l border-slate-200 dark:border-slate-700 transition-colors', isLive ? 'bg-emerald-500 text-white' : 'bg-white dark:bg-white/5 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-white/10')}>
+                              Live
+                            </button>
+                          </div>
                         </div>
                       </div>
 
                       {/* ── Row 2: Lots stepper + Partial Booking % ── */}
-                      <div className="px-3 py-3 flex items-start gap-4">
+                      <div className={clsx('px-3 py-3 flex items-start gap-4', !inc && 'pointer-events-none opacity-50')}>
                         {/* Lots */}
                         <div className="flex flex-col gap-1 min-w-0 flex-1">
                           <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wide">Lots</span>
