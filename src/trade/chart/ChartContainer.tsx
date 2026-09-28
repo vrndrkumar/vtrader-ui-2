@@ -81,7 +81,10 @@ export function ChartContainer({ symbol, tradable, defaultTimeframe = '5' }: Pro
       const bucketMs = TF_MINUTES[timeframe] * 60_000
       let last: Candle = { ...candles[candles.length - 1] }
       unsub = dataSource.subscribeQuote(symbol, (q) => {
-        const bucketStart = Math.floor(q.ts / bucketMs) * bucketMs
+        // Anchor to the SERVER's candle grid (last loaded candle open), not the Unix
+        // epoch: epoch alignment snaps 60-min boundaries to :30 IST while real bars
+        // open at :15 (9:15 session), which rolled a new bar early. See ChartPanel.
+        const bucketStart = last.timestamp + Math.floor((q.ts - last.timestamp) / bucketMs) * bucketMs
         if (bucketStart > last.timestamp) {
           last = { timestamp: bucketStart, open: q.ltp, high: q.ltp, low: q.ltp, close: q.ltp, volume: 0 }
         } else if (bucketStart === last.timestamp) {

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { clsx } from 'clsx'
 import { useTradebookStore, type OrderStatusFilter } from './tradebookStore'
 import { ORDER_STATUS_META, isLiveStatus, type Order, type OrderStatus } from './types'
-import { px, timeShort } from './format'
+import { px, timeShort, timeExact } from './format'
 import { Stepper, ManageButton } from './Act'
 import { lotSizeFor } from '@/services/orders/lotSize'
 
@@ -58,7 +58,7 @@ export function OrdersTab({ rows, counts }: { rows: Order[]; counts: Record<stri
                   return (
                     <tr key={o.id} onClick={() => setSelId(active ? null : o.id)}
                       className={clsx('group border-t border-slate-100 dark:border-slate-800/60 cursor-pointer', active ? 'bg-brand-50/60 dark:bg-brand-900/15' : 'hover:bg-slate-50 dark:hover:bg-white/5')}>
-                      <td className="px-3 py-2 text-[11px] text-slate-400 whitespace-nowrap">{timeShort(o.time)}</td>
+                      <td className="px-3 py-2 text-[11px] text-slate-400 whitespace-nowrap tabular-nums">{timeExact(o.time)}</td>
                       <td className="px-3 py-2">
                         <p className="font-semibold text-slate-800 dark:text-slate-100 leading-tight truncate">{o.display}</p>
                         <p className="text-[10px] text-slate-400 truncate">{o.brokerLabel}{o.message ? ` · ${o.message}` : ''}</p>

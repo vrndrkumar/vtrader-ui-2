@@ -5,6 +5,8 @@ import type { ChartEngine, DrawingSelection } from './ChartEngine'
 import { ChartOrderLayer } from './ChartOrderLayer'
 import { DrawingEditToolbar } from './DrawingEditToolbar'
 import { IndicatorLegend } from './IndicatorLegend'
+import { SubPaneLegend } from './SubPaneLegend'
+import { INDICATORS } from './indicatorMeta'
 import { engineRegistry } from './engineRegistry'
 import { dataSource } from '../data/dataSource'
 import { marksFromCandles, setDailyMarks } from '../data/realtime/dailyMarks'
@@ -22,6 +24,7 @@ import { lotSizeFor } from '@/services/orders/lotSize'
 import { useIndicatorParams } from '../store/indicatorParamsStore'
 import { useSmcStore } from '../store/smcStore'
 import { useRsStore } from '../store/rsStore'
+import { useWtStore } from '../store/wtStore'
 import { getCandlesBySymbol } from '../data/candleApi'
 import { useDrawingStore } from '../store/drawingStore'
 import { TF_MINUTES, type Candle, type ChartSymbol } from '../types/market'
@@ -189,7 +192,13 @@ export function ChartPanel({ panelId }: { panelId: string }) {
       let last: Candle = { ...candles[candles.length - 1] }
       setLastC(last)
       unsub = dataSource.subscribeQuote(symbol, (q) => {
-        const b = coarse ? last.timestamp : Math.floor(q.ts / bucketMs) * bucketMs
+        // Bucket the tick on the SERVER's candle grid, anchored to the last loaded
+        // candle's open — NOT the Unix epoch. Epoch alignment (Math.floor(ts/bucket))
+        // snaps boundaries to 00:00 UTC, i.e. :30 IST for 60-min bars, but the
+        // session opens 9:15 so real candles open at :15 — that mismatch rolled a
+        // new bar ~30 min early. Anchoring to last.timestamp keeps every roll on the
+        // exact session grid (next 60-min bar opens one bucket later, e.g. 12:15).
+        const b = coarse ? last.timestamp : last.timestamp + Math.floor((q.ts - last.timestamp) / bucketMs) * bucketMs
         if (b > last.timestamp) last = { timestamp: b, open: q.ltp, high: q.ltp, low: q.ltp, close: q.ltp, volume: 0 }
         else if (b === last.timestamp) last = { ...last, close: q.ltp, high: Math.max(last.high, q.ltp), low: Math.min(last.low, q.ltp) }
         else return
@@ -220,20 +229,44 @@ export function ChartPanel({ panelId }: { panelId: string }) {
     const engine = engineRef.current
     if (!engine || !config) return
     const hidden = new Set(config.hiddenIndicators ?? [])
-    const want = new Set(config.indicators.filter((n) => !hidden.has(n))) // applied AND visible
+    const applied = config.indicators
+    const isSub = (n: string) => INDICATORS[n]?.pane === 'sub'
     const have = new Set(engine.activeIndicators())
     const gp = useIndicatorParams.getState().get
-    want.forEach((n) => {
-      if (n === 'SMC') { if (!engine.hasSmc()) engine.enableSmc(useSmcStore.getState().inputs) }
-      else if (n === 'RS') { if (!engine.hasRs()) engine.enableRs(useRsStore.getState().inputs) }
-      else if (!have.has(n)) engine.toggleIndicator(n, gp(n))
+    // Add missing indicators; keep sub-pane ones on the chart and gate them with
+    // visibility (hide keeps the pane + its legend). Main-pane hide still removes.
+    applied.forEach((n) => {
+      if (isSub(n)) {
+        if (n === 'RS') { if (!engine.hasRs()) engine.enableRs(useRsStore.getState().inputs) }
+        else if (n === 'WT') { if (!engine.hasWt()) engine.enableWt(useWtStore.getState().inputs) }
+        else if (!have.has(n)) engine.toggleIndicator(n, gp(n))
+        engine.setIndicatorVisible(n, !hidden.has(n))
+      } else if (!hidden.has(n)) {
+        if (n === 'SMC') { if (!engine.hasSmc()) engine.enableSmc(useSmcStore.getState().inputs) }
+        else if (!have.has(n)) engine.toggleIndicator(n, gp(n))
+      }
     })
     have.forEach((n) => {
-      if (n === 'SMC') { if (!want.has('SMC')) engine.disableSmc() }
-      else if (n === 'RS') { if (!want.has('RS')) engine.disableRs() }
-      else if (!want.has(n)) engine.toggleIndicator(n)
+      if (isSub(n)) {
+        if (!applied.includes(n)) {
+          if (n === 'RS') engine.disableRs()
+          else if (n === 'WT') engine.disableWt()
+          else engine.toggleIndicator(n)
+        }
+      } else {
+        const wantMain = applied.includes(n) && !hidden.has(n)
+        if (n === 'SMC') { if (!wantMain) engine.disableSmc() }
+        else if (!wantMain) engine.toggleIndicator(n)
+      }
     })
   }, [config?.indicators, config?.hiddenIndicators])
+
+  // Push WaveTrend input edits live.
+  const wtInputs = useWtStore((s) => s.inputs)
+  useEffect(() => {
+    const engine = engineRef.current
+    if (engine?.hasWt()) engine.updateWt(wtInputs)
+  }, [wtInputs])
 
   // Push SMC input edits to the engine live (re-renders the overlay).
   const smcInputs = useSmcStore((s) => s.inputs)
@@ -357,6 +390,7 @@ export function ChartPanel({ panelId }: { panelId: string }) {
         )
       })()}
       {config?.symbol && <IndicatorLegend panelId={panelId} onHeight={setLegendH} />}
+      {config?.symbol && <SubPaneLegend panelId={panelId} engineRef={engineRef} />}
       <div ref={elRef} className="h-full w-full" />
       {config?.symbol && <ChartXAxis engineRef={engineRef} />}
       {selDrawing && <DrawingEditToolbar engineRef={engineRef} containerRef={rootRef} selection={selDrawing} />}
@@ -367,7 +401,7 @@ export function ChartPanel({ panelId }: { panelId: string }) {
       {config?.symbol?.kind === 'OPTION' && showIndexOrders && <IndexBracketLayer engineRef={engineRef} symbol={config.symbol.key} ltp={quote?.ltp ?? 0} />}
       {/* "Show orders on chart" → also mirror strike positions onto the index chart
           with SL/Target draggable at spot levels (exit fires on the strike). */}
-      {config?.symbol?.kind === 'INDEX' && showIndexOrders && <IndexPositionMirror engineRef={engineRef} index={config.symbol.key} ltp={quote?.ltp ?? 0} topPx={(config?.indicators?.length ?? 0) > 0 ? 52 + legendH + 6 : 62} />}
+      {config?.symbol?.kind === 'INDEX' && showIndexOrders && <IndexPositionMirror engineRef={engineRef} index={config.symbol.key} ltp={quote?.ltp ?? 0} topPx={(config?.indicators ?? []).some((n) => INDICATORS[n]?.pane !== 'sub') ? 52 + legendH + 6 : 62} />}
       {config?.symbol && barCountdown && quote && <BarCountdown engineRef={engineRef} ltp={quote.ltp} timeframe={config.timeframe} />}
       {loading && config?.symbol && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">

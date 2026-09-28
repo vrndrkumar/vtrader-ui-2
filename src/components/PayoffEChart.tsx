@@ -56,7 +56,7 @@ function bsPrice(S: number, K: number, T: number, sigma: number, type: 'CE' | 'P
 
 // ── Payoff engine ─────────────────────────────────────────────────────────────
 
-export interface OptionLeg { optType: 'CE' | 'PE'; strike: number; qty: number; entry: number; dte: number; iv: number }
+export interface OptionLeg { optType: 'CE' | 'PE'; strike: number; qty: number; entry: number; dte: number; iv: number; expiryTs?: number }
 export interface PayoffPoint { price: number; expiry: number; today: number }
 
 // X range fixed to the option STRIKES (not spot) → stable between ticks.

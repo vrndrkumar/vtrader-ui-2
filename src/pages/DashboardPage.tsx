@@ -13,15 +13,10 @@
  */
 
 import { useEffect, useMemo, useState } from 'react'
-import { StrategyDeepDive } from '@/dashboard/StrategyDeepDive'
 import { useOptionInsights } from '@/insight/options/useOptionInsights'
 import type { OptIndex } from '@/insight/options/useOptionInsights'
 import { useNavigate } from 'react-router-dom'
 import { clsx } from 'clsx'
-import {
-  AreaChart, Area, BarChart, Bar, Cell,
-  XAxis, YAxis, ResponsiveContainer, ReferenceLine,
-} from 'recharts'
 import { useAuth } from '@/hooks/useAuth'
 import { useBrokerStore } from '@/store/brokerStore'
 import { getTrades } from '@/api/reports'
@@ -112,10 +107,6 @@ const normCode = (s: string | null | undefined) => (s ?? '').trim().toUpperCase(
 
 const INR = (n: number) =>
   Math.abs(n).toLocaleString('en-IN', { maximumFractionDigits: 0 })
-
-function shortDate(d: Date) {
-  return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })
-}
 
 // ─── hooks ────────────────────────────────────────────────────────────────────
 
@@ -877,94 +868,6 @@ function AlgoStrategyBoxes({ strategies, trades, loading }: { strategies: UserSt
   )
 }
 
-// ─── P&L chart ────────────────────────────────────────────────────────────────
-
-interface ChartPoint { date: string; pnl: number; cumulative: number }
-
-function PnlChart({ daily, mtdPnl, loading }: { daily: Record<string, number>; mtdPnl: number; loading: boolean }) {
-  const data: ChartPoint[] = useMemo(() => {
-    const sorted = Object.entries(daily).sort(([a], [b]) => a.localeCompare(b)).slice(-30)
-    let cum = 0
-    return sorted.map(([iso, pnl]) => {
-      cum += pnl
-      return { date: shortDate(new Date(iso)), pnl, cumulative: cum }
-    })
-  }, [daily])
-
-  const isPos   = mtdPnl >= 0
-  const stroke  = isPos ? '#10B981' : '#EF4444'
-  const yFmt = (v: number) => {
-    const a = Math.abs(v)
-    if (a >= 100_000) return `₹${(v / 100_000).toFixed(1)}L`
-    if (a >= 1_000)   return `₹${(v / 1_000).toFixed(0)}K`
-    return `₹${v}`
-  }
-
-  return (
-    <div className="bg-white dark:bg-white/[0.025] rounded-2xl border border-slate-200/70 dark:border-white/[0.06] shadow-sm dark:shadow-none overflow-hidden">
-      {/* Header */}
-      <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-white/[0.05]">
-        <div>
-          <h2 className="text-[14px] font-bold text-slate-800 dark:text-white/80">P&amp;L Trend · 30 Days</h2>
-          <p className="text-[10px] text-slate-400 dark:text-white/25 mt-0.5">Cumulative realised returns · daily bars below</p>
-        </div>
-        {!loading && (
-          <div className="text-right">
-            <p className={clsx('text-[20px] font-black tabular-nums', isPos ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500 dark:text-red-400')}>
-              {isPos ? '+' : '−'}₹{INR(mtdPnl)}
-            </p>
-            <p className="text-[10px] text-slate-400 dark:text-white/25 mt-0.5">30-day realised</p>
-          </div>
-        )}
-      </div>
-
-      {/* Chart body */}
-      <div className="px-4 py-4">
-        {loading || !data.length ? (
-          <div className="h-48 flex flex-col items-center justify-center gap-2 text-slate-300 dark:text-white/15">
-            {loading
-              ? <div className="h-full w-full bg-slate-100 dark:bg-white/[0.04] rounded-xl animate-pulse" />
-              : <>
-                  <svg viewBox="0 0 24 24" className="h-10 w-10 opacity-30" fill="none" stroke="currentColor" strokeWidth="1.2"><path d="M3 17l5-5 4 4 9-9M21 7h-4v4" /></svg>
-                  <p className="text-[13px]">No trading history yet</p>
-                </>}
-          </div>
-        ) : (
-          <div className="space-y-1">
-            <ResponsiveContainer width="100%" height={160}>
-              <AreaChart data={data} margin={{ top: 8, right: 4, bottom: 0, left: 0 }}>
-                <defs>
-                  <linearGradient id="pos-fill" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%"   stopColor="#10B981" stopOpacity={0.18} />
-                    <stop offset="100%" stopColor="#10B981" stopOpacity={0}    />
-                  </linearGradient>
-                  <linearGradient id="neg-fill" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%"   stopColor="#EF4444" stopOpacity={0.15} />
-                    <stop offset="100%" stopColor="#EF4444" stopOpacity={0}    />
-                  </linearGradient>
-                </defs>
-                <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'rgba(100,116,139,0.6)' }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
-                <YAxis tick={{ fontSize: 10, fill: 'rgba(100,116,139,0.6)' }} axisLine={false} tickLine={false} width={52} tickFormatter={yFmt} />
-                <ReferenceLine y={0} stroke={stroke} strokeOpacity={0.2} strokeDasharray="4 3" />
-                <Area type="monotone" dataKey="cumulative" stroke={stroke} strokeWidth={2} fill={isPos ? 'url(#pos-fill)' : 'url(#neg-fill)'} dot={false} activeDot={{ r: 4, fill: stroke, stroke: 'white', strokeWidth: 2 }} />
-              </AreaChart>
-            </ResponsiveContainer>
-            <ResponsiveContainer width="100%" height={44}>
-              <BarChart data={data} margin={{ top: 0, right: 4, bottom: 0, left: 0 }}>
-                <ReferenceLine y={0} stroke="rgba(100,116,139,0.12)" />
-                <Bar dataKey="pnl" radius={[2, 2, 0, 0]}>
-                  {data.map((entry, i) => (
-                    <Cell key={`c-${i}`} fill={entry.pnl >= 0 ? '#10B981' : '#EF4444'} fillOpacity={0.65} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
 
 // ─── option insight section ───────────────────────────────────────────────────
 
@@ -1444,13 +1347,7 @@ export default function DashboardPage() {
         {/* ③ Today's Activity — Manual + Algo boxes */}
         <AlgoStrategyBoxes strategies={d.strategies} trades={d.todayTrades} loading={d.loading} />
 
-        {/* ④ Strategy Deep Dive */}
-        <StrategyDeepDive />
-
-        {/* ⑤ P&L Trend — full width */}
-        <PnlChart daily={d.daily} mtdPnl={d.mtdPnl} loading={d.loading} />
-
-        {/* ⑤ Option Insight */}
+        {/* Option Insight */}
         <OptionInsightSection />
 
         <p className="text-center text-[10px] text-slate-300 dark:text-white/12 pb-2 tracking-wider">

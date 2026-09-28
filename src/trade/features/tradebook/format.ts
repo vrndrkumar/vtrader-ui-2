@@ -11,3 +11,10 @@ export const timeShort = (iso: string): string => {
   const d = new Date(iso)
   return isNaN(d.getTime()) ? '—' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
+
+// HH:MM:SS — used for order rows so orders fired within the same minute (baskets)
+// are still distinguishable and the newest-first ordering is visible.
+export const timeExact = (iso: string): string => {
+  const d = new Date(iso)
+  return isNaN(d.getTime()) ? '—' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}

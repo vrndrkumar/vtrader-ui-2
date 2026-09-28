@@ -36,6 +36,8 @@ export const INDICATORS: Record<string, IndicatorDef> = {
   // Relative Strength (vs a comparative symbol) — sub-pane oscillator, configured
   // via its own settings panel.
   RS:   { name: 'RS',   label: 'Relative Strength',    pane: 'sub',  params: [], defaults: [] },
+  // WaveTrend [LazyBear] — sub-pane oscillator, own settings panel.
+  WT:   { name: 'WT',   label: 'WaveTrend',            pane: 'sub',  params: [], defaults: [] },
 }
 
 export const INDICATOR_GROUPS: { group: string; items: string[] }[] = [
@@ -43,6 +45,7 @@ export const INDICATOR_GROUPS: { group: string; items: string[] }[] = [
   { group: 'Oscillators', items: ['VOL', 'MACD', 'RSI', 'KDJ'] },
   { group: 'Smart Money', items: ['SMC'] },
   { group: 'Relative Strength', items: ['RS'] },
+  { group: 'WaveTrend', items: ['WT'] },
 ]
 
 export function defaultsFor(name: string): number[] {

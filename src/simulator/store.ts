@@ -77,7 +77,6 @@ interface SimState {
   addLeg: (contractId: string, strike: number, optType: 'CE' | 'PE', side: Side, lots: number) => Promise<void>
   closeLeg: (legId: string) => Promise<void>
   partialExit: (legId: string, lots: number) => Promise<void>
-  reverseLeg: (legId: string) => Promise<void>
   duplicateLeg: (legId: string) => Promise<void>
   changeQty: (legId: string, lots: number) => Promise<void>
   rollStrike: (legId: string, dir: 1 | -1) => Promise<void>
@@ -338,16 +337,6 @@ export const useSim = create<SimState>((set, get) => ({
       events: [...s.events, ev],
     }))
     mark(set, get)
-  },
-
-  async reverseLeg(legId) {
-    const leg = get().positions.find(l => l.id === legId)
-    if (!leg || leg.status === 'CLOSED') return
-    const lots = leg.qty / leg.lotSize
-    const opp: Side = leg.side === 'BUY' ? 'SELL' : 'BUY'
-    await get().closeLeg(legId)
-    await get().addLeg(leg.contractId, leg.strike, leg.optType, opp, lots)
-    set(s => ({ events: [...s.events, { id: uid('ev'), ts: s.steps[s.cursor], kind: 'ROLL', contractId: leg.contractId, label: `Reversed ${leg.strike} ${leg.optType} → ${opp}` } as TradeEvent] }))
   },
 
   async duplicateLeg(legId) {

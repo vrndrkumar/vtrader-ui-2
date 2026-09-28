@@ -11,6 +11,8 @@ import { registerSmcIndicator, setSmcInputs, setSmcTheme, setSmcTimeframe } from
 import type { SmcInputs } from './smc/types'
 import { registerRsIndicator, setRsInputs, setRsComparative as setRsCompMap, setRsTheme } from './rs/indicator'
 import type { RsInputs } from './rs/types'
+import { registerWtIndicator, setWtInputs, setWtTheme } from './wt/indicator'
+import type { WtInputs } from './wt/types'
 
 type Chart = NonNullable<ReturnType<typeof init>>
 
@@ -68,7 +70,9 @@ function styles(dark: boolean) {
       // the symbol (short labels, no time) and follow the crosshair ourselves.
       tooltip: { showRule: 'none', offsetLeft: 8, offsetTop: 26, offsetRight: 8, text: { color: text, size: 11 }, rect: { color: 'transparent' } },
     },
-    indicator: { tooltip: { offsetLeft: 8, offsetTop: 26, text: { color: text, size: 11 } } },
+    // Built-in indicator tooltip legend disabled — sub-pane indicators get our own
+    // React legend (SubPaneLegend) with the same SVG controls as the main pane.
+    indicator: { tooltip: { showRule: 'none', offsetLeft: 8, offsetTop: 26, text: { color: text, size: 11 } } },
     // Default x-axis labels are made INVISIBLE (transparent) but still reserve
     // their height — we render our own labels (ChartXAxis) so dates can be
     // highlighted separately from times and today's time always shows.
@@ -103,8 +107,10 @@ export class KLineChartEngine implements ChartEngine {
     this.el = el
     registerSmcIndicator() // register the Smart Money Concepts custom indicator once
     registerRsIndicator()  // register the Relative Strength sub-pane indicator once
+    registerWtIndicator()  // register the WaveTrend sub-pane indicator once
     setSmcTheme(dark)
     setRsTheme(dark)
+    setWtTheme(dark)
     this.chart = init(el)
     // No default indicators — the trader adds what they want, and can remove it.
     if (this.chart) {
@@ -118,6 +124,28 @@ export class KLineChartEngine implements ChartEngine {
       // renders dates like "09-08" that read as times); tooltip shows full date+time.
       try { c.setCustomApi?.({ formatDate: fmtDate }) } catch { /* older API */ }
     }
+  }
+
+  // Root-relative top (px) of an indicator's pane — lets the React sub-pane legend
+  // dock at that pane's top-left. null for main-pane / unknown indicators.
+  subPaneTop(name: string): number | null {
+    const pane = this.indicators.get(name)
+    if (!this.chart || !pane || pane === 'candle_pane') return null
+    try {
+      const b = (this.chart as unknown as { getSize: (p?: string, pos?: string) => { top?: number } | null })
+        .getSize(pane, 'root')
+      const t = b?.top
+      return typeof t === 'number' && Number.isFinite(t) ? t : null
+    } catch { return null }
+  }
+
+  // Show / hide an indicator's plots without removing it (keeps the pane + legend).
+  // Uniform for built-ins and custom indicators — klinecharts gates all drawing on
+  // `visible`, so the figures AND any custom draw disappear together.
+  setIndicatorVisible(name: string, visible: boolean): void {
+    const pane = this.indicators.get(name)
+    if (!this.chart || !pane) return
+    try { this.chart.overrideIndicator({ name, visible } as never, pane) } catch { /* keep chart alive */ }
   }
 
   setData(candles: Candle[]): void {
@@ -140,18 +168,49 @@ export class KLineChartEngine implements ChartEngine {
     this.chart?.updateData(candle as KLineData)
   }
 
+  // Open time (ms) of the last/forming candle — the session-grid anchor used by the
+  // bar-close countdown so it counts to the real bar close, not an epoch boundary.
+  lastBarTime(): number | null {
+    const d = this.dataList()
+    const t = d.length ? Number(d[d.length - 1]?.timestamp) : NaN
+    return Number.isFinite(t) ? t : null
+  }
+
   setTheme(dark: boolean): void {
     setSmcTheme(dark)
     setRsTheme(dark)
+    setWtTheme(dark)
     this.chart?.setStyles(styles(dark) as never)
   }
 
+  // ── WaveTrend sub-pane indicator ───────────────────────────────────────────
+  private wtRev = 0
+  enableWt(inputs: WtInputs): void {
+    setWtInputs(inputs)
+    if (!this.chart) return
+    if (!this.indicators.has('WT')) {
+      this.chart.createIndicator({ name: 'WT', calcParams: [this.wtRev] } as never, false, { id: 'wt_pane' })
+      this.indicators.set('WT', 'wt_pane')
+    } else { this.refreshWt() }
+  }
+  updateWt(inputs: WtInputs): void { setWtInputs(inputs); this.refreshWt() }
+  disableWt(): void {
+    const pane = this.indicators.get('WT')
+    if (this.chart && pane) { this.chart.removeIndicator(pane, 'WT'); this.indicators.delete('WT') }
+  }
+  hasWt(): boolean { return this.indicators.has('WT') }
+  // Bump calcParams so klinecharts re-runs calc() (inputs live in module state).
+  private refreshWt(): void {
+    try { this.chart?.overrideIndicator({ name: 'WT', calcParams: [++this.wtRev] } as never, 'wt_pane') } catch { /* keep chart alive */ }
+  }
+
   // ── Relative Strength sub-pane indicator ───────────────────────────────────
+  private rsRev = 0
   enableRs(inputs: RsInputs): void {
     setRsInputs(inputs)
     if (!this.chart) return
     if (!this.indicators.has('RS')) {
-      this.chart.createIndicator('RS', false, { id: 'rs_pane' })
+      this.chart.createIndicator({ name: 'RS', calcParams: [this.rsRev] } as never, false, { id: 'rs_pane' })
       this.indicators.set('RS', 'rs_pane')
     } else { this.refreshRs() }
   }
@@ -162,8 +221,9 @@ export class KLineChartEngine implements ChartEngine {
     if (this.chart && pane) { this.chart.removeIndicator(pane, 'RS'); this.indicators.delete('RS') }
   }
   hasRs(): boolean { return this.indicators.has('RS') }
+  // Bump calcParams so klinecharts re-runs calc() (inputs live in module state).
   private refreshRs(): void {
-    try { this.chart?.overrideIndicator({ name: 'RS' } as never, 'rs_pane') } catch { /* keep chart alive */ }
+    try { this.chart?.overrideIndicator({ name: 'RS', calcParams: [++this.rsRev] } as never, 'rs_pane') } catch { /* keep chart alive */ }
   }
 
   // ── Smart Money Concepts [LuxAlgo] indicator ───────────────────────────────

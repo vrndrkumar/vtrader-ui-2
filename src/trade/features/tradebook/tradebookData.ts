@@ -142,7 +142,10 @@ function mapOrder(r: Record<string, unknown>, b: BrokerAccount, i: number): Orde
     price: num(r, ['price', 'orderPrice', 'limitPrice', 'prc']),
     triggerPrice: num(r, ['triggerPrice', 'trigger_price', 'trgprc', 'stopPrice']),
     status: mapOrderStatus(str(r, ['orderStatus', 'status', 'orderstatus'], 'OPEN')),
-    time: str(r, ['time', 'orderTime', 'orderTimestamp', 'order_timestamp', 'exchTime', 'updatedAt', 'createdAt'], new Date().toISOString()),
+    // Actual broker order time. Our backend normalizes it to `placedTime`; the
+    // other keys cover raw broker payloads. Only fall back to "now" if none exist
+    // (otherwise every row would show the fetch time and look identical).
+    time: str(r, ['placedTime', 'placed_time', 'orderTime', 'orderTimestamp', 'order_timestamp', 'time', 'exchTime', 'norentm', 'updatedAt', 'createdAt'], new Date().toISOString()),
     message: str(r, ['message', 'rejectionReason', 'rejReason', 'rejreason', 'remarks']) || undefined,
   }
 }
@@ -156,5 +159,8 @@ export async function fetchOrders(brokers: BrokerAccount[]): Promise<Order[]> {
       return rows.map((r, i) => mapOrder(r, b, i)).filter((o) => o.symbol && !/^#*$/.test(o.orderId))
     } catch { return [] as Order[] }
   }))
-  return perBroker.flat()
+  // Newest first (across all brokers). Parse the broker time to epoch ms; rows with
+  // an unparseable/missing time sort to the bottom.
+  const ms = (t: string): number => { const n = new Date(t).getTime(); return Number.isNaN(n) ? 0 : n }
+  return perBroker.flat().sort((a, b) => ms(b.time) - ms(a.time))
 }

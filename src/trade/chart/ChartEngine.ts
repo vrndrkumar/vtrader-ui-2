@@ -6,6 +6,7 @@ import type { Candle } from '../types/market'
 import type { OrderLine } from './orderOverlays'
 import type { SmcInputs } from './smc/types'
 import type { RsInputs } from './rs/types'
+import type { WtInputs } from './wt/types'
 
 /**
  * A drawing serialized to MARKET coordinates (time + price), not pixels. This is
@@ -39,6 +40,8 @@ export interface ChartEngine {
   setData(candles: Candle[]): void
   /** Update the last candle or append a new one (by timestamp). */
   updateLast(candle: Candle): void
+  /** Open time (ms) of the last/forming candle, or null if there's no data. */
+  lastBarTime(): number | null
   setTheme(dark: boolean): void
 
   /** Add the indicator if absent, remove it if present. Optional calc params. */
@@ -64,6 +67,18 @@ export interface ChartEngine {
   setRsComparative(map: Map<number, number>): void
   disableRs(): void
   hasRs(): boolean
+
+  // ── WaveTrend [LazyBear] sub-pane indicator ────────────────────────────────
+  enableWt(inputs: WtInputs): void
+  updateWt(inputs: WtInputs): void
+  disableWt(): void
+  hasWt(): boolean
+
+  // ── Sub-pane indicator legend (rendered in React over each sub-pane) ────────
+  /** Root-relative top pixel of an indicator's own pane (null for main-pane). */
+  subPaneTop(name: string): number | null
+  /** Show / hide an indicator's plots without removing it (keeps pane + legend). */
+  setIndicatorVisible(name: string, visible: boolean): void
 
   /** Enter draw mode for a drawing tool (e.g. 'segment', 'fibonacciLine').
    *  `styles` seeds the new drawing with the tool's saved default look. */

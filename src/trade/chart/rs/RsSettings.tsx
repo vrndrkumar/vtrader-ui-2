@@ -22,7 +22,7 @@ function withHex(orig: string, hex: string): string {
   return hex
 }
 
-type Tab = 'inputs' | 'style' | 'visibility'
+type Tab = 'inputs' | 'style'
 
 export function RsSettings({ onClose }: { onClose: () => void }) {
   const inputs = useRsStore((s) => s.inputs)
@@ -47,7 +47,7 @@ export function RsSettings({ onClose }: { onClose: () => void }) {
             <button onClick={onClose} className="h-7 w-7 grid place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10 transition active:scale-90"><svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 6l12 12M18 6L6 18" /></svg></button>
           </div>
           <div className="flex gap-4 mt-2.5">
-            {(['inputs', 'style', 'visibility'] as Tab[]).map((t) => (
+            {(['inputs', 'style'] as Tab[]).map((t) => (
               <button key={t} onClick={() => setTab(t)}
                 className={clsx('pb-2 text-[13px] font-semibold capitalize border-b-2 -mb-px transition-colors', tab === t ? 'border-indigo-500 text-slate-800 dark:text-white' : 'border-transparent text-slate-400 hover:text-slate-600 dark:hover:text-slate-200')}>
                 {t}
@@ -94,38 +94,31 @@ export function RsSettings({ onClose }: { onClose: () => void }) {
           </>)}
 
           {tab === 'style' && (<>
-            <Section title="Zero Line / RS Trend">
+            <Section title="Zero Line / RS Trend" show={inputs.showZeroLine} onShow={(v) => set('showZeroLine', v)}>
               <Col label="Color 0" value={inputs.zeroColorUp} onChange={(c) => set('zeroColorUp', c)} />
               <Col label="Color 1" value={inputs.zeroColorDown} onChange={(c) => set('zeroColorDown', c)} />
               <NumOnly label="Thickness" value={inputs.zeroWidth} min={1} onChange={(v) => set('zeroWidth', v)} />
             </Section>
-            <Section title="RS">
+            <Section title="RS" show={inputs.showRS} onShow={(v) => set('showRS', v)}>
               <Col label="Color 0" value={inputs.rsColorPos} onChange={(c) => set('rsColorPos', c)} />
               <Col label="Color 1" value={inputs.rsColorNeg} onChange={(c) => set('rsColorNeg', c)} />
               <Col label="Color 2" value={inputs.rsColorFlat} onChange={(c) => set('rsColorFlat', c)} />
               <NumOnly label="Thickness" value={inputs.rsWidth} min={1} onChange={(v) => set('rsWidth', v)} />
             </Section>
-            <Section title="MA">
+            <Section title="MA" show={inputs.showMA} onShow={(v) => set('showMA', v)}>
               <Col label="Color 0" value={inputs.maColorUp} onChange={(c) => set('maColorUp', c)} />
               <Col label="Color 1" value={inputs.maColorDown} onChange={(c) => set('maColorDown', c)} />
               <Col label="Color 2" value={inputs.maColorFlat} onChange={(c) => set('maColorFlat', c)} />
               <NumOnly label="Thickness" value={inputs.maWidth} min={1} onChange={(v) => set('maWidth', v)} />
             </Section>
-            <Section title="Confirmation Bubbles">
+            <Section title="Confirmation Bubbles" show={inputs.showBubbles} onShow={(v) => set('showBubbles', v)}>
               <Col label="Color 0" value={inputs.bullishColor} onChange={(c) => set('bullishColor', c)} />
               <Col label="Color 1" value={inputs.bearishColor} onChange={(c) => set('bearishColor', c)} />
             </Section>
-          </>)}
-
-          {tab === 'visibility' && (
-            <Section title="Plots">
-              <Tog label="RS" value={inputs.showRS} onChange={(v) => set('showRS', v)} />
-              <Tog label="Zero Line / RS Trend" value={inputs.showZeroLine} onChange={(v) => set('showZeroLine', v)} />
-              <Tog label="MA" value={inputs.showMA} onChange={(v) => set('showMA', v)} />
-              <Tog label="Confirmation Bubbles" value={inputs.showBubbles} onChange={(v) => set('showBubbles', v)} />
-              <Tog label="Reference Label" value={inputs.showRefDateLbl} onChange={(v) => set('showRefDateLbl', v)} />
+            <Section title="Reference Label" show={inputs.showRefDateLbl} onShow={(v) => set('showRefDateLbl', v)}>
+              <p className="text-[11px] text-slate-400">Toggles the RS-reference date label.</p>
             </Section>
-          )}
+          </>)}
         </div>
 
         <div className="px-4 py-3 border-t border-slate-200 dark:border-slate-800 flex items-center shrink-0">
@@ -138,10 +131,18 @@ export function RsSettings({ onClose }: { onClose: () => void }) {
   )
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children, show, onShow }: { title: string; children: React.ReactNode; show?: boolean; onShow?: (v: boolean) => void }) {
+  const hasToggle = show !== undefined && !!onShow
   return (
-    <div className="rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden">
-      <div className="px-3 py-2 bg-slate-50 dark:bg-white/[0.03]"><span className="text-[11px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">{title}</span></div>
+    <div className={clsx('rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden', hasToggle && !show && 'opacity-60')}>
+      <div className="px-3 py-2 bg-slate-50 dark:bg-white/[0.03] flex items-center gap-2">
+        {hasToggle && (
+          <button onClick={() => onShow!(!show)} className={clsx('h-4 w-4 shrink-0 grid place-items-center rounded-[5px] border transition', show ? 'bg-indigo-500 border-indigo-500 text-white' : 'border-slate-300 dark:border-slate-600')}>
+            {show && <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 13l4 4L19 7" /></svg>}
+          </button>
+        )}
+        <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">{title}</span>
+      </div>
       <div className="px-3 py-2 space-y-1.5">{children}</div>
     </div>
   )

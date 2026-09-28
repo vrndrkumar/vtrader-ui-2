@@ -8,8 +8,9 @@ import { clsx } from 'clsx'
 import { useSim } from './store'
 import { NAV_STEPS, type NavStep } from './store'
 import type { IndexCode, OptionQuote, OptType, PositionLeg, Side } from './types'
-import { bsGreeks } from './engine/blackScholes'
-import { computePayoffCurve, computeStats, inr, type OptionLeg } from '@/components/PayoffEChart'
+import { bsGreeks, bsImpliedVol } from './engine/blackScholes'
+import { computeStats, inr, type OptionLeg } from '@/components/PayoffEChart'
+import { simPayoffCurve } from './payoff'
 import { SimPayoffChart } from './SimPayoffChart'
 const fmtCompact = (n?: number) => {
   if (n == null) return ''
@@ -22,6 +23,7 @@ const fmtCompact = (n?: number) => {
 const istTime = (ts: number) => (ts ? new Date(ts).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false }) : '--:--:--')
 const istHM = (ts: number) => (ts ? new Date(ts).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false, hour: '2-digit', minute: '2-digit' }) : '--:--')
 const istDay = (d: string) => new Date(`${d}T00:00:00+05:30`).toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short', year: '2-digit' })
+const fmtExpiry = (expiryId: string) => new Date(`${expiryId.split('-').slice(1).join('-')}T00:00:00+05:30`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })
 
 export default function OptionSimulatorPage() {
   const ready = useSim(s => s.ready)
@@ -275,23 +277,43 @@ function NavBtn({ title, onClick, children }: { title: string; onClick: () => vo
 // ── Expiry selector strip ─────────────────────────────────────────────────────────
 function ExpiryTabs() {
   const { expiries, config, changeExpiry } = useSim()
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const [ov, setOv] = useState({ left: false, right: false })
+  const refresh = () => { const el = scrollRef.current; if (!el) return; setOv({ left: el.scrollLeft > 2, right: el.scrollLeft < el.scrollWidth - el.clientWidth - 2 }) }
+  useEffect(() => {
+    const el = scrollRef.current; if (!el) return
+    refresh()
+    el.addEventListener('scroll', refresh, { passive: true })
+    window.addEventListener('resize', refresh)
+    return () => { el.removeEventListener('scroll', refresh); window.removeEventListener('resize', refresh) }
+  }, [expiries.length])
   if (!expiries.length || !config) return null
   const dteOf = (d: string) => Math.max(0, Math.round((Date.parse(`${d}T15:40:00+05:30`) - Date.parse(`${config.date}T09:15:00+05:30`)) / 86_400_000))
+  const scrollBy = (dir: 1 | -1) => scrollRef.current?.scrollBy({ left: dir * 200, behavior: 'smooth' })
+  const arrow = 'shrink-0 h-7 w-6 grid place-items-center rounded-md text-slate-400 dark:text-white/40 hover:bg-slate-100 dark:hover:bg-white/[0.06]'
   return (
-    <div className="flex items-center gap-1 shrink-0 px-2 h-9 border-b border-slate-100 dark:border-white/[0.05] overflow-x-auto no-scrollbar">
-      {expiries.map(e => {
-        const active = e.id === config.expiryId
-        const dte = dteOf(e.date)
-        return (
-          <button key={e.id} onClick={() => void changeExpiry(e.id)} title={e.label}
-            className={clsx('shrink-0 flex items-center gap-1 h-7 px-2.5 rounded-lg text-[11px] font-bold border transition-colors whitespace-nowrap',
-              active ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/25 text-brand-700 dark:text-brand-300' : 'border-transparent text-slate-500 dark:text-white/45 hover:bg-slate-100 dark:hover:bg-white/[0.05]')}>
-            <span className="uppercase tracking-wide">{e.label}</span>
-            <span className={clsx('tabular-nums text-[9px] font-black px-1 py-px rounded', active ? 'bg-brand-500/20 text-brand-700 dark:text-brand-300' : 'text-slate-400 dark:text-white/30')}>{dte}d</span>
-            {e.type === 'monthly' && <span className="text-[8px] font-black text-amber-500">M</span>}
-          </button>
-        )
-      })}
+    <div className="flex items-center shrink-0 h-9 border-b border-slate-100 dark:border-white/[0.05] px-1">
+      <button onClick={() => scrollBy(-1)} className={clsx(arrow, !ov.left && 'invisible')} title="Earlier expiries" aria-label="Scroll left">
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.4"><path d="M15 18l-6-6 6-6" /></svg>
+      </button>
+      <div ref={scrollRef} className="flex items-center gap-1 overflow-x-auto no-scrollbar flex-1 px-1">
+        {expiries.map(e => {
+          const active = e.id === config.expiryId
+          const dte = dteOf(e.date)
+          return (
+            <button key={e.id} onClick={() => void changeExpiry(e.id)} title={e.label}
+              className={clsx('shrink-0 flex items-center gap-1 h-7 px-2.5 rounded-lg text-[11px] font-bold border transition-colors whitespace-nowrap',
+                active ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/25 text-brand-700 dark:text-brand-300' : 'border-transparent text-slate-500 dark:text-white/45 hover:bg-slate-100 dark:hover:bg-white/[0.05]')}>
+              <span className="uppercase tracking-wide">{e.label}</span>
+              <span className={clsx('tabular-nums text-[9px] font-black px-1 py-px rounded', active ? 'bg-brand-500/20 text-brand-700 dark:text-brand-300' : 'text-slate-400 dark:text-white/30')}>{dte}d</span>
+              {e.type === 'monthly' && <span className="text-[8px] font-black text-amber-500">M</span>}
+            </button>
+          )
+        })}
+      </div>
+      <button onClick={() => scrollBy(1)} className={clsx(arrow, !ov.right && 'invisible')} title="Later expiries" aria-label="Scroll right">
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.4"><path d="M9 6l6 6-6 6" /></svg>
+      </button>
     </div>
   )
 }
@@ -305,8 +327,10 @@ function RichChain() {
   const dte = useMemo(() => { if (!config) return 1; const ed = config.expiryId.split('-').slice(1).join('-'); return Math.max(0.5, (Date.parse(`${ed}T00:00:00+05:30`) + 940 * 60000 -steps[cursor]) / 86_400_000) }, [config, steps, cursor])
   if (!chain) return <div className="h-full flex items-center justify-center text-[12px] text-slate-400 dark:text-white/25">Loading chain…</div>
 
+  // Overlay only the legs belonging to the CURRENTLY-SHOWN expiry — a calendar's
+  // other-expiry legs must NOT net against these (that showed a false "0 lot").
   const posBy = new Map<string, number>()
-  for (const l of positions) if (l.status === 'OPEN') posBy.set(`${l.optType}-${l.strike}`, (posBy.get(`${l.optType}-${l.strike}`) ?? 0) + (l.side === 'BUY' ? l.qty : -l.qty))
+  for (const l of positions) if (l.status === 'OPEN' && l.expiryId === config?.expiryId) posBy.set(`${l.optType}-${l.strike}`, (posBy.get(`${l.optType}-${l.strike}`) ?? 0) + (l.side === 'BUY' ? l.qty : -l.qty))
   const lotSz = positions[0]?.lotSize
   // Prefer the feed's delta; fall back to a BS estimate from IV.
   const deltaOf = (q: { delta?: number; iv?: number } | undefined, K: number, ot: OptType) =>
@@ -492,7 +516,7 @@ function IconBtn({ title, onClick, children, tone = 'default' }: { title: string
 }
 
 function LegCard({ leg, selected, onToggle }: { leg: PositionLeg; selected: boolean; onToggle: () => void }) {
-  const { closeLeg, reverseLeg, changeQty, rollStrike, removeLeg } = useSim()
+  const { closeLeg, changeQty, rollStrike, removeLeg } = useSim()
   const [modify, setModify] = useState(false)
   const mtm = leg.status === 'OPEN' ? leg.unrealized : leg.realized   // closed/expired show locked P&L
   const lots = Math.round(leg.qty / leg.lotSize)
@@ -505,6 +529,7 @@ function LegCard({ leg, selected, onToggle }: { leg: PositionLeg; selected: bool
         {open && <input type="checkbox" checked={selected} onChange={onToggle} title="Select leg" className="h-3.5 w-3.5 accent-brand-600 cursor-pointer" />}
         <span className={clsx('px-1.5 py-0.5 rounded text-[9px] font-black', buy ? 'bg-emerald-500 text-white' : 'bg-red-500 text-white')}>{leg.side}</span>
         <span className="text-[13px] font-bold text-slate-800 dark:text-white/85 tabular-nums">{leg.strike} <span className={clsx('text-[10px]', leg.optType === 'CE' ? 'text-emerald-600' : 'text-red-500')}>{leg.optType}</span></span>
+        <span title="Expiry" className="text-[9px] font-black uppercase tracking-wide px-1.5 py-0.5 rounded bg-indigo-50 dark:bg-indigo-900/25 text-indigo-600 dark:text-indigo-300">{fmtExpiry(leg.expiryId)}</span>
         <span className="text-[10px] text-slate-400 dark:text-white/30">×{leg.qty} · {lots}L</span>
         {expired && <span className="text-[9px] font-black uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400">Expired</span>}
         <span className={clsx('ml-auto text-[13px] font-black tabular-nums', mtm >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500 dark:text-red-400')}>{mtm >= 0 ? '+' : '−'}₹{inr(Math.abs(mtm))}</span>
@@ -529,8 +554,6 @@ function LegCard({ leg, selected, onToggle }: { leg: PositionLeg; selected: bool
             <span className="px-2 text-center text-[11px] font-black tabular-nums text-slate-700 dark:text-white/70 border-x border-slate-200 dark:border-white/[0.1] leading-7">{leg.strike.toLocaleString('en-IN')}</span>
             <button title="Higher strike" onClick={() => void rollStrike(leg.id, 1)} className="h-7 w-7 grid place-items-center text-slate-500 dark:text-white/45 hover:bg-slate-50 dark:hover:bg-white/[0.05]"><svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14" /></svg></button>
           </div>
-          {/* buy/sell toggle */}
-          <IconBtn title={`Flip to ${buy ? 'SELL' : 'BUY'}`} onClick={() => void reverseLeg(leg.id)}><svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2"><path d="M7 16V4M7 4L3 8M7 4l4 4M17 8v12M17 20l4-4M17 20l-4-4" /></svg></IconBtn>
           {/* SL / target */}
           <IconBtn title="Stop-loss & target" onClick={() => setModify(true)} tone={leg.sl != null || leg.target != null ? 'active' : 'default'}><svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg></IconBtn>
           <div className="ml-auto flex items-center gap-2">
@@ -549,6 +572,12 @@ function LegCard({ leg, selected, onToggle }: { leg: PositionLeg; selected: bool
       {modify && <ModifyPopover leg={leg} lots={lots} onClose={() => setModify(false)} />}
     </div>
   )
+}
+
+// Module-level so it keeps a stable identity — defining it inside ModifyPopover
+// remounted the inputs on every keystroke and dropped focus after one digit.
+function ModRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return <div className="flex items-center justify-between gap-2"><span className="text-[11px] text-slate-500 dark:text-white/40">{label}</span>{children}</div>
 }
 
 function ModifyPopover({ leg, lots, onClose }: { leg: PositionLeg; lots: number; onClose: () => void }) {
@@ -571,7 +600,6 @@ function ModifyPopover({ leg, lots, onClose }: { leg: PositionLeg; lots: number;
   const slAbs = toAbs(sl, 'sl'), tgtAbs = toAbs(tgt, 'tgt')
   const switchMode = (m: 'abs' | 'pct') => { if (m !== mode) { setMode(m); setSl(''); setTgt('') } }
   function apply() { if (q !== lots) void changeQty(leg.id, q); setLegRisk(leg.id, { sl: slAbs, target: tgtAbs }); onClose() }
-  const R = ({ label, children }: { label: string; children: React.ReactNode }) => <div className="flex items-center justify-between gap-2"><span className="text-[11px] text-slate-500 dark:text-white/40">{label}</span>{children}</div>
   const unitBtn = (m: 'abs' | 'pct', txt: string) => <button onClick={() => switchMode(m)} className={clsx('px-2 h-5 text-[10px] font-black rounded', mode === m ? 'bg-slate-700 dark:bg-slate-600 text-white' : 'text-slate-400')}>{txt}</button>
   return (
     <div className="absolute right-2 top-8 z-40 w-60 rounded-xl border border-slate-200 dark:border-white/[0.12] bg-white dark:bg-slate-900 shadow-2xl p-3">
@@ -580,10 +608,10 @@ function ModifyPopover({ leg, lots, onClose }: { leg: PositionLeg; lots: number;
         <div className="flex rounded-md overflow-hidden ring-1 ring-slate-200 dark:ring-white/10">{unitBtn('abs', '₹')}{unitBtn('pct', '%')}</div>
       </div>
       <div className="space-y-2.5">
-        <R label="Quantity"><div className="flex items-center gap-1.5"><button onClick={() => setQ(v => Math.max(1, v - 1))} className="h-6 w-6 rounded border border-slate-200 dark:border-white/[0.1] text-slate-500">−</button><span className="w-8 text-center text-[12px] font-bold tabular-nums">{q}L</span><button onClick={() => setQ(v => v + 1)} className="h-6 w-6 rounded border border-slate-200 dark:border-white/[0.1] text-slate-500">+</button></div></R>
-        <R label={`Stop loss ${mode === 'pct' ? '%' : '₹'}`}><div className="flex items-center gap-1.5">{mode === 'pct' && slAbs != null && <span className="text-[10px] text-slate-400 tabular-nums">→ ₹{slAbs}</span>}<input value={sl} onChange={e => setSl(e.target.value)} placeholder="—" className="h-7 w-20 px-2 text-right rounded-md border border-slate-200 dark:border-white/[0.1] bg-white dark:bg-white/[0.05] text-[12px] font-bold tabular-nums outline-none focus:border-red-400" /></div></R>
-        <R label={`Target ${mode === 'pct' ? '%' : '₹'}`}><div className="flex items-center gap-1.5">{mode === 'pct' && tgtAbs != null && <span className="text-[10px] text-slate-400 tabular-nums">→ ₹{tgtAbs}</span>}<input value={tgt} onChange={e => setTgt(e.target.value)} placeholder="—" className="h-7 w-20 px-2 text-right rounded-md border border-slate-200 dark:border-white/[0.1] bg-white dark:bg-white/[0.05] text-[12px] font-bold tabular-nums outline-none focus:border-emerald-400" /></div></R>
-        <R label="Partial exit"><div className="flex gap-1">{[['50%', Math.max(1, Math.floor(lots / 2))], ['25%', Math.max(1, Math.floor(lots / 4))]].map(([l, n]) => <button key={l as string} onClick={() => { void partialExit(leg.id, n as number); onClose() }} className="h-6 px-2 rounded-md border border-slate-200 dark:border-white/[0.1] text-[10px] font-bold text-slate-500">{l as string}</button>)}</div></R>
+        <ModRow label="Quantity"><div className="flex items-center gap-1.5"><button onClick={() => setQ(v => Math.max(1, v - 1))} className="h-6 w-6 rounded border border-slate-200 dark:border-white/[0.1] text-slate-500">−</button><span className="w-8 text-center text-[12px] font-bold tabular-nums">{q}L</span><button onClick={() => setQ(v => v + 1)} className="h-6 w-6 rounded border border-slate-200 dark:border-white/[0.1] text-slate-500">+</button></div></ModRow>
+        <ModRow label={`Stop loss ${mode === 'pct' ? '%' : '₹'}`}><div className="flex items-center gap-1.5">{mode === 'pct' && slAbs != null && <span className="text-[10px] text-slate-400 tabular-nums">→ ₹{slAbs}</span>}<input value={sl} onChange={e => setSl(e.target.value)} placeholder="—" className="h-7 w-20 px-2 text-right rounded-md border border-slate-200 dark:border-white/[0.1] bg-white dark:bg-white/[0.05] text-[12px] font-bold tabular-nums outline-none focus:border-red-400" /></div></ModRow>
+        <ModRow label={`Target ${mode === 'pct' ? '%' : '₹'}`}><div className="flex items-center gap-1.5">{mode === 'pct' && tgtAbs != null && <span className="text-[10px] text-slate-400 tabular-nums">→ ₹{tgtAbs}</span>}<input value={tgt} onChange={e => setTgt(e.target.value)} placeholder="—" className="h-7 w-20 px-2 text-right rounded-md border border-slate-200 dark:border-white/[0.1] bg-white dark:bg-white/[0.05] text-[12px] font-bold tabular-nums outline-none focus:border-emerald-400" /></div></ModRow>
+        <ModRow label="Partial exit"><div className="flex gap-1">{[['50%', Math.max(1, Math.floor(lots / 2))], ['25%', Math.max(1, Math.floor(lots / 4))]].map(([l, n]) => <button key={l as string} onClick={() => { void partialExit(leg.id, n as number); onClose() }} className="h-6 px-2 rounded-md border border-slate-200 dark:border-white/[0.1] text-[10px] font-bold text-slate-500">{l as string}</button>)}</div></ModRow>
       </div>
       <div className="flex gap-1.5 mt-3"><button onClick={apply} className="flex-1 h-8 rounded-lg bg-brand-600 text-white text-[12px] font-bold hover:bg-brand-700">Apply</button><button onClick={onClose} className="h-8 px-3 rounded-lg border border-slate-200 dark:border-white/[0.1] text-[12px] font-bold text-slate-500">Cancel</button></div>
     </div>
@@ -634,19 +662,29 @@ function usePayoff() {
   const ts = steps[cursor]
   const legs: OptionLeg[] = useMemo(() => {
     if (!config) return []
-    const ed = config.expiryId.split('-').slice(1).join('-')
-    const dte = Math.max(0.5, (Date.parse(`${ed}T00:00:00+05:30`) + 940 * 60000 -ts) / 86_400_000)
     const ivOf = (cid: string) => {
       for (const r of chain?.rows ?? []) { if (r.ce?.contractId === cid) return r.ce.iv; if (r.pe?.contractId === cid) return r.pe.iv }
       return undefined
     }
-    // Only SELECTED open legs feed the analysis.
-    return positions.filter(l => l.status === 'OPEN' && selectedIds.includes(l.id)).map(l => ({ optType: l.optType, strike: l.strike, qty: l.side === 'BUY' ? l.qty : -l.qty, entry: l.avgEntry, dte, iv: ivOf(l.contractId) || 0.15 }))
+    // Each SELECTED open leg carries its OWN expiry (calendar-aware): dte from its
+    // own contract + the expiry timestamp so the payoff can separate front vs far legs.
+    const expTs = (l: PositionLeg) => Date.parse(`${l.expiryId.split('-').slice(1).join('-')}T00:00:00+05:30`) + 940 * 60000
+    const spot = chain?.spot ?? 0
+    return positions.filter(l => l.status === 'OPEN' && selectedIds.includes(l.id)).map(l => {
+      const expiryTs = expTs(l)
+      const dte = Math.max(0.5, (expiryTs - ts) / 86_400_000)
+      // Per-leg IV backed out of the leg's LIVE premium (market-anchored, works for
+      // off-chain calendar legs too). Fall back to the chain IV, then a default.
+      let iv = spot > 0 && l.ltp > 0 ? bsImpliedVol(l.ltp, spot, l.strike, dte / 365, l.optType) : 0
+      if (!iv || !Number.isFinite(iv)) iv = ivOf(l.contractId) || 0.15
+      return { optType: l.optType, strike: l.strike, qty: l.side === 'BUY' ? l.qty : -l.qty, entry: l.avgEntry, dte, iv, expiryTs }
+    })
   }, [positions, config, ts, chain, selectedIds])
-  const data = useMemo(() => computePayoffCurve(legs), [legs])
   const spot = chain?.spot ?? 0
   const step = chain?.step ?? 50
-  const stats = useMemo(() => computeStats(data, spot, legs[0]?.dte ?? 1), [data, spot, legs])
+  const data = useMemo(() => simPayoffCurve(legs, spot), [legs, spot])
+  const frontDte = legs.length ? Math.min(...legs.map(l => l.dte)) : 1
+  const stats = useMemo(() => computeStats(data, spot, frontDte), [data, spot, frontDte])
   return { legs, data, spot, step, stats }
 }
 

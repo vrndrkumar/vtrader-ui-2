@@ -9,7 +9,7 @@ import * as echarts from 'echarts/core'
 import { LineChart, ScatterChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, MarkLineComponent, MarkAreaComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
-import { bsPrice } from './engine/blackScholes'
+import { simPayoffAt, frontExpiryTs } from './payoff'
 import type { OptionLeg } from '@/components/PayoffEChart'
 
 echarts.use([LineChart, ScatterChart, GridComponent, TooltipComponent, MarkLineComponent, MarkAreaComponent, CanvasRenderer])
@@ -39,16 +39,10 @@ interface Computed {
 function compute(legs: OptionLeg[], spot: number): Computed | null {
   if (!legs.length || spot <= 0) return null
   const strikes = [...new Set(legs.map(l => l.strike))].sort((a, b) => a - b)
-  const at = (S: number) => {
-    let ex = 0, td = 0
-    for (const l of legs) {
-      const intr = l.optType === 'CE' ? Math.max(S - l.strike, 0) : Math.max(l.strike - S, 0)
-      ex += l.qty * (intr - l.entry)
-      const T = Math.max(0.5, l.dte) / 365
-      td += l.qty * (bsPrice(S, l.strike, T, l.iv || 0.15, l.optType) - l.entry)
-    }
-    return { ex, td }
-  }
+  // Calendar-aware: "expiry" line is drawn at the front expiry (front legs →
+  // intrinsic, far legs → BS on remaining time); "today" uses each leg's own dte.
+  const front = frontExpiryTs(legs)
+  const at = (S: number) => simPayoffAt(legs, S, front)
   // provisional focused range from spot + strikes
   const foc0 = [spot, ...strikes]
   const lo0 = Math.min(...foc0), hi0 = Math.max(...foc0)

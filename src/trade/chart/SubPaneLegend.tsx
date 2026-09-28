@@ -1,16 +1,20 @@
-// ── Indicator legend (TradingView-style) ─────────────────────────────────────
-// The stack of applied indicators shown top-left on the chart. Each row shows the
-// indicator name (+ its params) and, on hover, the same controls TradingView
-// gives: hide/show (eye), settings (gear), and remove (trash). Hiding keeps the
-// indicator applied but off the chart; removing drops it entirely.
+// ── Sub-pane indicator legend (TradingView-style, lower panels) ──────────────
+// Indicators that live in their own lower pane (WaveTrend, Relative Strength,
+// Volume, MACD, RSI, KDJ) each get a legend row docked at the TOP-LEFT of their
+// pane — exactly like TradingView, and visually identical to the main-pane legend
+// (same pill, same eye / gear / trash SVG controls). Hiding keeps the pane (the
+// plots just switch off) so it can be un-hidden; removing drops it entirely.
+//
+// Pane tops are polled from the engine each frame (cheap) so the rows track
+// resize, pane add/remove and layout changes.
 
 import { useEffect, useRef, useState } from 'react'
 import { clsx } from 'clsx'
+import type { ChartEngine } from './ChartEngine'
 import { useChartLayoutStore } from '../store/chartLayoutStore'
 import { useIndicatorParams } from '../store/indicatorParamsStore'
 import { INDICATORS } from './indicatorMeta'
 import { IndicatorSettings } from './IndicatorSettings'
-import { SmcSettings } from './smc/SmcSettings'
 import { RsSettings } from './rs/RsSettings'
 import { WtSettings } from './wt/WtSettings'
 
@@ -20,34 +24,44 @@ function Icon({ d, className }: { d: string; className?: string }) {
   return <svg viewBox="0 0 24 24" className={clsx('h-3.5 w-3.5', className)} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d={d} /></svg>
 }
 
-export function IndicatorLegend({ panelId, onHeight }: { panelId: string; onHeight?: (h: number) => void }) {
+export function SubPaneLegend({ panelId, engineRef }: { panelId: string; engineRef: React.MutableRefObject<ChartEngine | null> }) {
   const config = useChartLayoutStore((s) => s.panels[panelId])
-  const rootRef = useRef<HTMLDivElement>(null)
   const setIndicators = useChartLayoutStore((s) => s.setPanelIndicators)
   const setHidden = useChartLayoutStore((s) => s.setPanelHidden)
   const params = useIndicatorParams((s) => s.params)
   const [settingsFor, setSettingsFor] = useState<string | null>(null)
-  const [collapsed, setCollapsed] = useState<boolean>(() => { try { return localStorage.getItem('vtrader_legend_collapsed') === '1' } catch { return false } })
-  const toggleCollapsed = () => setCollapsed((c) => { const nv = !c; try { localStorage.setItem('vtrader_legend_collapsed', nv ? '1' : '0') } catch { /* */ } return nv })
+  const [tops, setTops] = useState<Record<string, number>>({})
 
-  // Main-pane indicators only. Sub-pane indicators (WaveTrend, Relative Strength,
-  // Volume, MACD, …) carry their own legend + controls inside their pane — exactly
-  // like TradingView — so they must NOT appear in this main-pane legend.
-  const list = (config?.indicators ?? []).filter((n) => INDICATORS[n]?.pane !== 'sub')
+  const subs = (config?.indicators ?? []).filter((n) => INDICATORS[n]?.pane === 'sub')
   const hidden = new Set(config?.hiddenIndicators ?? [])
+  const subsKey = subs.join(',')
 
-  // Report the legend's rendered height so the positions mirror can dock below it.
+  // Poll each sub-pane's top (px, root-relative) so the rows dock correctly and
+  // follow layout changes. ~5/s is plenty and imperceptibly cheap.
+  const topsRef = useRef<Record<string, number>>({})
   useEffect(() => {
-    const el = rootRef.current
-    if (!el || !onHeight) { onHeight?.(0); return }
-    const report = () => onHeight(el.offsetHeight)
-    report()
-    const ro = new ResizeObserver(report)
-    ro.observe(el)
-    return () => { ro.disconnect(); onHeight(0) }
-  }, [onHeight, list.length, collapsed])
+    let raf = 0
+    let last = 0
+    const loop = (t: number) => {
+      if (t - last > 180) {
+        last = t
+        const eng = engineRef.current
+        if (eng) {
+          const next: Record<string, number> = {}
+          for (const n of subsKey ? subsKey.split(',') : []) { const top = eng.subPaneTop(n); if (top != null) next[n] = top }
+          const prev = topsRef.current
+          const keys = Object.keys(next)
+          const changed = keys.length !== Object.keys(prev).length || keys.some((k) => Math.abs((prev[k] ?? -1) - next[k]) > 0.5)
+          if (changed) { topsRef.current = next; setTops(next) }
+        }
+      }
+      raf = requestAnimationFrame(loop)
+    }
+    raf = requestAnimationFrame(loop)
+    return () => cancelAnimationFrame(raf)
+  }, [engineRef, subsKey])
 
-  if (!list.length) return null
+  if (!subs.length) return null
 
   const label = (name: string): string => {
     const base = INDICATORS[name]?.label ?? name
@@ -59,35 +73,24 @@ export function IndicatorLegend({ panelId, onHeight }: { panelId: string; onHeig
     setHidden(panelId, next)
   }
   const remove = (name: string) => {
-    setIndicators(panelId, list.filter((x) => x !== name))
+    setIndicators(panelId, (config?.indicators ?? []).filter((x) => x !== name))
     if (hidden.has(name)) setHidden(panelId, [...hidden].filter((x) => x !== name))
     if (settingsFor === name) setSettingsFor(null)
   }
 
-  const chevDown = 'M6 9l6 6 6-6'   // collapsed pill → click to expand (down)
-  const chevUp = 'M18 15l-6-6-6 6'  // collapse handle → click to collapse (up)
-
   return (
     <>
-      <div ref={rootRef} className="absolute top-[52px] left-1.5 z-10 flex flex-col gap-0.5 pointer-events-auto max-w-[calc(100%-72px)]">
-        {collapsed ? (
-          <button onClick={toggleCollapsed} title="Show indicators"
-            className="inline-flex items-center gap-1 h-6 pl-1.5 pr-2 rounded-md bg-white/70 dark:bg-surface-dark/70 backdrop-blur-sm ring-1 ring-black/5 dark:ring-white/10 shadow-sm w-fit text-[11px] font-semibold text-slate-500 dark:text-slate-300 hover:text-slate-800 dark:hover:text-white">
-            <Icon d={chevDown} className="h-3 w-3" />
-            {list.length} indicator{list.length > 1 ? 's' : ''}
-          </button>
-        ) : (
-          <>
-        {list.map((name) => {
-          const isHidden = hidden.has(name)
-          return (
-            <div key={name}
-              className="group/ind inline-flex items-center gap-1 h-6 pl-2 pr-1 rounded-md bg-white/70 dark:bg-surface-dark/70 backdrop-blur-sm ring-1 ring-black/5 dark:ring-white/10 shadow-sm w-fit">
+      {subs.map((name) => {
+        const top = tops[name]
+        if (top == null) return null
+        const isHidden = hidden.has(name)
+        return (
+          <div key={name} style={{ top: top + 4 }} className="absolute left-1.5 z-10 pointer-events-auto">
+            <div className="group/ind inline-flex items-center gap-1 h-6 pl-2 pr-1 rounded-md bg-white/70 dark:bg-surface-dark/70 backdrop-blur-sm ring-1 ring-black/5 dark:ring-white/10 shadow-sm w-fit">
               <button onDoubleClick={() => setSettingsFor(name)} title="Double-click for settings"
                 className={clsx('text-[11px] font-semibold whitespace-nowrap truncate max-w-[220px]', isHidden ? 'text-slate-400 line-through decoration-slate-400/60' : 'text-slate-700 dark:text-slate-200')}>
                 {label(name)}
               </button>
-              {/* controls — visible on hover (eye always shown when hidden) */}
               <span className={clsx('flex items-center gap-0.5 transition-opacity', isHidden ? 'opacity-100' : 'opacity-0 group-hover/ind:opacity-100')}>
                 <button className={iconBtn} title={isHidden ? 'Show' : 'Hide'} onClick={() => toggleHide(name)}>
                   {isHidden
@@ -102,20 +105,12 @@ export function IndicatorLegend({ panelId, onHeight }: { panelId: string; onHeig
                 </button>
               </span>
             </div>
-          )
-        })}
-            {/* collapse handle — icon only (up = collapse) */}
-            <button onClick={toggleCollapsed} title="Collapse indicators"
-              className="self-start mt-0.5 grid place-items-center h-4 w-5 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-100 hover:bg-slate-200/60 dark:hover:bg-white/10 transition">
-              <Icon d={chevUp} className="h-3 w-3" />
-            </button>
-          </>
-        )}
-      </div>
-      {settingsFor === 'SMC' ? <SmcSettings onClose={() => setSettingsFor(null)} />
-        : settingsFor === 'RS' ? <RsSettings onClose={() => setSettingsFor(null)} />
-          : settingsFor === 'WT' ? <WtSettings onClose={() => setSettingsFor(null)} />
-            : settingsFor && <IndicatorSettings name={settingsFor} onClose={() => setSettingsFor(null)} />}
+          </div>
+        )
+      })}
+      {settingsFor === 'RS' ? <RsSettings onClose={() => setSettingsFor(null)} />
+        : settingsFor === 'WT' ? <WtSettings onClose={() => setSettingsFor(null)} />
+          : settingsFor && <IndicatorSettings name={settingsFor} onClose={() => setSettingsFor(null)} />}
     </>
   )
 }

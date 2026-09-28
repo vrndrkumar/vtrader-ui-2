@@ -1,7 +1,8 @@
 // ── Countdown to bar close ───────────────────────────────────────────────────
 // TradingView-style timer at the last price showing time until the current
-// candle closes. Aligned to the SAME epoch bucketing the forming candle uses, so
-// it matches the chart. Intraday only (D/W/M bar-close = session/calendar, n/a).
+// candle closes. Counts to the close on the SERVER's candle grid (last bar open +
+// bucket), NOT an epoch boundary — so a 60-min bar opened at 11:15 closes at 12:15,
+// not the epoch-aligned :30. Intraday only (D/W/M bar-close = session/calendar, n/a).
 
 import { useEffect, useRef } from 'react'
 import type { ChartEngine } from './ChartEngine'
@@ -30,7 +31,13 @@ export function BarCountdown({ engineRef, ltp, timeframe }: {
         else {
           el.style.opacity = '1'
           el.style.top = `${y + 13}px` // sit just BELOW the last-price label (no overlap)
-          const s = Math.max(0, Math.round((bucketMs - (Date.now() % bucketMs)) / 1000))
+          // Time to close on the session grid: (forming-bar open + bucket) − now.
+          // Fall back to epoch alignment only if the bar time isn't available yet.
+          const now = Date.now()
+          const openTs = eng.lastBarTime()
+          let rem = openTs != null ? (openTs + bucketMs - now) : (bucketMs - (now % bucketMs))
+          if (openTs != null) { while (rem <= 0) rem += bucketMs } // next boundary if a roll is pending
+          const s = Math.max(0, Math.round(rem / 1000))
           el.textContent = TF_MINUTES[timeframe] >= 60
             ? `${Math.floor(s / 3600)}:${p2(Math.floor((s % 3600) / 60))}:${p2(s % 60)}`
             : `${p2(Math.floor(s / 60))}:${p2(s % 60)}`
