@@ -20,8 +20,11 @@ const criState = () => ({ ...criCaptureState })
 import { ensureFundamentalsSchema, getFundamentals, fundamentalsHealth, prefetchFundamentals, prefetchState } from './fundamentals.js'
 import { ensurePaperSchema, capturePaperCohort, computeScorecard, getCohortHoldings, computeTransitionScorecard, computeTransitionOutcomes, transComputeState } from './paper.js'
 import { ensureSettingsSchema, getTimeframeMode, setTimeframeMode } from './settings.js'
-import { ensureOptionLabSchema, recordSignal, evaluateOpenOutcomes, getLiveSignals, getSignals, getMetrics, outcomeState, marketOpenNow } from './optionLab.js'
+import { ensureOptionLabSchema, recordSignal, evaluateOpenOutcomes, getLiveSignals, getSignals, getMetrics, outcomeState, marketOpenNow, wipeOptionLab } from './optionLab.js'
 import { runOptionSignals, runnerState } from './optionRunner.js'
+import { runAnalysis, getCurrentAnalysis, analysisState, INDICES as ANALYSIS_INDICES } from './optionAnalysisRunner.js'
+import { getSettings as getOptionSettings, saveSettings as saveOptionSettings, DEFAULT_SETTINGS as OPTION_DEFAULT_SETTINGS } from './optionSettings.js'
+import { ensureDryRunSchema, evaluateOpenDryRuns, getDryRuns, getDryRunMetrics, wipeDryRun, dryRunState } from './optionDryRun.js'
 import { srZones } from './structure.js'
 
 const app = express()
@@ -134,6 +137,46 @@ app.post('/option-lab/run', async (_req, res) => {
   try { res.json(await runOptionSignals()) } catch (e) { res.status(500).json({ error: e.message }) }
 })
 app.get('/option-lab/run/status', (_req, res) => res.json({ ...runnerState }))
+// Admin: wipe ALL Option Lab data (signals + outcomes). Used when switching to
+// the new Option Insight analysis engine so stale data doesn't linger.
+app.post('/option-lab/reset', async (_req, res) => {
+  try { const a = await wipeOptionLab(); const b = await wipeDryRun(); res.json({ ...a, dryRun: b }) } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+// ── Option Insight analysis (ported Option-Analysis BUYING engine) ────────────
+// Admin runs the analysis for all indices; the stored result is served to every
+// user. No Kite, no execution, no AI — quantitative, buying-only.
+app.post('/option-analysis/run', async (req, res) => {
+  try {
+    const indices = Array.isArray(req.body?.indices) && req.body.indices.length ? req.body.indices : ANALYSIS_INDICES
+    res.json(await runAnalysis(indices))
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+app.get('/option-analysis/current', async (_req, res) => {
+  try {
+    const cur = await getCurrentAnalysis()
+    res.json(cur ? { ...cur, analysisState } : { generatedAt: null, byIndex: {}, analysisState, note: 'No analysis run yet — admin must trigger POST /option-analysis/run.' })
+  } catch (e) { res.status(502).json({ error: e.message }) }
+})
+app.get('/option-analysis/run/status', (_req, res) => res.json({ ...analysisState }))
+// Admin settings (tunables) — GET returns current (+ defaults), POST persists a patch.
+app.get('/option-analysis/settings', async (_req, res) => {
+  try { res.json({ settings: await getOptionSettings(), defaults: OPTION_DEFAULT_SETTINGS }) } catch (e) { res.status(502).json({ error: e.message }) }
+})
+app.post('/option-analysis/settings', async (req, res) => {
+  try { res.json({ settings: await saveOptionSettings(req.body || {}) }) } catch (e) { res.status(500).json({ error: e.message }) }
+})
+// Dry-run paper-trade tracker (SL/target/time/force-exit, ported from Python).
+app.get('/option-analysis/dryrun', async (req, res) => {
+  try { res.json({ rows: await getDryRuns(req.query) }) } catch (e) { res.status(502).json({ error: e.message }) }
+})
+app.get('/option-analysis/dryrun/metrics', async (_req, res) => {
+  try { res.json(await getDryRunMetrics()) } catch (e) { res.status(502).json({ error: e.message }) }
+})
+app.post('/option-analysis/dryrun/evaluate', async (_req, res) => {
+  try { res.json(await evaluateOpenDryRuns()) } catch (e) { res.status(500).json({ error: e.message }) }
+})
+app.get('/option-analysis/dryrun/status', (_req, res) => res.json({ ...dryRunState }))
 
 app.get('/universe/facets', async (_req, res) => {
   try {
@@ -439,10 +482,15 @@ ensureSettingsSchema()
 ensureOptionLabSchema()
   .then(() => {
     console.log('option-lab schema ready')
-    // Generate fresh signals every 2 min during market hours (headless — no tab needed)
-    setInterval(() => {
-      if (marketOpenNow()) runOptionSignals().catch((e) => console.error('option-lab run:', e.message))
-    }, 2 * 60 * 1000)
+    // NOTE: the old client-engine headless generator (runOptionSignals) is now
+    // DISABLED — Option Insight uses the new server-side analysis engine
+    // (/option-analysis/run), and Option Lab is being repurposed as a dry-run
+    // tracker (Stage 4). Leaving auto-generation on would repopulate wiped data
+    // from the retired engine. The outcome evaluator stays on so any dry-run
+    // positions created later still get tracked/squared-off.
+    // setInterval(() => {
+    //   if (marketOpenNow()) runOptionSignals().catch((e) => console.error('option-lab run:', e.message))
+    // }, 2 * 60 * 1000)
     setInterval(() => {
       if (marketOpenNow()) evaluateOpenOutcomes().catch((e) => console.error('option-lab evaluate:', e.message))
     }, 3 * 60 * 1000)
@@ -454,6 +502,49 @@ ensureOptionLabSchema()
     }, 4 * 60 * 1000)
   })
   .catch((e) => console.error('⚠ option-lab schema init failed:', e.message))
+
+// Option Insight dry-run tracker: mark open paper positions to live premiums and
+// apply SL/target/time/force-exit rules every 2 min during market hours, plus a
+// force-exit sweep after 15:15 IST so nothing is left open past day-end.
+ensureDryRunSchema()
+  .then(() => {
+    console.log('option-dryrun schema ready')
+    setInterval(() => {
+      if (marketOpenNow()) evaluateOpenDryRuns().catch((e) => console.error('option-dryrun evaluate:', e.message))
+    }, 2 * 60 * 1000)
+    setInterval(() => { // 15:16–15:20 IST force-exit sweep
+      const ist = new Date(Date.now() + 5.5 * 3600e3)
+      if (ist.getUTCHours() === 15 && ist.getUTCMinutes() >= 16 && ist.getUTCMinutes() < 21) {
+        evaluateOpenDryRuns().catch((e) => console.error('option-dryrun force-exit sweep:', e.message))
+      }
+    }, 3 * 60 * 1000)
+  })
+  .catch((e) => console.error('⚠ option-dryrun schema init failed:', e.message))
+
+// Auto-run: once per trading day at start_time (IST), if enabled, run the
+// analysis (which also opens dry-run positions) — so no one has to click "Run
+// analysis" every morning. Skips weekends; waits for market open if start_time
+// is earlier. Manual runs still work anytime and don't disable this.
+let lastAutoRunDay = null
+setInterval(async () => {
+  try {
+    const s = await getOptionSettings()
+    if (!s.auto_run_enabled) return
+    const ist = new Date(Date.now() + 5.5 * 3600e3)
+    const dow = ist.getUTCDay() // 0=Sun … 6=Sat
+    if (dow === 0 || dow === 6) return
+    const day = ist.toISOString().slice(0, 10)
+    if (lastAutoRunDay === day) return
+    const mins = ist.getUTCHours() * 60 + ist.getUTCMinutes()
+    const [h, m] = String(s.start_time || '09:20').split(':').map(Number)
+    const startMins = (Number.isFinite(h) ? h : 9) * 60 + (Number.isFinite(m) ? m : 20)
+    if (mins < startMins || !marketOpenNow()) return
+    lastAutoRunDay = day
+    runAnalysis()
+      .then(() => console.log(`[auto-run] Option Insight analysis complete for ${day} at ${s.start_time}`))
+      .catch((e) => console.error('[auto-run] analysis failed:', e.message))
+  } catch (e) { console.error('[auto-run] tick error:', e.message) }
+}, 60 * 1000)
 
 // Strategy Lab: seed this week's cohort now (Wednesday start), then capture a
 // fresh cohort every Monday 09:30 IST when the market has settled.

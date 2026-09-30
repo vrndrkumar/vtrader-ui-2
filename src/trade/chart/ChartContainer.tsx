@@ -99,7 +99,13 @@ export function ChartContainer({ symbol, tradable, defaultTimeframe = '5' }: Pro
   const toggleIndicator = (name: string) => { engineRef.current?.toggleIndicator(name); setActiveInd(engineRef.current?.activeIndicators() ?? []) }
   const startDrawing = (name: string) => { engineRef.current?.startDrawing(name); setMenu(null) }
   const clearDrawings = () => engineRef.current?.clearDrawings()
-  const toggleFullscreen = () => { if (!document.fullscreenElement) wrapRef.current?.requestFullscreen?.(); else document.exitFullscreen?.() }
+  // Fullscreen the whole TRADE module (not just the chart, not the whole app) so
+  // the trade toolbar, positions panel and order popups stay visible while the
+  // global app nav stays hidden.
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) { document.exitFullscreen?.(); return }
+    ;(document.getElementById('trade-module-root') ?? document.documentElement).requestFullscreen?.()
+  }
   const trade = (side: 'BUY' | 'SELL') => placeOrder({
     symbolName: symbol.candleSymbol,
     indexName: symbol.key.split('_')[0],

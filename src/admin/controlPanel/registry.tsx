@@ -21,6 +21,8 @@ export const MASTER_MODULES: MasterModule[] = [
     icon: ic(<><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></>) },
   { id: 'strategies', label: 'Strategies', description: 'Algo strategy definitions & config', path: 'strategies', ready: true,
     icon: ic(<><polyline points="22 12 18 12 15 21 9 3 6 12 2 12" /></>) },
+  { id: 'indicators', label: 'Indicators', description: 'SMC & Liquidity Sweep config', path: 'indicators', ready: true,
+    icon: ic(<><path d="M3 3v18h18" /><path d="M7 14l3-4 3 3 4-6" /><circle cx="7" cy="14" r="1.2" /><circle cx="17" cy="7" r="1.2" /></>) },
   { id: 'brokers', label: 'Brokers', description: 'User broker approvals & config', path: 'brokers', ready: true,
     icon: ic(<><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z" /><polyline points="3.27 6.96 12 12.01 20.73 6.96" /><line x1="12" y1="22.08" x2="12" y2="12" /></>) },
   { id: 'users', label: 'Users', description: 'Accounts, roles & access', path: 'users', ready: false,

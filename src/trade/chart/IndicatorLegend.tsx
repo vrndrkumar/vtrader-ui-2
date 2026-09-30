@@ -13,6 +13,7 @@ import { IndicatorSettings } from './IndicatorSettings'
 import { SmcSettings } from './smc/SmcSettings'
 import { RsSettings } from './rs/RsSettings'
 import { WtSettings } from './wt/WtSettings'
+import { BslSettings } from './bsl/BslSettings'
 
 const iconBtn = 'h-5 w-5 grid place-items-center rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-100 hover:bg-slate-200/70 dark:hover:bg-white/10 transition'
 
@@ -113,9 +114,10 @@ export function IndicatorLegend({ panelId, onHeight }: { panelId: string; onHeig
         )}
       </div>
       {settingsFor === 'SMC' ? <SmcSettings onClose={() => setSettingsFor(null)} />
-        : settingsFor === 'RS' ? <RsSettings onClose={() => setSettingsFor(null)} />
-          : settingsFor === 'WT' ? <WtSettings onClose={() => setSettingsFor(null)} />
-            : settingsFor && <IndicatorSettings name={settingsFor} onClose={() => setSettingsFor(null)} />}
+        : settingsFor === 'BSL' ? <BslSettings onClose={() => setSettingsFor(null)} />
+          : settingsFor === 'RS' ? <RsSettings onClose={() => setSettingsFor(null)} />
+            : settingsFor === 'WT' ? <WtSettings onClose={() => setSettingsFor(null)} />
+              : settingsFor && <IndicatorSettings name={settingsFor} onClose={() => setSettingsFor(null)} />}
     </>
   )
 }

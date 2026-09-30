@@ -100,6 +100,20 @@ export async function ensureOptionLabSchema() {
   } catch { /* non-fatal */ }
 }
 
+// ── wipe (admin reset) ────────────────────────────────────────────────────────
+// Removes ALL Option Lab data. Used when switching to the new dry-run analysis
+// engine so stale signals from the old client engine don't pollute the tracker.
+export async function wipeOptionLab() {
+  const pool = getPool()
+  await ensureOptionLabSchema()
+  // child table first (FK-free here, but keep the natural order), then parent
+  await pool.query('DELETE FROM option_signal_outcome')
+  await pool.query('DELETE FROM option_signal')
+  // reset AUTO_INCREMENT so ids start clean again
+  try { await pool.query('ALTER TABLE option_signal AUTO_INCREMENT = 1') } catch { /* non-fatal */ }
+  return { wiped: true, at: new Date().toISOString() }
+}
+
 // ── option-chain fetch (Greeks API) ──────────────────────────────────────────
 export async function fetchOptionChain(symbol, expiry, dateStr, timeStr) {
   const url = `${config.candleBaseUrl}/data/option-chain?symbol=${encodeURIComponent(symbol)}&expiry=${encodeURIComponent(expiry)}&date=${encodeURIComponent(dateStr)}&time=${encodeURIComponent(timeStr)}`

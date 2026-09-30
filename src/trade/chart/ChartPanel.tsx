@@ -6,6 +6,7 @@ import { ChartOrderLayer } from './ChartOrderLayer'
 import { DrawingEditToolbar } from './DrawingEditToolbar'
 import { IndicatorLegend } from './IndicatorLegend'
 import { SubPaneLegend } from './SubPaneLegend'
+import { ChartNavBar } from './ChartNavBar'
 import { INDICATORS } from './indicatorMeta'
 import { engineRegistry } from './engineRegistry'
 import { dataSource } from '../data/dataSource'
@@ -25,7 +26,10 @@ import { useIndicatorParams } from '../store/indicatorParamsStore'
 import { useSmcStore } from '../store/smcStore'
 import { useRsStore } from '../store/rsStore'
 import { useWtStore } from '../store/wtStore'
-import { getCandlesBySymbol } from '../data/candleApi'
+import { useBslStore } from '../store/bslStore'
+import { useIndicatorStyle } from '../store/indicatorStyleStore'
+import { hasStylePlots, buildIndicatorStyles } from './indicatorPlots'
+import { getCandlesBySymbol, getOlderCandles } from '../data/candleApi'
 import { useDrawingStore } from '../store/drawingStore'
 import { TF_MINUTES, type Candle, type ChartSymbol } from '../types/market'
 
@@ -169,6 +173,11 @@ export function ChartPanel({ panelId }: { panelId: string }) {
       setLoading(false)
       if (!candles.length) { setEmpty(true); return }
       engine.setData(candles)
+      // Infinite backward scroll: when the viewport reaches the oldest bar, fetch
+      // an older page for THIS symbol/timeframe and prepend it. Options only have
+      // ~2 months of history, so it naturally stops when the feed returns nothing.
+      engine.setLoadMoreHandler((oldestTs) =>
+        getOlderCandles(symbol.candleSymbol, config.timeframe, oldestTs, symbol.kind === 'OPTION' ? 'OPTION' : 'INDEX'))
       // Persist + re-anchor drawings. Save on any user change (debounced,
       // per-drawing) via the store. Re-anchor from whatever the store currently
       // holds — its points carry timestamps, so klinecharts re-maps them to the
@@ -224,7 +233,7 @@ export function ChartPanel({ panelId }: { panelId: string }) {
   }, [config?.symbol?.key])
 
   // Keep engine indicators in sync with persisted config (toolbar acts on active).
-  // SMC is a custom overlay driven by its own inputs, so it's handled separately.
+  // SMC / BSL are custom overlays; RS / WT are sub-pane.
   useEffect(() => {
     const engine = engineRef.current
     if (!engine || !config) return
@@ -233,8 +242,6 @@ export function ChartPanel({ panelId }: { panelId: string }) {
     const isSub = (n: string) => INDICATORS[n]?.pane === 'sub'
     const have = new Set(engine.activeIndicators())
     const gp = useIndicatorParams.getState().get
-    // Add missing indicators; keep sub-pane ones on the chart and gate them with
-    // visibility (hide keeps the pane + its legend). Main-pane hide still removes.
     applied.forEach((n) => {
       if (isSub(n)) {
         if (n === 'RS') { if (!engine.hasRs()) engine.enableRs(useRsStore.getState().inputs) }
@@ -243,6 +250,7 @@ export function ChartPanel({ panelId }: { panelId: string }) {
         engine.setIndicatorVisible(n, !hidden.has(n))
       } else if (!hidden.has(n)) {
         if (n === 'SMC') { if (!engine.hasSmc()) engine.enableSmc(useSmcStore.getState().inputs) }
+        else if (n === 'BSL') { if (!engine.hasBsl()) engine.enableBsl(useBslStore.getState().inputs) }
         else if (!have.has(n)) engine.toggleIndicator(n, gp(n))
       }
     })
@@ -256,8 +264,15 @@ export function ChartPanel({ panelId }: { panelId: string }) {
       } else {
         const wantMain = applied.includes(n) && !hidden.has(n)
         if (n === 'SMC') { if (!wantMain) engine.disableSmc() }
+        else if (n === 'BSL') { if (!wantMain) engine.disableBsl() }
         else if (!wantMain) engine.toggleIndicator(n)
       }
+    })
+    // Apply each built-in indicator's saved per-plot styles (color/width/line-style
+    // /visibility) once it's on the chart — TradingView-style.
+    const styleMap = useIndicatorStyle.getState()
+    applied.forEach((n) => {
+      if (hasStylePlots(n) && engine.hasIndicator(n)) engine.styleIndicator(n, buildIndicatorStyles(n, gp(n), styleMap.get(n)))
     })
   }, [config?.indicators, config?.hiddenIndicators])
 
@@ -274,6 +289,13 @@ export function ChartPanel({ panelId }: { panelId: string }) {
     const engine = engineRef.current
     if (engine?.hasSmc()) engine.updateSmc(smcInputs)
   }, [smcInputs])
+
+  // Push Buyside & Sellside Liquidity input edits live.
+  const bslInputs = useBslStore((s) => s.inputs)
+  useEffect(() => {
+    const engine = engineRef.current
+    if (engine?.hasBsl()) engine.updateBsl(bslInputs)
+  }, [bslInputs])
 
   // RS: push input edits live + fetch the comparative symbol's candles (aligned by
   // timestamp) whenever the comparative symbol / timeframe / applied-state changes.
@@ -391,6 +413,7 @@ export function ChartPanel({ panelId }: { panelId: string }) {
       })()}
       {config?.symbol && <IndicatorLegend panelId={panelId} onHeight={setLegendH} />}
       {config?.symbol && <SubPaneLegend panelId={panelId} engineRef={engineRef} />}
+      {config?.symbol && <ChartNavBar engineRef={engineRef} containerRef={rootRef} />}
       <div ref={elRef} className="h-full w-full" />
       {config?.symbol && <ChartXAxis engineRef={engineRef} />}
       {selDrawing && <DrawingEditToolbar engineRef={engineRef} containerRef={rootRef} selection={selDrawing} />}

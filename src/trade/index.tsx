@@ -64,7 +64,7 @@ export default function TradePage() {
   const openStrikeChart = (cs: ChartSymbol) => { applySymbol(cs); setView('chart') }
 
   return (
-    <div className="h-full flex flex-col overflow-hidden bg-slate-50 dark:bg-surface-dark">
+    <div id="trade-module-root" className="h-full flex flex-col overflow-hidden bg-slate-50 dark:bg-surface-dark">
       <TopBar />
       <div className="flex-1 flex min-h-0">
         <LeftRail view={view} panel={panel} onPanel={onPanel} onStrategy={onStrategy} onToggleCollapse={toggleCollapse} />

@@ -6,6 +6,7 @@
 import { useState } from 'react'
 import { clsx } from 'clsx'
 import { useSmcStore } from '@/trade/store/smcStore'
+import { useDragPanel } from '../useDragPanel'
 import type { SmcInputs, LabelSize, StructMode, LineStyle } from './types'
 
 // rgba/hex helpers so OB/FVG colors keep their transparency when the hue changes.
@@ -28,13 +29,13 @@ export function SmcSettings({ onClose }: { onClose: () => void }) {
   const setP = useSmcStore((s) => s.set)
   const reset = useSmcStore((s) => s.reset)
   const set = <K extends keyof SmcInputs>(k: K, v: SmcInputs[K]) => setP({ [k]: v } as Partial<SmcInputs>)
+  const { onDragStart, dragStyle } = useDragPanel(onClose)
 
   return (
-    <div className="fixed inset-0 z-[80] grid place-items-center p-4" role="dialog" aria-modal="true">
-      <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm animate-fade-in" onClick={onClose} />
-      <div className="relative w-full max-w-lg rounded-3xl bg-white dark:bg-card-dark shadow-2xl ring-1 ring-black/5 dark:ring-white/10 animate-slide-up overflow-hidden flex flex-col max-h-[86vh]">
-        {/* Header */}
-        <div className="px-5 py-3.5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between shrink-0">
+    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 pointer-events-none" role="dialog" aria-modal="true">
+      <div style={dragStyle} className="pointer-events-auto relative w-full max-w-lg rounded-3xl bg-white dark:bg-card-dark shadow-2xl ring-1 ring-black/5 dark:ring-white/10 animate-slide-up overflow-hidden flex flex-col max-h-[86vh]">
+        {/* Header (drag handle) */}
+        <div onMouseDown={onDragStart} className="px-5 py-3.5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between shrink-0 cursor-move select-none">
           <div className="flex items-center gap-2">
             <span className="h-7 w-7 grid place-items-center rounded-lg bg-indigo-100 text-indigo-600 dark:bg-indigo-500/15 dark:text-indigo-300">
               <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 17l5-5 4 3 8-9" /></svg>

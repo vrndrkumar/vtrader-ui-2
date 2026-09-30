@@ -13,11 +13,15 @@
  */
 
 import { useEffect, useMemo, useState } from 'react'
-import { useOptionInsights } from '@/insight/options/useOptionInsights'
-import type { OptIndex } from '@/insight/options/useOptionInsights'
+import axios from 'axios'
 import { useNavigate } from 'react-router-dom'
 import { clsx } from 'clsx'
 import { useAuth } from '@/hooks/useAuth'
+
+type OptIndex = 'NIFTY' | 'BANKNIFTY' | 'SENSEX'
+const INSIGHT_BASE = (import.meta.env.VITE_INSIGHT_API as string | undefined) ??
+  (import.meta.env.DEV ? 'http://localhost:3600' : 'https://insights.vtrader.in')
+const insightClient = axios.create({ baseURL: INSIGHT_BASE })
 import { useBrokerStore } from '@/store/brokerStore'
 import { getTrades } from '@/api/reports'
 import { getUserStrategies } from '@/api/strategy'
@@ -137,6 +141,7 @@ function useMarket() {
 
 interface DashData {
   loading: boolean
+  stratLoading: boolean
   live: Trade[]
   todayTrades: Trade[]
   todayPnl: number
@@ -162,7 +167,8 @@ function useDash(): DashData {
   const [trades, setTrades]           = useState<Trade[]>([])  // 30-day → chart + MTD PnL
   const [strategies, setStrats]       = useState<UserStrategy[]>([])
   const [insight, setInsight]         = useState<DashboardData | null>(null)
-  const [loading, setLoading]         = useState(true)
+  const [loading, setLoading]         = useState(true)   // overall (KPIs + chart)
+  const [stratLoading, setStratLoading] = useState(true) // Today's Trading Activity panel
 
   // Broker positions: used as LTP fallback before first tick arrives
   const accounts    = useBrokerStore(s => s.accounts)
@@ -180,18 +186,24 @@ function useDash(): DashData {
   useEffect(() => {
     const todayStr = todayIST()
     const from30   = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10)
-    void Promise.allSettled([
-      getTrades({ fromDate: todayStr, toDate: todayStr }),  // today only: for strategy boxes
-      getTrades({ fromDate: from30 }),                      // 30-day: for chart + MTD
-      getUserStrategies(),
-      fetchDashboard(),
-    ]).then(([tTodayR, t30R, sR, dR]) => {
-      if (tTodayR.status === 'fulfilled') setTodayTrades(tTodayR.value)
-      if (t30R.status   === 'fulfilled') setTrades(t30R.value)
-      if (sR.status     === 'fulfilled') setStrats(sR.value.filter(isUserStrategyDeployed))
-      if (dR.status     === 'fulfilled') setInsight(dR.value as DashboardData)
-      setLoading(false)
-    })
+    // Fire the four independently so each panel reveals as soon as ITS data is
+    // ready — the Today's Trading Activity panel no longer waits on the slow
+    // 30-day history or the dashboard summary.
+    const pToday = getTrades({ fromDate: todayStr, toDate: todayStr })  // today only: strategy boxes
+    const p30    = getTrades({ fromDate: from30 })                      // 30-day: chart + MTD
+    const pStrat = getUserStrategies()
+    const pDash  = fetchDashboard()
+
+    // Strategy panel needs only today's trades + strategies → reveal early.
+    let todayDone = false, stratsDone = false
+    const maybeRevealStrat = () => { if (todayDone && stratsDone) setStratLoading(false) }
+    pToday.then(setTodayTrades).catch(() => {}).finally(() => { todayDone = true; maybeRevealStrat() })
+    pStrat.then((s) => setStrats(s.filter(isUserStrategyDeployed))).catch(() => {}).finally(() => { stratsDone = true; maybeRevealStrat() })
+    p30.then(setTrades).catch(() => {})
+    pDash.then((d) => setInsight(d as DashboardData)).catch(() => {})
+
+    // Overall flag (KPIs + P&L chart) clears once everything has settled.
+    void Promise.allSettled([pToday, p30, pStrat, pDash]).then(() => setLoading(false))
   }, [])
 
   const live   = useMemo(() => todayTrades.filter(isOpenTrade), [todayTrades])
@@ -239,7 +251,7 @@ function useDash(): DashData {
   }, [closed])
 
   return {
-    loading, live, todayTrades,
+    loading, stratLoading, live, todayTrades,
     todayPnl, mtdPnl, winRate, closedCount: closed.length,
     daily, strategies,
     picks:             insight?.topPicks?.slice(0, 6)        ?? [],
@@ -883,17 +895,21 @@ const IDX_LABEL: Record<OptIndex, string> = {
   SENSEX:    'SENSEX',
 }
 
-function MiniOptionCard({ index }: { index: OptIndex }) {
-  const navigate = useNavigate()
-  const { report, loading } = useOptionInsights(index)
-  const r = report
+const DEC_THEME: Record<string, { label: string; color: string; arc: string }> = {
+  CALL:     { label: 'CALL',     color: 'text-emerald-600 dark:text-emerald-400', arc: '#34d399' },
+  PUT:      { label: 'PUT',      color: 'text-rose-600 dark:text-rose-400',       arc: '#fb7185' },
+  BOTH:     { label: 'STRADDLE', color: 'text-amber-600 dark:text-amber-400',     arc: '#fbbf24' },
+  NO_TRADE: { label: 'NO TRADE', color: 'text-slate-900 dark:text-white/80',      arc: '#94a3b8' },
+}
+const intIN = (v: unknown) => (v == null || Number.isNaN(Number(v)) ? '—' : Math.round(Number(v)).toLocaleString('en-IN'))
 
-  const isActive  = r ? r.trader.decision !== 'NO TRADE' : false
-  const gatesPassed = r ? r.strategy.gates.filter(g => g.pass === true).length : 0
-  const gatesTotal  = r ? r.strategy.gates.length : 0
-  const pct = gatesTotal ? gatesPassed / gatesTotal : 0
+function MiniOptionCard({ index, r, loading }: { index: OptIndex; r: any; loading: boolean }) {
+  const navigate = useNavigate()
+  const ok = r && r.ok
+  const dec = DEC_THEME[ok ? r.decision : 'NO_TRADE'] ?? DEC_THEME.NO_TRADE
+  const upside = ok && r.probability?.upside != null ? Number(r.probability.upside) : null
   const R = 30, C = 2 * Math.PI * R
-  const arcColor = isActive ? '#34d399' : pct >= 0.75 ? '#fbbf24' : pct >= 0.5 ? '#818cf8' : '#94a3b8'
+  const pct = upside ?? 0
 
   return (
     <div className="flex-1 min-w-[260px] max-w-[380px] flex flex-col bg-white dark:bg-white/[0.03] rounded-2xl border border-slate-200/70 dark:border-white/[0.07] shadow-[0_2px_12px_rgba(0,0,0,0.06)] dark:shadow-none overflow-hidden">
@@ -905,10 +921,10 @@ function MiniOptionCard({ index }: { index: OptIndex }) {
             <p className="text-[9px] font-black uppercase tracking-[0.2em] text-white/55 mb-1">Option Insight</p>
             <p className="text-[18px] font-black text-white leading-tight">{IDX_LABEL[index]}</p>
           </div>
-          {r && (
+          {ok && (
             <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[9px] font-black bg-white/15 text-white">
-              <span className={clsx('h-1.5 w-1.5 rounded-full', r.session.marketOpen ? 'bg-emerald-400 animate-pulse' : 'bg-white/50')} />
-              {r.session.marketOpen ? 'LIVE' : 'CLOSED'}
+              <span className={clsx('h-1.5 w-1.5 rounded-full', r.marketOpen ? 'bg-emerald-400 animate-pulse' : 'bg-white/50')} />
+              {r.marketOpen ? 'LIVE' : 'CLOSED'}
             </span>
           )}
         </div>
@@ -922,74 +938,59 @@ function MiniOptionCard({ index }: { index: OptIndex }) {
             <div className="h-4 w-full rounded-lg bg-slate-100 dark:bg-white/[0.04]" />
             <div className="h-4 w-2/3 rounded-lg bg-slate-100 dark:bg-white/[0.03]" />
           </div>
-        ) : r ? (
+        ) : ok ? (
           <>
             {/* Decision */}
             <div>
-              <p className={clsx('text-[18px] font-black leading-tight tracking-tight',
-                isActive ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-900 dark:text-white/80')}>
-                {r.trader.decision}
-              </p>
-              <p className="text-[11px] text-slate-500 dark:text-white/35 mt-1 line-clamp-2 leading-relaxed">
-                {r.trader.reason}
-              </p>
+              <p className={clsx('text-[18px] font-black leading-tight tracking-tight', dec.color)}>{dec.label}</p>
+              <p className="text-[11px] text-slate-500 dark:text-white/35 mt-1 line-clamp-2 leading-relaxed">{r.reason}</p>
             </div>
 
-            {/* Setup pill (when active) */}
-            {r.trader.setup && (
-              <div className="flex flex-wrap items-center gap-2">
-                <span className={clsx(
-                  'text-[11px] font-black px-2.5 py-1 rounded-full',
-                  r.trader.setup.action === 'BUY'
-                    ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
-                    : 'bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-400',
-                )}>
-                  {r.trader.setup.action} {r.trader.setup.strike.toLocaleString('en-IN')} {r.trader.setup.side}
-                </span>
-                <span className="text-amber-400 text-[11px]">
-                  {'★'.repeat(r.trader.setup.stars)}<span className="text-slate-200 dark:text-white/10">{'★'.repeat(5 - r.trader.setup.stars)}</span>
-                </span>
+            {/* Suggested legs (buying-only) */}
+            {r.recommendation?.legs?.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                {r.recommendation.legs.map((l: any, i: number) => (
+                  <span key={i} className="text-[11px] font-black px-2.5 py-1 rounded-full bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400">
+                    BUY {intIN(l.strike)} {l.side}{l.entryPremium != null ? ` @ ₹${Number(l.entryPremium).toFixed(1)}` : ''}
+                  </span>
+                ))}
               </div>
             )}
 
             {/* Stats row */}
             <div className="flex items-center gap-4 pt-1 border-t border-slate-100 dark:border-white/[0.05]">
-              {/* Readiness mini-arc */}
+              {/* Upside-probability arc */}
               <div className="relative h-16 w-16 shrink-0">
                 <svg viewBox="0 0 72 72" className="h-16 w-16 -rotate-90">
                   <circle cx="36" cy="36" r={R} fill="none" strokeWidth="6" stroke="rgba(148,163,184,0.15)" />
                   <circle cx="36" cy="36" r={R} fill="none" strokeWidth="6" strokeLinecap="round"
-                    stroke={arcColor} strokeDasharray={C} strokeDashoffset={C * (1 - pct)}
+                    stroke={dec.arc} strokeDasharray={C} strokeDashoffset={C * (1 - pct)}
                     style={{ transition: 'stroke-dashoffset 0.8s ease' }} />
                 </svg>
                 <div className="absolute inset-0 flex flex-col items-center justify-center">
-                  <span className="text-[14px] font-black text-slate-900 dark:text-white tabular-nums">{gatesPassed}<span className="text-[10px] text-slate-400">/{gatesTotal}</span></span>
+                  <span className="text-[13px] font-black text-slate-900 dark:text-white tabular-nums">{upside == null ? '—' : `${Math.round(upside * 100)}%`}</span>
+                  <span className="text-[7px] font-bold uppercase tracking-wide text-slate-400">upside</span>
                 </div>
               </div>
-              {/* Quality + probabilities */}
+              {/* Expected move + spot */}
               <div className="flex-1 min-w-0 space-y-1.5">
                 <div className="flex items-center justify-between text-[10px]">
-                  <span className="text-slate-400 dark:text-white/30">Market quality</span>
-                  <span className={clsx('font-black', (r.quality.score ?? 0) >= 70 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-500')}>
-                    {r.quality.score ?? '—'}/100
-                  </span>
+                  <span className="text-slate-400 dark:text-white/30">Spot</span>
+                  <span className="font-black text-slate-700 dark:text-white/70 tabular-nums">{intIN(r.spot)}</span>
                 </div>
-                <div className="flex h-1.5 rounded-full overflow-hidden gap-px">
-                  {[
-                    { v: r.probabilities.bullish,    c: 'bg-emerald-500' },
-                    { v: r.probabilities.rangebound, c: 'bg-slate-400' },
-                    { v: r.probabilities.highVol,    c: 'bg-amber-500' },
-                    { v: r.probabilities.bearish,    c: 'bg-rose-500' },
-                  ].filter(x => x.v > 0).map((x, i) => (
-                    <div key={i} className={clsx('h-full transition-all duration-700 rounded-sm', x.c)} style={{ width: `${x.v}%` }} />
-                  ))}
+                <div className="flex h-1.5 rounded-full overflow-hidden">
+                  <div className="h-full bg-rose-500 transition-all duration-700" style={{ width: `${(1 - pct) * 100}%` }} />
+                  <div className="h-full bg-emerald-500 transition-all duration-700" style={{ width: `${pct * 100}%` }} />
                 </div>
-                <p className="text-[9px] text-slate-400 dark:text-white/20 truncate">{r.quality.interpretation}</p>
+                <div className="flex items-center justify-between text-[9px] text-slate-400 dark:text-white/25">
+                  <span>Exp. move ±{intIN(r.expectedMove)}p</span>
+                  <span>VIX {r.indiaVix == null ? '—' : Number(r.indiaVix).toFixed(1)}</span>
+                </div>
               </div>
             </div>
           </>
         ) : (
-          <p className="text-[12px] text-slate-300 dark:text-white/20 py-4 text-center">No data yet</p>
+          <p className="text-[12px] text-slate-300 dark:text-white/20 py-8 text-center">{r?.skip || r?.error || 'No analysis yet'}</p>
         )}
 
         <button
@@ -1005,6 +1006,20 @@ function MiniOptionCard({ index }: { index: OptIndex }) {
 
 function OptionInsightSection() {
   const navigate = useNavigate()
+  const [byIndex, setByIndex] = useState<Record<string, any>>({})
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let alive = true
+    const load = async () => {
+      try { const { data } = await insightClient.get('/option-analysis/current'); if (alive) setByIndex(data?.byIndex ?? {}) }
+      catch { /* leave empty */ }
+      finally { if (alive) setLoading(false) }
+    }
+    void load()
+    const t = window.setInterval(load, 60_000)
+    return () => { alive = false; window.clearInterval(t) }
+  }, [])
 
   return (
     <div>
@@ -1023,9 +1038,9 @@ function OptionInsightSection() {
       </div>
 
       <div className="flex gap-5 overflow-x-auto pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        <MiniOptionCard index="NIFTY" />
-        <MiniOptionCard index="BANKNIFTY" />
-        <MiniOptionCard index="SENSEX" />
+        <MiniOptionCard index="NIFTY" r={byIndex.NIFTY} loading={loading} />
+        <MiniOptionCard index="BANKNIFTY" r={byIndex.BANKNIFTY} loading={loading} />
+        <MiniOptionCard index="SENSEX" r={byIndex.SENSEX} loading={loading} />
       </div>
     </div>
   )
@@ -1345,7 +1360,7 @@ export default function DashboardPage() {
         </div>
 
         {/* ③ Today's Activity — Manual + Algo boxes */}
-        <AlgoStrategyBoxes strategies={d.strategies} trades={d.todayTrades} loading={d.loading} />
+        <AlgoStrategyBoxes strategies={d.strategies} trades={d.todayTrades} loading={d.stratLoading} />
 
         {/* Option Insight */}
         <OptionInsightSection />

@@ -6,6 +6,7 @@
 import { useState } from 'react'
 import { clsx } from 'clsx'
 import { useWtStore } from '@/trade/store/wtStore'
+import { useDragPanel } from '../useDragPanel'
 import type { WtInputs } from './types'
 
 function toHex(c: string): string {
@@ -31,12 +32,12 @@ export function WtSettings({ onClose }: { onClose: () => void }) {
   const reset = useWtStore((s) => s.reset)
   const set = <K extends keyof WtInputs>(k: K, v: WtInputs[K]) => setP({ [k]: v } as Partial<WtInputs>)
   const [tab, setTab] = useState<Tab>('inputs')
+  const { onDragStart, dragStyle } = useDragPanel(onClose)
 
   return (
-    <div className="fixed inset-0 z-[80] grid place-items-center p-4" role="dialog" aria-modal="true">
-      <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm animate-fade-in" onClick={onClose} />
-      <div className="relative w-full max-w-md rounded-3xl bg-white dark:bg-card-dark shadow-2xl ring-1 ring-black/5 dark:ring-white/10 animate-slide-up overflow-hidden flex flex-col max-h-[86vh]">
-        <div className="px-5 pt-3.5 border-b border-slate-200 dark:border-slate-800 shrink-0">
+    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 pointer-events-none" role="dialog" aria-modal="true">
+      <div style={dragStyle} className="pointer-events-auto relative w-full max-w-md rounded-3xl bg-white dark:bg-card-dark shadow-2xl ring-1 ring-black/5 dark:ring-white/10 animate-slide-up overflow-hidden flex flex-col max-h-[86vh]">
+        <div onMouseDown={onDragStart} className="px-5 pt-3.5 border-b border-slate-200 dark:border-slate-800 shrink-0 cursor-move select-none">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <span className="h-7 w-7 grid place-items-center rounded-lg bg-indigo-100 text-indigo-600 dark:bg-indigo-500/15 dark:text-indigo-300">

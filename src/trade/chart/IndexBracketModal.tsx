@@ -13,6 +13,7 @@ import { getStrikeRow } from '../data/realtime/optionChainCache'
 import { useBrokerStore } from '@/store/brokerStore'
 import { lotSizeFor } from '@/services/orders/lotSize'
 import { saveIndexBracket } from '@/api/trade'
+import { useDragPanel } from './useDragPanel'
 
 type OptType = 'CE' | 'PE'
 type Side = 'BUY' | 'SELL'
@@ -36,6 +37,7 @@ export function IndexBracketModal({ index, entryLevel, onPlaced, onClose }: {
     return sel.length ? sel : accounts.slice(0, 1)
   }, [accounts, selectedIds])
 
+  const { onDragStart, dragStyle } = useDragPanel(onClose)
   const [expiry, setExpiry] = useState('')
   const { chain, expiries } = useLiveOptionChain(index, expiry)
   useEffect(() => { if (!expiry && expiries.length) setExpiry(expiries[0]) }, [expiry, expiries])
@@ -98,11 +100,10 @@ export function IndexBracketModal({ index, entryLevel, onPlaced, onClose }: {
   const field = 'h-9 px-2.5 rounded-lg bg-slate-100 dark:bg-white/5 text-sm outline-none border border-transparent focus:border-brand-400'
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" role="dialog" aria-modal>
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-card-dark shadow-2xl animate-fade-in">
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 dark:border-slate-800">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 pointer-events-none" role="dialog" aria-modal>
+      <div style={dragStyle} className="pointer-events-auto relative w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-card-dark shadow-2xl animate-fade-in">
+        {/* Header (drag handle) */}
+        <div onMouseDown={onDragStart} className="flex items-center justify-between px-4 py-3 border-b border-slate-100 dark:border-slate-800 cursor-move select-none">
           <div>
             <p className="text-[11px] uppercase tracking-wide text-slate-400">Index trade</p>
             <p className="text-sm font-bold text-slate-800 dark:text-slate-100">{index} <span className="text-slate-400 font-normal">when index</span> {entryNum > 0 ? entryNum.toFixed(2) : '—'}</p>

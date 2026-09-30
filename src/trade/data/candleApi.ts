@@ -167,6 +167,25 @@ export async function getCandles(symbol: TradeSymbol, tf: Timeframe, opts?: { fr
   return getCandlesBySymbol(symbol.candleSymbol, tf, 'INDEX', opts)
 }
 
+// How far back (days) each lazy backward page reaches. Sized so one page is a
+// meaningful chunk of bars for the timeframe without over-fetching.
+const PAGE_DAYS: Record<Timeframe, number> = {
+  '1': 5, '3': 12, '5': 20, '15': 45, '30': 90, '60': 150, D: 1825, W: 3650, M: 7300,
+}
+
+/** Older candles STRICTLY before `beforeMs`, for lazy backward loading as the user
+ *  scrolls left (TradingView-style). Returns [] when there's no more history — the
+ *  chart then stops asking. Not cached: each page is a distinct historical window. */
+export async function getOlderCandles(candleSymbol: string, tf: Timeframe, beforeMs: number, kind: CandleKind = 'INDEX'): Promise<Candle[]> {
+  if (!Number.isFinite(beforeMs) || beforeMs <= 0) return []
+  const days = kind === 'OPTION' ? Math.min(60, PAGE_DAYS[tf]) : PAGE_DAYS[tf]
+  const to = fmt(new Date(beforeMs))
+  const from = fmt(new Date(beforeMs - days * 864e5))
+  const rows = await fetchRange(candleSymbol, tf, from, to).catch(() => [] as Candle[])
+  // Drop the boundary bar and anything the day-granular range returned at/after it.
+  return rows.filter((c) => c.timestamp < beforeMs)
+}
+
 export function clearCandleCache() {
   cache.clear()
   inFlight.clear()

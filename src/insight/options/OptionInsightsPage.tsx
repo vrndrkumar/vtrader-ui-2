@@ -1,473 +1,448 @@
-import { useState } from 'react'
-import { clsx } from 'clsx'
-import { useOptionInsights, type OptIndex } from './useOptionInsights'
-import { SectionCard } from '../components/ReportWidgets'
-import type { TfStructure } from './engine'
+// ── Option Insight ───────────────────────────────────────────────────────────
+// Server-side quantitative option-BUYING analysis (ported from the Option-
+// Analysis engine). Admin runs the analysis for NIFTY / BANKNIFTY / SENSEX; the
+// stored result is served to every user here. No Kite, no execution, no AI —
+// pure quantitative signals. Research only, not investment advice.
+import { useCallback, useEffect, useRef, useState } from 'react'
+import axios from 'axios'
+import clsx from 'clsx'
+import { Link } from 'react-router-dom'
+import { useAuth } from '@/hooks/useAuth'
 
-const INDICES: OptIndex[] = ['NIFTY', 'BANKNIFTY', 'SENSEX']
+const BASE = (import.meta.env.VITE_INSIGHT_API as string | undefined) ??
+  (import.meta.env.DEV ? 'http://localhost:3600' : 'https://insights.vtrader.in')
+const client = axios.create({ baseURL: BASE })
 
-const fmtN = (v: number | null | undefined, d = 2) =>
-  v == null ? '—' : v.toLocaleString('en-IN', { maximumFractionDigits: d })
+// ── helpers ──────────────────────────────────────────────────────────────────
+const nf = (v: unknown, d = 2) => (v == null || Number.isNaN(Number(v)) ? '—' : Number(v).toLocaleString('en-IN', { minimumFractionDigits: d, maximumFractionDigits: d }))
+const int = (v: unknown) => (v == null || Number.isNaN(Number(v)) ? '—' : Math.round(Number(v)).toLocaleString('en-IN'))
+const pctOf = (v: unknown) => (v == null || Number.isNaN(Number(v)) ? '—' : `${Math.round(Number(v) * 100)}%`)
+const signed = (v: unknown, d = 1) => (v == null || Number.isNaN(Number(v)) ? '—' : `${Number(v) > 0 ? '+' : ''}${Number(v).toFixed(d)}`)
 
-function Chip({ tone, children }: { tone: 'good' | 'bad' | 'mid' | 'na'; children: React.ReactNode }) {
-  return (
-    <span className={clsx('inline-flex items-center rounded-md border px-2 py-0.5 text-[10px] font-bold',
-      tone === 'good' && 'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400',
-      tone === 'bad' && 'border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400',
-      tone === 'mid' && 'border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400',
-      tone === 'na' && 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-400')}>
-      {children}
-    </span>
-  )
+type Decision = 'CALL' | 'PUT' | 'BOTH' | 'NO_TRADE'
+const DECISION_THEME: Record<Decision, { label: string; grad: string; ring: string; text: string; chip: string }> = {
+  CALL: { label: 'CALL', grad: 'from-emerald-500/20 via-emerald-500/5 to-transparent', ring: 'ring-emerald-500/40', text: 'text-emerald-500 dark:text-emerald-400', chip: 'bg-emerald-500 text-white' },
+  PUT: { label: 'PUT', grad: 'from-rose-500/20 via-rose-500/5 to-transparent', ring: 'ring-rose-500/40', text: 'text-rose-500 dark:text-rose-400', chip: 'bg-rose-500 text-white' },
+  BOTH: { label: 'STRADDLE', grad: 'from-brand-500/20 via-brand-500/5 to-transparent', ring: 'ring-brand-500/40', text: 'text-brand-600 dark:text-brand-400', chip: 'bg-brand-500 text-slate-900' },
+  NO_TRADE: { label: 'NO TRADE', grad: 'from-slate-400/10 via-slate-400/5 to-transparent', ring: 'ring-slate-400/30', text: 'text-slate-400', chip: 'bg-slate-500 text-white' },
 }
-
-function StructRow({ s }: { s: TfStructure }) {
-  const yn = (v: boolean | null) => (v == null ? <span className="text-slate-300 dark:text-slate-600">—</span> : v ? <span className="text-emerald-500 font-bold">✓</span> : <span className="text-red-500 font-bold">✗</span>)
-  return (
-    <tr className="text-slate-700 dark:text-slate-300">
-      <td className="py-1.5 pr-3 font-bold text-slate-900 dark:text-white">{s.tf}</td>
-      <td className="py-1.5 pr-3">
-        <Chip tone={s.trend === 'UP' ? 'good' : s.trend === 'DOWN' ? 'bad' : 'na'}>{s.trend}</Chip>
-      </td>
-      <td className="py-1.5 pr-3">{yn(s.ema20)}</td>
-      <td className="py-1.5 pr-3">{yn(s.ema50)}</td>
-      <td className="py-1.5 pr-3">{yn(s.ema200)}</td>
-      <td className="py-1.5 pr-3">{s.rsi ?? '—'}</td>
-      <td className="py-1.5 pr-3">{yn(s.macdBull)}</td>
-      <td className="py-1.5 pr-3">{s.adx ?? '—'}</td>
-      <td className="py-1.5 pr-3">{yn(s.supertrendUp)}</td>
-      <td className="py-1.5">{s.atrPts ?? '—'}</td>
-    </tr>
-  )
-}
-
-/** Signal-readiness arc: how many entry gates are green (0–100%). */
-function ReadinessGauge({ passed, total, active }: { passed: number; total: number; active: boolean }) {
-  const pct = total ? passed / total : 0
-  const R = 54
-  const C = 2 * Math.PI * R
-  const color = active ? '#34d399' : pct >= 0.75 ? '#fbbf24' : pct >= 0.5 ? '#818cf8' : '#64748b'
-  return (
-    <div className="relative h-36 w-36">
-      <svg viewBox="0 0 128 128" className="h-36 w-36 -rotate-90">
-        <circle cx="64" cy="64" r={R} fill="none" strokeWidth="10" stroke="rgba(148,163,184,0.15)" />
-        <circle cx="64" cy="64" r={R} fill="none" strokeWidth="10" strokeLinecap="round"
-          stroke={color} strokeDasharray={C} strokeDashoffset={C * (1 - pct)}
-          style={{ transition: 'stroke-dashoffset 0.8s ease, stroke 0.4s' }} />
-        {Array.from({ length: total }).map((_, i) => {
-          const a = (i / total) * 2 * Math.PI
-          return <circle key={i} cx={64 + (R + 0) * Math.cos(a)} cy={64 + R * Math.sin(a)} r="2.2"
-            fill={i < passed ? color : 'rgba(148,163,184,0.35)'} />
-        })}
-      </svg>
-      <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-2xl font-black text-slate-900 dark:text-white tabular-nums">{passed}<span className="text-slate-400 text-base">/{total}</span></span>
-        <span className="text-[9px] uppercase tracking-widest text-slate-500 dark:text-slate-400">gates green</span>
-        {active && <span className="mt-0.5 text-[9px] font-bold text-emerald-500 dark:text-emerald-400 animate-pulse">SIGNAL LIVE</span>}
-      </div>
-    </div>
-  )
-}
-
-/** Probability spectrum — one stacked bar instead of four floating numbers. */
-function ProbSpectrum({ p }: { p: { bullish: number; bearish: number; rangebound: number; highVol: number } }) {
-  const seg = [
-    { v: p.bullish, c: 'bg-emerald-500', l: 'Bull' },
-    { v: p.rangebound, c: 'bg-slate-500', l: 'Range' },
-    { v: p.highVol, c: 'bg-amber-500', l: 'Vol' },
-    { v: p.bearish, c: 'bg-rose-500', l: 'Bear' },
-  ]
-  return (
-    <div>
-      <div className="flex h-3 rounded-full overflow-hidden ring-1 ring-black/5 dark:ring-white/10">
-        {seg.map((s) => s.v > 0 && (
-          <div key={s.l} className={clsx(s.c, 'transition-all duration-700')} style={{ width: `${s.v}%` }} />
-        ))}
-      </div>
-      <div className="flex justify-between mt-1.5">
-        {seg.map((s) => (
-          <span key={s.l} className="flex items-center gap-1 text-[10px] text-slate-500 dark:text-slate-400">
-            <span className={clsx('h-1.5 w-1.5 rounded-sm', s.c)} />{s.l} <b className="text-slate-800 dark:text-slate-200 tabular-nums">{s.v}%</b>
-          </span>
-        ))}
-      </div>
-    </div>
-  )
-}
+const biasChip = (b?: string) =>
+  b === 'BULLISH' ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20'
+  : b === 'BEARISH' ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20'
+  : 'bg-slate-500/10 text-slate-500 dark:text-slate-400 border-slate-500/20'
 
 export default function OptionInsightsPage() {
-  const [index, setIndex] = useState<OptIndex>('NIFTY')
-  const { report, loading, candleError } = useOptionInsights(index)
-  const r = report
+  const { user } = useAuth()
+  const isAdmin = user?.role === 'ADMIN'
+  const [data, setData] = useState<any>(null)
+  const [loading, setLoading] = useState(true)
+  const [running, setRunning] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const pollRef = useRef<number | null>(null)
+
+  const load = useCallback(async () => {
+    try { setData((await client.get('/option-analysis/current')).data) } finally { setLoading(false) }
+  }, [])
+
+  useEffect(() => {
+    void load()
+    pollRef.current = window.setInterval(() => void load(), 60_000)
+    return () => { if (pollRef.current) window.clearInterval(pollRef.current) }
+  }, [load])
+
+  const runAnalysis = async () => {
+    setRunning(true)
+    try { setData(await (await client.post('/option-analysis/run')).data); await load() } finally { setRunning(false) }
+  }
+
+  const byIndex = data?.byIndex ?? {}
+  const order = data?.indices?.length ? data.indices : ['NIFTY', 'BANKNIFTY', 'SENSEX']
+  const generatedAt = data?.generatedAt ? new Date(data.generatedAt) : null
+  const hasResult = order.some((i: string) => byIndex[i])
 
   return (
-    <div className="flex-1 min-h-screen bg-slate-50 dark:bg-surface-dark">
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 space-y-5">
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
-          <div>
-            <h1 className="text-xl font-bold text-slate-900 dark:text-white tracking-tight">Option Insights</h1>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Live intraday index-options research — recomputed on every tick. Educational, not advice.
+    <div className="min-h-screen bg-slate-50 dark:bg-surface-dark">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6">
+        {/* ── header ── */}
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2.5">
+              <div className="h-9 w-9 rounded-xl bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center shadow-lg shadow-brand-500/20">
+                <svg className="h-5 w-5 text-slate-900" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18" /><path d="m19 9-5 5-4-4-3 3" /></svg>
+              </div>
+              <h1 className="text-2xl font-display font-bold text-slate-900 dark:text-white tracking-tight">Option Insight</h1>
+              <span className="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider bg-brand-500/15 text-brand-600 dark:text-brand-400 border border-brand-500/20">Buying</span>
+            </div>
+            <p className="text-xs text-slate-500 dark:text-slate-400 max-w-2xl">
+              Quantitative intraday analysis for NIFTY, BANKNIFTY & SENSEX — OI walls, PCR, ORB, gap, VIX expected move and live-premium profitability, combined into one directional call. Research only, not advice.
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <span className="flex rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
-              {INDICES.map((ix) => (
-                <button key={ix} onClick={() => setIndex(ix)}
-                  className={clsx('px-3 py-1.5 text-xs font-bold transition-colors',
-                    index === ix ? 'bg-brand-600 text-white' : 'bg-white dark:bg-card-dark text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-white/5')}>
-                  {ix}
+            {generatedAt && (
+              <div className="text-right mr-1">
+                <div className="text-[10px] uppercase tracking-wider text-slate-400">Last analysed</div>
+                <div className="text-xs font-semibold text-slate-600 dark:text-slate-300"><LiveAgo at={generatedAt} /></div>
+              </div>
+            )}
+            {isAdmin && (
+              <>
+                <button onClick={() => setSettingsOpen(true)}
+                  className="h-9 px-3.5 rounded-xl text-xs font-bold border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+                  Settings
                 </button>
-              ))}
-            </span>
-            {r && (
-              <span className="flex items-center gap-1.5 text-[10px] text-slate-400">
-                <span className={clsx('h-1.5 w-1.5 rounded-full', r.session.marketOpen ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400')} />
-                {r.session.marketOpen ? 'LIVE' : 'CLOSED'} · {new Date(r.generatedAt).toLocaleTimeString('en-IN')}
-              </span>
+                <Link to="/insight/option-lab"
+                  className="h-9 px-3.5 rounded-xl text-xs font-bold border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition flex items-center">
+                  Dry-run Lab
+                </Link>
+                <button onClick={() => void runAnalysis()} disabled={running}
+                  className="h-9 px-4 rounded-xl text-xs font-bold bg-gradient-to-r from-brand-400 to-brand-600 text-slate-900 shadow-lg shadow-brand-500/25 hover:brightness-105 disabled:opacity-50 transition flex items-center gap-2">
+                  {running && <Spinner />}
+                  {running ? 'Analysing…' : 'Run analysis'}
+                </button>
+              </>
             )}
           </div>
         </div>
 
-        {loading && !r && (
-          <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card-dark p-10 text-center text-sm text-slate-500 dark:text-slate-400">
-            Waiting for live data ({index})… candles, ticks and option chain are loading.
-            {candleError && <div className="mt-2 text-xs text-red-500">Candle fetch: {candleError}</div>}
+        {/* ── body ── */}
+        {loading ? (
+          <div className="grid gap-4 lg:grid-cols-3">{[0, 1, 2].map((i) => <SkeletonCard key={i} />)}</div>
+        ) : !hasResult ? (
+          <EmptyState isAdmin={isAdmin} onRun={() => void runAnalysis()} running={running} />
+        ) : (
+          <div className="grid gap-4 lg:grid-cols-3">
+            {order.map((idx: string) => byIndex[idx] && <IndexCard key={idx} r={byIndex[idx]} />)}
           </div>
         )}
 
-        {r && (
-          <>
-            {/* ── HERO: trading command deck ── */}
-            {(() => {
-              const gatesPassed = r.strategy.gates.filter((g) => g.pass === true).length
-              const gatesTotal = r.strategy.gates.length
-              const isActive = r.trader.decision !== 'NO TRADE'
-              return (
-                <div className="relative overflow-hidden rounded-3xl border border-slate-200/80 dark:border-transparent bg-gradient-to-br from-white via-indigo-50/50 to-emerald-50/40 dark:from-slate-950 dark:via-slate-950 dark:to-slate-950 shadow-lg dark:shadow-xl">
-                  {/* ambient background */}
-                  <div className="absolute inset-0 pointer-events-none dark:opacity-100 opacity-70" style={{
-                    background: isActive
-                      ? 'radial-gradient(700px 280px at 15% 0%, rgba(16,185,129,0.14), transparent), radial-gradient(500px 240px at 90% 100%, rgba(59,130,246,0.10), transparent)'
-                      : 'radial-gradient(700px 280px at 15% 0%, rgba(99,102,241,0.10), transparent), radial-gradient(500px 240px at 90% 100%, rgba(245,158,11,0.07), transparent)',
-                  }} />
-                  <div className="absolute inset-0 opacity-[0.25] dark:opacity-[0.35] pointer-events-none" style={{ backgroundImage: 'radial-gradient(rgba(100,116,139,0.18) 1px, transparent 1px)', backgroundSize: '22px 22px' }} />
+        <p className="text-[11px] text-slate-400 dark:text-slate-500 text-center pt-2">
+          Quantitative signals for research and education only — not investment advice. Options carry substantial risk of loss.
+        </p>
+      </div>
 
-                  <div className="relative p-5 sm:p-7">
-                    <div className="flex flex-col xl:flex-row gap-7">
-                      {/* Decision */}
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">
-                          <span className={clsx('h-1.5 w-1.5 rounded-full', r.session.marketOpen ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400')} />
-                          {r.index} · {r.session.phase}{r.expiry.isExpiryDay && <span className="text-rose-500 dark:text-rose-400 font-bold tracking-normal">· EXPIRY DAY</span>}
-                        </div>
-                        <div className={clsx('mt-2 text-3xl sm:text-4xl font-black tracking-tight leading-none',
-                          isActive ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-900 dark:text-white')}>
-                          {isActive ? r.trader.decision : 'NO TRADE'}
-                          {!isActive && <span className="block text-sm font-bold text-slate-500 dark:text-slate-400 mt-1.5 tracking-normal">capital preservation mode — waiting for edge</span>}
-                        </div>
-                        <p className="text-sm text-slate-600 dark:text-slate-300 mt-3 max-w-xl leading-relaxed">{r.trader.reason}</p>
-                        <div className="mt-4 flex items-start gap-2 rounded-xl bg-slate-900/[0.04] dark:bg-white/5 ring-1 ring-slate-900/10 dark:ring-white/10 px-3.5 py-2.5 max-w-xl">
-                          <span className="text-indigo-500 dark:text-indigo-300 mt-px">⟳</span>
-                          <div className="text-[11px] text-slate-600 dark:text-slate-300">
-                            <span className="text-slate-500 dark:text-slate-400 uppercase tracking-wide text-[9px] font-bold block mb-0.5">Since previous analysis</span>
-                            {r.trader.kept
-                              ? <span className="italic">{r.trader.whatChanged[0]}{r.trader.heldSince ? ` · holding since ${new Date(r.trader.heldSince).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}` : ''}</span>
-                              : r.trader.whatChanged.join(' · ')}
-                          </div>
-                        </div>
-                      </div>
+      {isAdmin && settingsOpen && <SettingsDrawer onClose={() => setSettingsOpen(false)} onSaved={() => void load()} />}
+    </div>
+  )
+}
 
-                      {/* Readiness + probability + MQS */}
-                      <div className="flex flex-col sm:flex-row xl:flex-col gap-5 items-center xl:items-end shrink-0">
-                        <ReadinessGauge passed={gatesPassed} total={gatesTotal} active={isActive} />
-                        <div className="w-64">
-                          <div className="text-[9px] uppercase tracking-widest text-slate-500 dark:text-slate-400 mb-1.5">Probability spectrum</div>
-                          <ProbSpectrum p={r.probabilities} />
-                          <div className="mt-3 flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400">
-                            <span>Market Quality</span>
-                            <span className={clsx('font-black text-sm tabular-nums', (r.quality.score ?? 0) >= 70 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400')}>
-                              {r.quality.score ?? '—'}<span className="text-slate-400 dark:text-slate-500 text-[10px]">/100 · {r.quality.interpretation}</span>
-                            </span>
-                          </div>
-                          <div className="h-1 rounded-full bg-slate-900/10 dark:bg-white/10 overflow-hidden mt-1">
-                            <div className={clsx('h-full rounded-full transition-all duration-700', (r.quality.score ?? 0) >= 70 ? 'bg-emerald-500' : 'bg-amber-500')} style={{ width: `${r.quality.score ?? 0}%` }} />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
+// ── index card ────────────────────────────────────────────────────────────────
+function IndexCard({ r }: { r: any }) {
+  if (!r.ok) {
+    return (
+      <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card-dark p-5 animate-fade-in">
+        <div className="flex items-center justify-between">
+          <h3 className="font-display font-bold text-slate-900 dark:text-white">{r.index}</h3>
+          <span className="text-[10px] px-2 py-0.5 rounded-md bg-slate-500/10 text-slate-400">unavailable</span>
+        </div>
+        <p className="mt-3 text-xs text-slate-500">{r.skip || r.error || 'No data for this index right now.'}</p>
+      </div>
+    )
+  }
+  const t = DECISION_THEME[(r.decision as Decision)] ?? DECISION_THEME.NO_TRADE
+  const change = r.spot != null && r.dayOpen != null ? r.spot - r.dayOpen : null
+  const changePct = change != null && r.dayOpen ? (change / r.dayOpen) * 100 : null
+  const upside = r.probability?.upside ?? null
 
-                    {/* ── Order-ticket setup ── */}
-                    {r.trader.setup && (
-                      <div className="mt-6 relative rounded-2xl bg-white/80 dark:bg-white/[0.06] ring-1 ring-slate-200 dark:ring-white/10 backdrop-blur-sm overflow-hidden shadow-sm">
-                        {/* stamp */}
-                        <div className={clsx('absolute right-4 top-3 rotate-[8deg] rounded-md border-2 px-2.5 py-0.5 text-[10px] font-black tracking-widest',
-                          r.trader.setup.active ? 'border-emerald-500 text-emerald-600 dark:border-emerald-400 dark:text-emerald-400' : 'border-amber-500/80 text-amber-600 dark:border-amber-400/80 dark:text-amber-400/90')}>
-                          {r.trader.setup.active ? 'ACTIVE' : 'WAITING'}
-                        </div>
-                        <div className="p-4 sm:p-5">
-                          <div className="text-[9px] uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400 mb-2">
-                            {isActive ? 'The setup' : 'If you still want a trade — best available setup'}
-                          </div>
-                          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                            <span className={clsx('text-2xl font-black tracking-tight', r.trader.setup.action === 'BUY' ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-500 dark:text-rose-400')}>
-                              {r.trader.setup.action} {r.trader.setup.strike.toLocaleString('en-IN')} {r.trader.setup.side}
-                            </span>
-                            <span className="text-amber-500 dark:text-amber-400 text-sm">{'★'.repeat(r.trader.setup.stars)}<span className="text-slate-300 dark:text-white/15">{'★'.repeat(5 - r.trader.setup.stars)}</span></span>
-                          </div>
-                          <p className="text-xs text-slate-600 dark:text-slate-300 mt-1.5">{r.trader.setup.condition}.</p>
+  return (
+    <div className={clsx('rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card-dark overflow-hidden animate-slide-up ring-1', t.ring)}>
+      {/* decision banner */}
+      <div className={clsx('relative px-5 pt-4 pb-4 bg-gradient-to-b', t.grad)}>
+        <div className="flex items-start justify-between">
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="font-display font-bold text-lg text-slate-900 dark:text-white">{r.index}</h3>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-900/5 dark:bg-white/10 text-slate-500 dark:text-slate-400 font-mono">{r.expiry}</span>
+            </div>
+            <div className="mt-1 flex items-baseline gap-2">
+              <span className="text-2xl font-bold tabular-nums text-slate-900 dark:text-white">{nf(r.spot, 2)}</span>
+              {change != null && (
+                <span className={clsx('text-xs font-semibold tabular-nums', change >= 0 ? 'text-emerald-500' : 'text-rose-500')}>
+                  {signed(change, 1)} ({signed(changePct, 2)}%)
+                </span>
+              )}
+            </div>
+          </div>
+          <span className={clsx('px-3 py-1.5 rounded-xl text-sm font-extrabold tracking-wide shadow-sm', t.chip)}>{t.label}</span>
+        </div>
+        <p className="mt-3 text-xs leading-relaxed text-slate-600 dark:text-slate-300">{r.reason}</p>
+      </div>
 
-                          <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 divide-x divide-dashed divide-slate-200 dark:divide-white/10 rounded-xl bg-slate-50 dark:bg-black/20 ring-1 ring-slate-200/70 dark:ring-white/5">
-                            {([
-                              ['Premium', r.trader.setup.premiumZone, 'text-slate-900 dark:text-white'],
-                              ['Stop-loss', r.trader.setup.stopLoss, 'text-rose-500 dark:text-rose-400'],
-                              ['Target 1', r.trader.setup.target1, 'text-emerald-600 dark:text-emerald-400'],
-                              ['Target 2', r.trader.setup.target2, 'text-emerald-600 dark:text-emerald-400'],
-                            ] as const).map(([l, v, c]) => (
-                              <div key={l} className="px-3.5 py-3">
-                                <div className="text-[9px] uppercase tracking-widest text-slate-400 dark:text-slate-500">{l}</div>
-                                <div className={clsx('text-sm font-bold tabular-nums mt-0.5', c)}>{v}</div>
-                              </div>
-                            ))}
-                          </div>
-
-                          <p className={clsx('text-xs font-semibold mt-3', r.trader.setup.active ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400/90')}>{r.trader.setup.statusLine}</p>
-                          {r.trader.setup.sizingNote && <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1">{r.trader.setup.sizingNote}</p>}
-                          {r.trader.setup.alternative && (
-                            <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-2.5 pt-2.5 border-t border-dashed border-slate-200 dark:border-white/10">
-                              <b className="text-slate-700 dark:text-slate-300">Why not the runner-up:</b> {r.trader.setup.alternative}
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                    <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-3">{r.trader.mqsExplainer}</p>
-                  </div>
+      <div className="px-5 py-4 space-y-4">
+        {/* recommendation */}
+        {r.recommendation?.legs?.length > 0 && (
+          <div className="rounded-xl border border-slate-200 dark:border-slate-700/60 bg-slate-50 dark:bg-slate-800/40 p-3">
+            <div className="text-[10px] uppercase tracking-wider text-slate-400 mb-2">Suggested entry</div>
+            <div className="space-y-2">
+              {r.recommendation.legs.map((l: any, i: number) => (
+                <div key={i} className="flex items-center justify-between text-sm">
+                  <span className="font-semibold text-slate-800 dark:text-slate-100">
+                    BUY <span className="tabular-nums">{int(l.strike)}</span> <span className={l.side === 'CE' ? 'text-emerald-500' : 'text-rose-500'}>{l.side}</span>
+                  </span>
+                  <span className="tabular-nums text-slate-500 dark:text-slate-400">
+                    @ ₹{nf(l.entryPremium, 2)} <span className="text-slate-300 dark:text-slate-600">·</span> BE {int(l.breakeven)}
+                  </span>
                 </div>
-              )
-            })()}
+              ))}
+            </div>
+          </div>
+        )}
 
-            {/* ── Recommendation (only when trade) ── */}
-            {r.recommendation && (
-              <SectionCard title={`Recommended: ${r.recommendation.strike} ${r.recommendation.side}`} right={<Chip tone="mid">confidence {r.recommendation.confidencePct}%{r.dataQuality?.greeks ? '' : ' (capped — OI/IV missing)'}</Chip>}>
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-xs">
-                  {([
-                    ['Premium', fmtN(r.recommendation.premium)],
-                    ['Entry zone', r.recommendation.entryZone ? `${fmtN(r.recommendation.entryZone[0])} – ${fmtN(r.recommendation.entryZone[1])}` : '—'],
-                    ['Stop (premium)', fmtN(r.recommendation.stopLossPremium)],
-                    ['T1 / T2 (premium)', `${fmtN(r.recommendation.target1Premium)} / ${fmtN(r.recommendation.target2Premium)}`],
-                    ['Risk:Reward', r.recommendation.riskReward != null ? `1:${r.recommendation.riskReward}` : '—'],
-                    ['Entry time', r.recommendation.entryTime],
-                    ['Holding', r.recommendation.holdingTime],
-                    ['Max holding', r.recommendation.maxHoldingTime],
-                  ] as const).map(([l, v]) => (
-                    <div key={l} className="rounded-lg bg-slate-50 dark:bg-slate-800/50 p-2.5">
-                      <div className="text-[10px] text-slate-400">{l}</div>
-                      <div className="font-bold text-slate-900 dark:text-white">{v}</div>
-                    </div>
-                  ))}
-                </div>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-3"><b>Trigger:</b> {r.recommendation.trigger} · <b>Confirm:</b> {r.recommendation.confirmation.join('; ')}</p>
-                <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-1.5">{r.dataQuality?.greeks ? 'Premium targets use live delta from the chain. Position sizing and execution are the trader’s responsibility.' : 'Premium targets are delta-proxy estimates (Greeks unavailable). Position sizing and execution are the trader’s responsibility.'}</p>
-              </SectionCard>
+        {/* probability gauge */}
+        <div>
+          <div className="flex items-center justify-between text-[11px] mb-1">
+            <span className="text-slate-400">Upside probability</span>
+            <span className="font-bold text-slate-700 dark:text-slate-200 tabular-nums">{pctOf(upside)}</span>
+          </div>
+          <ProbBar upside={upside} />
+          <div className="flex justify-between text-[9px] text-slate-400 mt-1">
+            <span>PUT ≤45%</span><span>coin-flip</span><span>≥55% CALL</span>
+          </div>
+        </div>
+
+        {/* expected move */}
+        <div className="grid grid-cols-3 gap-2 text-center">
+          <Metric label="Exp. move" value={`±${int(r.expectedMove)}`} sub="pts" />
+          <Metric label="Down target" value={int(r.expectedDownsideTarget)} sub="" />
+          <Metric label="Up target" value={int(r.expectedUpsideTarget)} sub="" />
+        </div>
+
+        {/* signal chips */}
+        <div className="flex flex-wrap gap-1.5">
+          <Chip label="OI" value={r.oiBias} cls={biasChip(r.oiBias)} />
+          <Chip label="ORB" value={r.orbBias} cls={biasChip(r.orbBias)} />
+          <Chip label="ATM OI" value={r.atmOiBias} cls={biasChip(r.atmOiBias)} />
+          <Chip label="Momentum" value={r.momentum?.bias} cls={biasChip(r.momentum?.bias)} />
+          <Chip label="Gap" value={r.gap?.large ? 'LARGE' : signed(r.gap?.points, 0)} cls={r.gap?.large ? biasChip('BEARISH') : biasChip()} />
+        </div>
+
+        {/* stats grid */}
+        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[11px] pt-1 border-t border-slate-100 dark:border-slate-800">
+          <Row k="PCR (weighted)" v={`${nf(r.pcr, 2)} (${nf(r.weightedPcr, 2)})`} />
+          <Row k="India VIX" v={nf(r.indiaVix, 2)} />
+          <Row k="Vol. confidence" v={r.volatilityConfidence == null ? '—' : `${Math.round(r.volatilityConfidence)}%`} />
+          <Row k="ATM premium C/P" v={`${nf(r.premiums?.ce, 0)} / ${nf(r.premiums?.pe, 0)}`} />
+          <Row k="Resistance" v={`${int(r.walls?.resistanceStrike)} (${int(r.walls?.resistanceDistance)}p)`} />
+          <Row k="Support" v={`${int(r.walls?.supportStrike)} (${int(r.walls?.supportDistance)}p)`} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ProbBar({ upside }: { upside: number | null }) {
+  const pct = upside == null ? 50 : Math.round(upside * 100)
+  return (
+    <div className="relative h-2.5 rounded-full bg-gradient-to-r from-rose-500/30 via-slate-300 dark:via-slate-600 to-emerald-500/30 overflow-visible">
+      <div className="absolute inset-y-0 left-[45%] w-px bg-slate-400/50" />
+      <div className="absolute inset-y-0 left-[55%] w-px bg-slate-400/50" />
+      <div className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 h-4 w-4 rounded-full bg-white dark:bg-slate-100 border-2 border-brand-500 shadow transition-all" style={{ left: `${pct}%` }} />
+    </div>
+  )
+}
+function Metric({ label, value, sub }: { label: string; value: React.ReactNode; sub: string }) {
+  return (
+    <div className="rounded-lg bg-slate-50 dark:bg-slate-800/40 py-2">
+      <div className="text-[9px] uppercase tracking-wider text-slate-400">{label}</div>
+      <div className="text-sm font-bold text-slate-800 dark:text-slate-100 tabular-nums">{value}<span className="text-[9px] font-normal text-slate-400 ml-0.5">{sub}</span></div>
+    </div>
+  )
+}
+function Chip({ label, value, cls }: { label: string; value?: string; cls: string }) {
+  return <span className={clsx('px-2 py-0.5 rounded-md text-[10px] font-semibold border', cls)}>{label} <span className="opacity-90">{value ?? '—'}</span></span>
+}
+function Row({ k, v }: { k: string; v: React.ReactNode }) {
+  return <div className="flex justify-between"><span className="text-slate-400">{k}</span><span className="font-semibold text-slate-700 dark:text-slate-200 tabular-nums">{v}</span></div>
+}
+
+function LiveAgo({ at }: { at: Date }) {
+  const [, force] = useState(0)
+  useEffect(() => { const t = setInterval(() => force((x) => x + 1), 30_000); return () => clearInterval(t) }, [])
+  const secs = Math.max(0, Math.floor((Date.now() - at.getTime()) / 1000))
+  const s = secs < 60 ? `${secs}s ago` : secs < 3600 ? `${Math.floor(secs / 60)}m ago` : at.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
+  return <>{s}</>
+}
+function Spinner() { return <span className="h-3.5 w-3.5 rounded-full border-2 border-slate-900/30 border-t-slate-900 animate-spin" /> }
+function SkeletonCard() {
+  return <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-card-dark h-96 animate-pulse" />
+}
+function EmptyState({ isAdmin, onRun, running }: { isAdmin: boolean; onRun: () => void; running: boolean }) {
+  return (
+    <div className="rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 bg-white dark:bg-card-dark py-16 px-6 text-center animate-fade-in">
+      <div className="mx-auto h-14 w-14 rounded-2xl bg-brand-500/10 flex items-center justify-center mb-4">
+        <svg className="h-7 w-7 text-brand-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M3 3v18h18" /><path d="m19 9-5 5-4-4-3 3" /></svg>
+      </div>
+      <h3 className="font-display font-bold text-slate-800 dark:text-white">No analysis yet</h3>
+      <p className="mt-1 text-xs text-slate-500 max-w-sm mx-auto">
+        {isAdmin ? 'Run the analysis to generate the latest directional read for all three indices. Results are shared with every user.' : 'The analysis hasn’t been run yet. Please check back shortly — an admin refreshes it during market hours.'}
+      </p>
+      {isAdmin && (
+        <button onClick={onRun} disabled={running}
+          className="mt-4 h-9 px-5 rounded-xl text-xs font-bold bg-gradient-to-r from-brand-400 to-brand-600 text-slate-900 shadow-lg shadow-brand-500/25 hover:brightness-105 disabled:opacity-50 inline-flex items-center gap-2">
+          {running && <Spinner />}{running ? 'Analysing…' : 'Run analysis'}
+        </button>
+      )}
+    </div>
+  )
+}
+
+// ── admin settings drawer ─────────────────────────────────────────────────────
+function SettingsDrawer({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const [s, setS] = useState<any>(null)
+  const [defaults, setDefaults] = useState<any>(null)
+  const [saving, setSaving] = useState(false)
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+
+  useEffect(() => { void (async () => { const { data } = await client.get('/option-analysis/settings'); setS(data.settings); setDefaults(data.defaults) })() }, [])
+
+  const set = (k: string, v: any) => { setMsg(null); setS((p: any) => ({ ...p, [k]: v })) }
+  const setLot = (idx: string, v: any) => { setMsg(null); setS((p: any) => ({ ...p, lot_sizes: { ...p.lot_sizes, [idx]: v === '' ? '' : Number(v) } })) }
+  const save = async () => {
+    setSaving(true); setMsg(null)
+    try {
+      // drop any transient blank fields so they keep their stored value
+      const lot_sizes = Object.fromEntries(Object.entries(s.lot_sizes ?? {}).filter(([, v]) => v !== '' && v != null).map(([k, v]) => [k, Number(v)]))
+      const payload = { ...s, lot_sizes }
+      // persist, then reflect exactly what the server stored back into the form
+      const { data } = await client.post('/option-analysis/settings', payload)
+      if (data?.settings) setS(data.settings)
+      setMsg({ ok: true, text: 'Saved ✓ — applies to the next analysis run.' })
+      onSaved()
+    } catch (e: any) {
+      setMsg({ ok: false, text: `Save failed: ${e?.response?.data?.error ?? e?.message ?? 'unknown error'}` })
+    } finally { setSaving(false) }
+  }
+  const reset = () => { if (defaults) { setMsg(null); setS({ ...defaults }) } }
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm animate-fade-in" onClick={onClose} />
+      <div className="relative w-full max-w-md h-full bg-white dark:bg-surface-dark shadow-2xl overflow-y-auto animate-slide-in-right">
+        <div className="sticky top-0 z-10 flex items-center justify-between px-5 py-4 bg-white/90 dark:bg-surface-dark/90 backdrop-blur border-b border-slate-200 dark:border-slate-800">
+          <div>
+            <h2 className="font-display font-bold text-slate-900 dark:text-white">Analysis settings</h2>
+            <p className="text-[11px] text-slate-400">Admin only · applies to the next run</p>
+          </div>
+          <button onClick={onClose} className="h-8 w-8 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 flex items-center justify-center">✕</button>
+        </div>
+
+        {!s ? <div className="p-6 text-xs text-slate-400">Loading…</div> : (
+          <div className="p-5 space-y-6">
+            <Section title="Signal thresholds">
+              <NumField label="PCR threshold" k="pcr_threshold" s={s} set={set} step={0.01} />
+              <NumField label="Gap threshold factor" k="gap_threshold_factor" s={s} set={set} step={0.1} />
+              <NumField label="Min expected move (pts)" k="min_expected_move_points" s={s} set={set} step={1} />
+              <NumField label="CALL probability ≥" k="call_probability_threshold" s={s} set={set} step={0.01} />
+              <NumField label="PUT probability ≤" k="put_probability_threshold" s={s} set={set} step={0.01} />
+              <NumField label="Profit margin factor" k="profit_margin_factor" s={s} set={set} step={0.05} />
+              <NumField label="ORB minutes" k="orb_minutes" s={s} set={set} step={1} />
+            </Section>
+
+            <Section title="Dry-run sizing">
+              <NumField label="Lots" k="lots" s={s} set={set} step={1} />
+              <div className="grid grid-cols-3 gap-2">
+                {['NIFTY', 'BANKNIFTY', 'SENSEX'].map((idx) => (
+                  <label key={idx} className="text-[11px]">
+                    <span className="text-slate-400">{idx} lot</span>
+                    <input type="number" value={s.lot_sizes?.[idx] ?? ''} onChange={(e) => setLot(idx, e.target.value)}
+                      className="mt-0.5 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2 py-1.5 text-sm tabular-nums" />
+                  </label>
+                ))}
+              </div>
+            </Section>
+
+            <Section title="Auto-run (daily)">
+              <ToggleField label="Auto-run each trading day" k="auto_run_enabled" s={s} set={set} />
+              <TimeField label="Start time (IST)" k="start_time" s={s} set={set} />
+              <p className="text-[10px] text-slate-400 leading-relaxed">
+                At this time every weekday the server analyses all indices and opens dry-run positions automatically — no manual run needed. Waits for market open (09:15) if earlier. Tip: 09:20+ so the opening range has begun forming.
+              </p>
+            </Section>
+
+            <Section title="Exit rules (SL / target / time)">
+              <ToggleField label="Stop-loss enabled" k="sl_enabled" s={s} set={set} />
+              <NumField label="Max loss (₹)" k="max_loss" s={s} set={set} step={100} />
+              <ToggleField label="Target enabled" k="target_enabled" s={s} set={set} />
+              <NumField label="Target profit (₹)" k="target_profit" s={s} set={set} step={100} />
+              <SelectField label="P&L mode" k="pnl_mode" s={s} set={set} opts={['COMBINED', 'PERLEG']} />
+              <div className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
+              <ToggleField label="Time exit enabled" k="time_exit_enabled" s={s} set={set} />
+              <TimeField label="Time exit (IST)" k="time_exit" s={s} set={set} />
+              <TimeField label="Force exit (IST) — always on" k="force_exit_time" s={s} set={set} />
+              <p className="text-[10px] text-slate-400 leading-relaxed">
+                Values are always editable; the toggle decides whether that rule is active. Force-exit is the day-end safety square-off and is always on (default 15:15). Stop-loss and target are off by default (as in the reference engine) — turn them on to have positions exit on rupee P&L.
+              </p>
+            </Section>
+
+            {msg && (
+              <div className={clsx('text-[11px] rounded-lg px-3 py-2 border', msg.ok
+                ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400'
+                : 'bg-rose-50 dark:bg-rose-900/20 border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-400')}>
+                {msg.text}
+              </div>
             )}
 
-            {/* ── Session + Expiry + VIX ── */}
-            <div className="grid gap-4 md:grid-cols-3">
-              <SectionCard title="Session">
-                <div className="space-y-1.5 text-xs text-slate-600 dark:text-slate-300">
-                  <div>Spot <b className="text-slate-900 dark:text-white">{fmtN(r.projection.current)}</b> · Prev close {fmtN(r.session.prevClose)}</div>
-                  <div>Open {fmtN(r.session.open)} · {r.session.gapType ?? '—'} {r.session.gapPct != null && `(${r.session.gapPct}%)`}</div>
-                  <div>Day {fmtN(r.session.dayLow)} – {fmtN(r.session.dayHigh)}</div>
-                  <div>OR(15m) {fmtN(r.session.orLow)} – {fmtN(r.session.orHigh)} · <Chip tone={r.session.orState === 'Above OR' ? 'good' : r.session.orState === 'Below OR' ? 'bad' : 'na'}>{r.session.orState ?? 'forming'}</Chip></div>
-                </div>
-              </SectionCard>
-              <SectionCard title="Expiry" right={r.expiry.favors ? <Chip tone="na">{r.expiry.favors}</Chip> : undefined}>
-                <div className="space-y-1.5 text-xs text-slate-600 dark:text-slate-300">
-                  <div><b className="text-slate-900 dark:text-white">{r.expiry.current ?? '—'}</b> ({r.expiry.kind ?? '—'}) · DTE {r.expiry.dte ?? '—'}</div>
-                  <div>Theta <Chip tone={r.expiry.thetaPressure === 'Extreme' || r.expiry.thetaPressure === 'High' ? 'bad' : 'na'}>{r.expiry.thetaPressure ?? '—'}</Chip> Gamma <Chip tone={r.expiry.gammaRisk === 'Extreme' || r.expiry.gammaRisk === 'High' ? 'bad' : 'na'}>{r.expiry.gammaRisk ?? '—'}</Chip></div>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400">{r.expiry.note}</p>
-                </div>
-              </SectionCard>
-              <SectionCard title="India VIX" right={r.vix.band ? <Chip tone={r.vix.band === 'High' || r.vix.band === 'Extreme' ? 'bad' : r.vix.band === 'Normal' ? 'good' : 'mid'}>{r.vix.band}</Chip> : undefined}>
-                <div className="space-y-1.5 text-xs text-slate-600 dark:text-slate-300">
-                  <div><b className="text-slate-900 dark:text-white text-base">{fmtN(r.vix.value)}</b> {r.vix.changePct != null && <span className={r.vix.changePct >= 0 ? 'text-red-500' : 'text-emerald-500'}>({r.vix.changePct >= 0 ? '+' : ''}{r.vix.changePct}%)</span>}</div>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400">{r.vix.note}</p>
-                </div>
-              </SectionCard>
+            <div className="flex items-center gap-2 pt-2">
+              <button onClick={() => void save()} disabled={saving}
+                className="flex-1 h-10 rounded-xl text-sm font-bold bg-gradient-to-r from-brand-400 to-brand-600 text-slate-900 shadow-lg shadow-brand-500/25 hover:brightness-105 disabled:opacity-50">
+                {saving ? 'Saving…' : 'Save settings'}
+              </button>
+              <button onClick={reset} className="h-10 px-4 rounded-xl text-sm font-bold border border-slate-200 dark:border-slate-700 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800">Defaults</button>
             </div>
-
-            {/* ── Structure + Levels ── */}
-            <div className="grid gap-4 lg:grid-cols-3">
-              <SectionCard title="Market structure" className="lg:col-span-2">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs min-w-[560px]">
-                    <thead><tr className="text-left text-[10px] uppercase tracking-wide text-slate-400">
-                      <th className="py-1.5 pr-3">TF</th><th className="py-1.5 pr-3">Trend</th><th className="py-1.5 pr-3">&gt;E20</th><th className="py-1.5 pr-3">&gt;E50</th><th className="py-1.5 pr-3">&gt;E200</th><th className="py-1.5 pr-3">RSI</th><th className="py-1.5 pr-3">MACD</th><th className="py-1.5 pr-3">ADX</th><th className="py-1.5 pr-3">ST</th><th className="py-1.5">ATR</th>
-                    </tr></thead>
-                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                      {r.structure.map((s) => <StructRow key={s.tf} s={s} />)}
-                    </tbody>
-                  </table>
-                </div>
-                <p className="text-[10px] text-slate-400 mt-2">VWAP unavailable for index candles (no volume) — will activate when a futures feed exists.</p>
-              </SectionCard>
-              <SectionCard title="Key levels">
-                <div className="space-y-1.5 text-xs text-slate-600 dark:text-slate-300">
-                  <div>R2 <b>{fmtN(r.keyLevels.r2)}</b> · R1 <b>{fmtN(r.keyLevels.r1)}</b></div>
-                  <div>Pivot <b>{fmtN(r.keyLevels.pivot)}</b></div>
-                  <div>S1 <b>{fmtN(r.keyLevels.s1)}</b> · S2 <b>{fmtN(r.keyLevels.s2)}</b></div>
-                  <div className="pt-1.5 border-t border-slate-100 dark:border-slate-800">Breakout &gt; <b className="text-emerald-600">{fmtN(r.keyLevels.breakout)}</b></div>
-                  <div>Breakdown &lt; <b className="text-red-500">{fmtN(r.keyLevels.breakdown)}</b></div>
-                  {r.keyLevels.swingResistance.length > 0 && <div>Swing R: {r.keyLevels.swingResistance.map(fmtN).join(', ')}</div>}
-                  {r.keyLevels.swingSupport.length > 0 && <div>Swing S: {r.keyLevels.swingSupport.map(fmtN).join(', ')}</div>}
-                  <div className="pt-1.5 border-t border-slate-100 dark:border-slate-800">Expected range: <b>{fmtN(r.projection.expectedLow)} – {fmtN(r.projection.expectedHigh)}</b> ({fmtN(r.projection.expectedRangePts, 0)} pts)</div>
-                </div>
-              </SectionCard>
-            </div>
-
-            {/* ── Chain + Strategy comparison ── */}
-            <div className="grid gap-4 lg:grid-cols-2">
-              <SectionCard title={`Option chain — ${r.chain.expiry ?? 'waiting for feed'}`}>
-                <div className="grid grid-cols-2 gap-2.5 text-xs">
-                  {([
-                    ['ATM strike', fmtN(r.chain.atmStrike, 0)],
-                    ['ATM straddle', `${fmtN(r.chain.straddle)} (${fmtN(r.chain.straddlePctOfSpot)}% of spot)`],
-                    ['Implied day range', r.chain.impliedDayRangeLow != null ? `${fmtN(r.chain.impliedDayRangeLow)} – ${fmtN(r.chain.impliedDayRangeHigh)}` : '—'],
-                    ['PCR (volume)', fmtN(r.chain.pcrVolume)],
-                    ['Call-heavy strike', fmtN(r.chain.callVolumeHeavyStrike, 0)],
-                    ['Put-heavy strike', fmtN(r.chain.putVolumeHeavyStrike, 0)],
-                    ['ATM spread', r.chain.atmSpreadPct != null ? `${r.chain.atmSpreadPct}%` : '—'],
-                    ['Liquidity', r.chain.liquidity],
-                  ] as const).map(([l, v]) => (
-                    <div key={l} className="rounded-lg bg-slate-50 dark:bg-slate-800/50 p-2.5">
-                      <div className="text-[10px] text-slate-400">{l}</div>
-                      <div className="font-bold text-slate-900 dark:text-white">{v}</div>
-                    </div>
-                  ))}
-                </div>
-                <p className="text-[10px] text-slate-400 mt-2">{r.chain.note}</p>
-              </SectionCard>
-              <SectionCard title="Trade comparison — all 12 strategies ranked" right={<Chip tone="na">{r.strategy.verdict}</Chip>}>
-                <div className="overflow-x-auto max-h-72 overflow-y-auto">
-                  <table className="w-full text-xs min-w-[560px]">
-                    <thead className="sticky top-0 bg-white dark:bg-card-dark"><tr className="text-left text-[10px] uppercase tracking-wide text-slate-400">
-                      <th className="py-1.5 pr-2">#</th><th className="py-1.5 pr-2">Strategy</th><th className="py-1.5 pr-2">Prob</th><th className="py-1.5 pr-2">RR</th><th className="py-1.5 pr-2">θ</th><th className="py-1.5 pr-2">Vega</th><th className="py-1.5 pr-2">Liq</th><th className="py-1.5">Score</th>
-                    </tr></thead>
-                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-600 dark:text-slate-300">
-                      {r.strategyMatrix.ranked.map((s, i) => (
-                        <tr key={s.id} className={clsx(i === 0 && 'bg-emerald-50/60 dark:bg-emerald-900/10 font-semibold', i === 1 && 'bg-slate-50/60 dark:bg-slate-800/30')}>
-                          <td className="py-1.5 pr-2 text-slate-400">{i + 1}</td>
-                          <td className="py-1.5 pr-2 text-slate-900 dark:text-white whitespace-nowrap">
-                            <span className="text-amber-400">{'⭐'.repeat(s.stars)}</span> {s.action} {s.strike?.toLocaleString('en-IN') ?? '—'} {s.side}
-                            <span className="text-[9px] text-slate-400 ml-1">({s.moneyness})</span>
-                            {s.rejected && <span className="ml-1.5 text-[9px] font-bold text-red-500" title={s.rejected}>VETOED</span>}
-                          </td>
-                          <td className="py-1.5 pr-2 tabular-nums">{s.probPct}%</td>
-                          <td className="py-1.5 pr-2 tabular-nums">{s.rr != null ? `1:${s.rr}` : '—'}</td>
-                          <td className="py-1.5 pr-2"><span className={s.theta === 'Tailwind' ? 'text-emerald-500' : s.theta === 'Headwind' ? 'text-red-500' : 'text-slate-400'}>{s.theta === 'Tailwind' ? '↑' : s.theta === 'Headwind' ? '↓' : '·'}</span></td>
-                          <td className="py-1.5 pr-2"><span className={s.vega === 'Favorable' ? 'text-emerald-500' : s.vega === 'Unfavorable' ? 'text-red-500' : 'text-slate-400'}>{s.vega === 'Favorable' ? '↑' : s.vega === 'Unfavorable' ? '↓' : '·'}</span></td>
-                          <td className="py-1.5 pr-2">{s.liquidity[0]}</td>
-                          <td className="py-1.5 tabular-nums font-semibold">{s.score}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                {r.strategyMatrix.whyBest && (
-                  <p className="text-[11px] text-slate-600 dark:text-slate-300 mt-2"><b className="text-emerald-600 dark:text-emerald-400">Why #1:</b> {r.strategyMatrix.whyBest}</p>
-                )}
-                {r.strategyMatrix.whyNotSecond && (
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1"><b>Why not #2:</b> {r.strategyMatrix.whyNotSecond}</p>
-                )}
-                {r.strategyMatrix.nearTieNote && (
-                  <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-1"><b>Near-tie:</b> {r.strategyMatrix.nearTieNote}</p>
-                )}
-                <p className="text-[10px] text-slate-400 mt-2">Probabilities are heuristic estimates from live structure/volume/VIX (IV & Greeks unavailable — theta/gamma/vega shown qualitatively via DTE, straddle richness and VIX).</p>
-              </SectionCard>
-            </div>
-
-            {/* ── Gates + Strikes ── */}
-            <div className="grid gap-4 lg:grid-cols-2">
-              <SectionCard title="Entry gates (all must pass)">
-                <div className="space-y-1.5">
-                  {r.strategy.gates.map((g) => (
-                    <div key={g.gate} className="flex items-start gap-2 text-xs">
-                      <span className={clsx('mt-px font-bold', g.pass === true ? 'text-emerald-500' : g.pass === false ? 'text-red-500' : 'text-slate-400')}>{g.pass === true ? '✓' : g.pass === false ? '✗' : '?'}</span>
-                      <div><span className="font-semibold text-slate-900 dark:text-white">{g.gate}</span> <span className="text-slate-500 dark:text-slate-400">— {g.detail}</span></div>
-                    </div>
-                  ))}
-                </div>
-              </SectionCard>
-              <SectionCard title="Strike candidates" right={<span className="text-[10px] text-slate-400">for the current directional lean</span>}>
-                {r.candidates.length === 0 ? <p className="text-xs text-slate-400">Waiting for option-chain data…</p> : (
-                  <table className="w-full text-xs">
-                    <thead><tr className="text-left text-[10px] uppercase tracking-wide text-slate-400"><th className="py-1.5 pr-2">Strike</th><th className="py-1.5 pr-2">Type</th><th className="py-1.5 pr-2">Premium</th><th className="py-1.5 pr-2">Spread</th><th className="py-1.5 pr-2">Liq</th><th className="py-1.5">Score</th></tr></thead>
-                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-600 dark:text-slate-300">
-                      {r.candidates.map((c) => (
-                        <tr key={c.label} className={clsx(c === r.candidates[0] && 'font-semibold')}>
-                          <td className="py-1.5 pr-2 text-slate-900 dark:text-white">{c.strike} <span className="text-[10px] text-slate-400">({c.label})</span></td>
-                          <td className="py-1.5 pr-2">{c.side}</td>
-                          <td className="py-1.5 pr-2">{fmtN(c.premium)}</td>
-                          <td className="py-1.5 pr-2">{c.spreadPct != null ? `${c.spreadPct}%` : '—'}</td>
-                          <td className="py-1.5 pr-2">{c.liquidity}</td>
-                          <td className="py-1.5 tabular-nums">{c.score}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </SectionCard>
-            </div>
-
-            {/* ── Time blocks + Risks + Sentiment ── */}
-            <div className="grid gap-4 lg:grid-cols-3">
-              <SectionCard title="Time blocks" className="lg:col-span-2">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs min-w-[520px]">
-                    <thead><tr className="text-left text-[10px] uppercase tracking-wide text-slate-400"><th className="py-1.5 pr-2">Block</th><th className="py-1.5 pr-2">Trend</th><th className="py-1.5 pr-2">Volatility</th><th className="py-1.5 pr-2">Strategy</th><th className="py-1.5">Avoid?</th></tr></thead>
-                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-600 dark:text-slate-300">
-                      {r.timeBlocks.map((b) => (
-                        <tr key={b.block} className={clsx(b.current && 'bg-brand-50/50 dark:bg-brand-900/10')}>
-                          <td className="py-1.5 pr-2 font-semibold text-slate-900 dark:text-white">{b.block}{b.current && <span className="ml-1 text-[9px] text-brand-500 font-bold">NOW</span>}</td>
-                          <td className="py-1.5 pr-2">{b.trend}</td>
-                          <td className="py-1.5 pr-2">{b.volatility}</td>
-                          <td className="py-1.5 pr-2">{b.strategy}</td>
-                          <td className="py-1.5">{b.avoid ? <Chip tone="bad">YES</Chip> : 'No'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </SectionCard>
-              <SectionCard title="Risks & sentiment">
-                <div className="space-y-1.5 mb-3">
-                  {r.risks.map((k) => (
-                    <div key={k.risk} className="flex items-start gap-2 text-xs">
-                      <Chip tone={k.level === 'High' ? 'bad' : k.level === 'Moderate' ? 'mid' : 'good'}>{k.level}</Chip>
-                      <div className="text-slate-600 dark:text-slate-300"><b className="text-slate-900 dark:text-white">{k.risk}</b> — {k.note}</div>
-                    </div>
-                  ))}
-                </div>
-                <div className="pt-2 border-t border-slate-100 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-300">
-                  Tape sentiment: <b className="text-slate-900 dark:text-white">{r.sentiment.label}</b> ({r.sentiment.confidencePct}%)
-                  <p className="text-[10px] text-slate-400 mt-1">{r.sentiment.basis}</p>
-                </div>
-              </SectionCard>
-            </div>
-
-            {/* ── Data availability ── */}
-            <SectionCard title="Data availability" right={<Chip tone="mid">confidence reduced accordingly</Chip>}>
-              <ul className="grid gap-1 sm:grid-cols-2 text-[11px] text-slate-500 dark:text-slate-400">
-                {r.missing.map((m) => <li key={m} className="flex gap-1.5"><span className="text-amber-500">⚠</span>{m}</li>)}
-              </ul>
-            </SectionCard>
-
-            <p className="text-[10px] leading-relaxed text-slate-400 dark:text-slate-500 px-1 pb-4">{r.disclaimer}</p>
-          </>
+            <p className="text-[10px] text-slate-400 leading-relaxed">
+              Force-exit is always active as a day-end safety square-off. Stop-loss and target are off by default (as in the reference engine) — enable them to have dry-run positions exit on P&L. Lot sizes are exchange-set and change over time; keep them current.
+            </p>
+          </div>
         )}
       </div>
     </div>
+  )
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-2.5">
+      <h3 className="text-[11px] font-bold uppercase tracking-wider text-brand-600 dark:text-brand-400">{title}</h3>
+      {children}
+    </div>
+  )
+}
+function NumField({ label, k, s, set, step = 1, disabled }: any) {
+  return (
+    <label className={clsx('flex items-center justify-between gap-3', disabled && 'opacity-40')}>
+      <span className="text-xs text-slate-500 dark:text-slate-400">{label}</span>
+      <input type="number" step={step} disabled={disabled} value={s[k] ?? ''} onChange={(e) => set(k, e.target.value === '' ? '' : Number(e.target.value))}
+        className="w-28 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2.5 py-1.5 text-sm tabular-nums text-right" />
+    </label>
+  )
+}
+function TimeField({ label, k, s, set, disabled }: any) {
+  return (
+    <label className={clsx('flex items-center justify-between gap-3', disabled && 'opacity-40')}>
+      <span className="text-xs text-slate-500 dark:text-slate-400">{label}</span>
+      <input type="time" disabled={disabled} value={s[k] ?? ''} onChange={(e) => set(k, e.target.value)}
+        className="w-32 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2.5 py-1.5 text-sm tabular-nums text-right" />
+    </label>
+  )
+}
+function SelectField({ label, k, s, set, opts }: any) {
+  return (
+    <label className="flex items-center justify-between gap-3">
+      <span className="text-xs text-slate-500 dark:text-slate-400">{label}</span>
+      <select value={s[k] ?? ''} onChange={(e) => set(k, e.target.value)}
+        className="w-28 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2 py-1.5 text-sm">
+        {opts.map((o: string) => <option key={o} value={o}>{o}</option>)}
+      </select>
+    </label>
+  )
+}
+function ToggleField({ label, k, s, set }: any) {
+  const on = !!s[k]
+  return (
+    <button type="button" onClick={() => set(k, !on)} className="w-full flex items-center justify-between">
+      <span className="text-xs text-slate-500 dark:text-slate-400">{label}</span>
+      <span className={clsx('h-5 w-9 rounded-full p-0.5 transition', on ? 'bg-brand-500' : 'bg-slate-300 dark:bg-slate-700')}>
+        <span className={clsx('block h-4 w-4 rounded-full bg-white transition-transform', on && 'translate-x-4')} />
+      </span>
+    </button>
   )
 }

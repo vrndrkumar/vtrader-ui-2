@@ -7,6 +7,7 @@ import type { OrderLine } from './orderOverlays'
 import type { SmcInputs } from './smc/types'
 import type { RsInputs } from './rs/types'
 import type { WtInputs } from './wt/types'
+import type { BslInputs } from './bsl/types'
 
 /**
  * A drawing serialized to MARKET coordinates (time + price), not pixels. This is
@@ -42,12 +43,28 @@ export interface ChartEngine {
   updateLast(candle: Candle): void
   /** Open time (ms) of the last/forming candle, or null if there's no data. */
   lastBarTime(): number | null
+
+  // ── Lazy history + view navigation ─────────────────────────────────────────
+  /** Provide the fetcher for older candles (used for infinite backward scroll).
+   *  Called with the oldest currently-loaded bar's timestamp; returns bars strictly
+   *  older than it, or [] when there's no more history. */
+  setLoadMoreHandler(fetchOlder: (oldestTs: number) => Promise<Candle[]>): void
+  zoomIn(): void
+  zoomOut(): void
+  /** Scroll by N bars — negative = older (left), positive = newer (right). */
+  scrollBars(bars: number): void
+  /** Reset zoom to the default bar spacing (keeps current position). */
+  resetZoom(): void
+  /** Return to the latest bars at the default zoom. */
+  resetView(): void
   setTheme(dark: boolean): void
 
   /** Add the indicator if absent, remove it if present. Optional calc params. */
   toggleIndicator(name: string, calcParams?: number[]): void
   /** Live-update an already-added indicator's calc parameters. */
   configureIndicator(name: string, calcParams: number[]): void
+  /** Apply per-plot visual styles (color/width/line-style/show) to a built-in indicator. */
+  styleIndicator(name: string, styles: Record<string, unknown>): void
   hasIndicator(name: string): boolean
   activeIndicators(): string[]
 
@@ -73,6 +90,12 @@ export interface ChartEngine {
   updateWt(inputs: WtInputs): void
   disableWt(): void
   hasWt(): boolean
+
+  // ── Buyside & Sellside Liquidity [LuxAlgo] overlay ─────────────────────────
+  enableBsl(inputs: BslInputs): void
+  updateBsl(inputs: BslInputs): void
+  disableBsl(): void
+  hasBsl(): boolean
 
   // ── Sub-pane indicator legend (rendered in React over each sub-pane) ────────
   /** Root-relative top pixel of an indicator's own pane (null for main-pane). */

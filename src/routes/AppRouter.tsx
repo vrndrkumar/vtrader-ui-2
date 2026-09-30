@@ -28,6 +28,7 @@ const DocsPage               = lazy(() => import('@/admin/docs/DocsPage'))
 const ControlPanelLayout     = lazy(() => import('@/admin/controlPanel/ControlPanelLayout'))
 const StrategiesMaster       = lazy(() => import('@/admin/controlPanel/strategies/StrategiesMaster'))
 const BrokersMaster          = lazy(() => import('@/admin/controlPanel/brokers/BrokersMaster'))
+const IndicatorsMaster       = lazy(() => import('@/admin/controlPanel/indicators/IndicatorsMaster'))
 const ServiceStatusPanel     = lazy(() => import('@/admin/controlPanel/serviceStatus/ServiceStatusPanel'))
 
 function GuestRoute({ children }: { children: React.ReactNode }) {
@@ -81,6 +82,7 @@ export function AppRouter() {
             <Route path="/admin/control-panel" element={<AdminRoute><ControlPanelLayout /></AdminRoute>}>
               <Route index element={<Navigate to="strategies" replace />} />
               <Route path="strategies" element={<StrategiesMaster />} />
+              <Route path="indicators" element={<IndicatorsMaster />} />
               <Route path="brokers" element={<BrokersMaster />} />
               <Route path="service-status" element={<ServiceStatusPanel />} />
             </Route>

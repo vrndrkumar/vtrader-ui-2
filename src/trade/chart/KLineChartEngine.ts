@@ -13,6 +13,8 @@ import { registerRsIndicator, setRsInputs, setRsComparative as setRsCompMap, set
 import type { RsInputs } from './rs/types'
 import { registerWtIndicator, setWtInputs, setWtTheme } from './wt/indicator'
 import type { WtInputs } from './wt/types'
+import { registerBslIndicator, setBslInputs } from './bsl/indicator'
+import type { BslInputs } from './bsl/types'
 
 type Chart = NonNullable<ReturnType<typeof init>>
 
@@ -102,12 +104,16 @@ export class KLineChartEngine implements ChartEngine {
   // timeframe change" and "deleting one deletes all". While restoring, we never
   // persist; the caller decides what the authoritative list is.
   private restoring = false
+  // Lazy backward history: fetch older candles when the user scrolls to the left
+  // edge (klinecharts fires a 'forward' load request there). Set by the host.
+  private loadMoreFetch?: (oldestTs: number) => Promise<Candle[]>
 
   constructor(el: HTMLElement, dark: boolean) {
     this.el = el
     registerSmcIndicator() // register the Smart Money Concepts custom indicator once
     registerRsIndicator()  // register the Relative Strength sub-pane indicator once
     registerWtIndicator()  // register the WaveTrend sub-pane indicator once
+    registerBslIndicator() // register the Buyside & Sellside Liquidity overlay once
     setSmcTheme(dark)
     setRsTheme(dark)
     setWtTheme(dark)
@@ -123,8 +129,55 @@ export class KLineChartEngine implements ChartEngine {
       // Readable x-axis labels: DATE and TIME are visually distinct (the default
       // renders dates like "09-08" that read as times); tooltip shows full date+time.
       try { c.setCustomApi?.({ formatDate: fmtDate }) } catch { /* older API */ }
+      this.registerLoadData()
     }
   }
+
+  // ── Lazy history (infinite backward scroll) ────────────────────────────────
+  // klinecharts calls this when the viewport reaches an edge: 'forward' = the
+  // OLDEST visible bar (need older history), 'backward' = the newest (handled by
+  // the live feed). We MUST always invoke params.callback — even with [] — or the
+  // chart's internal loading lock stays engaged and further loads never fire.
+  private registerLoadData(): void {
+    type LoadParams = { type: string; data: { timestamp?: number } | null; callback: (d: KLineData[], more?: boolean) => void }
+    const chart = this.chart as unknown as { setLoadDataCallback?: (cb: (p: LoadParams) => void) => void } | null
+    if (!chart?.setLoadDataCallback) return
+    chart.setLoadDataCallback((params) => {
+      const cb = params.callback
+      if (params.type === 'forward' && this.loadMoreFetch && params.data?.timestamp != null) {
+        this.loadMoreFetch(Number(params.data.timestamp))
+          .then((older) => {
+            cb((older as unknown as KLineData[]) ?? [], older.length > 0)
+            // Prepending older bars shifts every dataIndex, so re-anchor drawings
+            // from their stored timestamps against the now-longer series.
+            if (older.length && this.drawingById.size) {
+              requestAnimationFrame(() => this.restoreDrawings([...this.drawingById.values()]))
+            }
+          })
+          .catch(() => cb([], false))
+      } else {
+        cb([], false) // free the loading lock; newest bars come from the live feed
+      }
+    })
+  }
+
+  /** Provide the older-candles fetcher (host knows the symbol/timeframe). */
+  setLoadMoreHandler(fetchOlder: (oldestTs: number) => Promise<Candle[]>): void {
+    this.loadMoreFetch = fetchOlder
+  }
+
+  // ── View navigation (floating reset/zoom bar) ──────────────────────────────
+  private barSpace(): number {
+    try { const b = (this.chart as unknown as { getBarSpace?: () => number }).getBarSpace?.(); return typeof b === 'number' && b > 0 ? b : 8 } catch { return 8 }
+  }
+  zoomIn(): void { try { this.chart?.zoomAtCoordinate(1.2, undefined, 200) } catch { /* noop */ } }
+  zoomOut(): void { try { this.chart?.zoomAtCoordinate(1 / 1.2, undefined, 200) } catch { /* noop */ } }
+  /** Scroll by N bars — negative = older (left), positive = newer (right). */
+  scrollBars(bars: number): void { try { this.chart?.scrollByDistance(bars * this.barSpace(), 250) } catch { /* noop */ } }
+  /** Reset zoom to the default bar spacing (keeps current position). */
+  resetZoom(): void { try { this.chart?.setBarSpace(8) } catch { /* noop */ } }
+  /** Return to the latest bars at the default zoom (the "back to now" reset). */
+  resetView(): void { try { this.chart?.setBarSpace(8) } catch { /* noop */ } try { this.chart?.scrollToRealTime(350) } catch { /* noop */ } }
 
   // Root-relative top (px) of an indicator's pane — lets the React sub-pane legend
   // dock at that pane's top-left. null for main-pane / unknown indicators.
@@ -247,6 +300,27 @@ export class KLineChartEngine implements ChartEngine {
     try { this.chart?.overrideIndicator({ name: 'SMC' } as never, 'candle_pane') } catch { /* keep chart alive */ }
   }
 
+  // ── Buyside & Sellside Liquidity [LuxAlgo] overlay ─────────────────────────
+  enableBsl(inputs: BslInputs): void {
+    setBslInputs(inputs)
+    if (!this.chart) return
+    if (!this.indicators.has('BSL')) {
+      this.chart.createIndicator('BSL', true, { id: 'candle_pane' })
+      this.indicators.set('BSL', 'candle_pane')
+    } else {
+      this.refreshBsl()
+    }
+  }
+  updateBsl(inputs: BslInputs): void { setBslInputs(inputs); this.refreshBsl() }
+  disableBsl(): void {
+    const pane = this.indicators.get('BSL')
+    if (this.chart && pane) { this.chart.removeIndicator(pane, 'BSL'); this.indicators.delete('BSL') }
+  }
+  hasBsl(): boolean { return this.indicators.has('BSL') }
+  private refreshBsl(): void {
+    try { this.chart?.overrideIndicator({ name: 'BSL' } as never, 'candle_pane') } catch { /* keep chart alive */ }
+  }
+
   toggleIndicator(name: string, calcParams?: number[]): void {
     if (!this.chart) return
     const existing = this.indicators.get(name)
@@ -269,6 +343,15 @@ export class KLineChartEngine implements ChartEngine {
     const paneId = this.indicators.get(name)
     if (!this.chart || !paneId) return
     try { this.chart.overrideIndicator({ name, calcParams } as never, paneId) } catch { /* keep chart alive */ }
+  }
+
+  // Apply per-plot visual styles (color / width / line-style / show) to a built-in
+  // indicator — TradingView-style. `styles` is the klinecharts indicator style
+  // object (lines[] / bars[] / circles[]); see indicatorPlots.buildIndicatorStyles.
+  styleIndicator(name: string, styles: Record<string, unknown>): void {
+    const paneId = this.indicators.get(name)
+    if (!this.chart || !paneId) return
+    try { this.chart.overrideIndicator({ name, styles } as never, paneId) } catch { /* keep chart alive */ }
   }
 
   hasIndicator(name: string): boolean {
